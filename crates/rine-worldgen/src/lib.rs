@@ -10,6 +10,7 @@ pub mod feature;
 pub mod mth;
 pub mod noise;
 pub mod overworld;
+pub mod pipeline;
 pub mod random;
 
 pub use noise::{BlendedNoise, NoiseStack, NormalNoise, PerlinNoise, SimplexNoise, SmearedPerlinNoise};

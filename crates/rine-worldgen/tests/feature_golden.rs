@@ -10,55 +10,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use rine_worldgen::feature::heightmap::WgHeights;
 use rine_worldgen::feature::Decorator;
 use rine_worldgen::overworld::{ChunkBlocks, Overworld};
 
 const SEED: i64 = 1592598566;
 
+/// Protos of the area with their terrain-end worldgen heights.
+type ProtoCache = HashMap<(i32, i32), (Arc<ChunkBlocks>, WgHeights)>;
+
 /// Shared allow rule (`assets/worldgen/ported_features.json`, also read by make_feature_datapack.js): a
 /// top-level placed feature is allowed when its placements are ported (biome only at top level) and every
 /// configured feature in its subtree is ported.
 fn ported_only(name: &str) -> bool {
-    let bundle: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/features.json")).unwrap();
-    let ported: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/ported_features.json")).unwrap();
-    let types: Vec<&str> = ported["types"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-    let placements: Vec<&str> = ported["placements"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
-    ported_placed(&bundle, &types, &placements, name, true)
-}
-
-fn ported_placed(bundle: &serde_json::Value, types: &[&str], placements: &[&str], name: &str, top: bool) -> bool {
-    let p = &bundle["placed"][name];
-    !p.is_null() && ported_entry(bundle, types, placements, p, top)
-}
-
-/// A placed-feature object (named or inline): placements and the configured feature.
-fn ported_entry(bundle: &serde_json::Value, types: &[&str], placements: &[&str], p: &serde_json::Value, top: bool) -> bool {
-    let placements_ok = p["placement"].as_array().unwrap().iter().all(|m| {
-        let ty = m["type"].as_str().unwrap();
-        placements.contains(&ty) && (top || ty != "minecraft:biome")
-    });
-    placements_ok && ported_feature(bundle, types, placements, &p["feature"])
-}
-
-fn ported_feature(bundle: &serde_json::Value, types: &[&str], placements: &[&str], r: &serde_json::Value) -> bool {
-    let cfg = match r.as_str() {
-        Some(n) => &bundle["configured"][n],
-        None => r,
-    };
-    let Some(ty) = cfg["type"].as_str() else { return false };
-    if !types.contains(&ty) {
-        return false;
-    }
-    let sub = |x: &serde_json::Value| match x.as_str() {
-        Some(n) => ported_placed(bundle, types, placements, n, false),
-        None => ported_entry(bundle, types, placements, x, false),
-    };
-    match ty {
-        "minecraft:random_boolean_selector" => sub(&cfg["feature_true"]) && sub(&cfg["feature_false"]),
-        "minecraft:simple_random_selector" | "minecraft:sequence" => cfg["features"].as_array().unwrap().iter().all(sub),
-        "minecraft:weighted_random_selector" => cfg["features"].as_array().unwrap().iter().all(|e| sub(&e["data"])),
-        _ => true,
-    }
+    rine_worldgen::feature::allow::ported_only(name)
 }
 
 /// Block name only. The golden palette stores default-state blocks as bare names, so property
@@ -104,17 +69,19 @@ fn read_golden(bytes: &[u8]) -> Golden {
 
 /// Protos for the 7x7 area around `(cx, cz)`, decorated on the inner 5x5 in raster order, then the
 /// centre chunk. Each decoration sees the 3x3 window around its chunk, as in vanilla.
-fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), Arc<ChunkBlocks>>, cx: i32, cz: i32) -> ChunkBlocks {
+fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut ProtoCache, cx: i32, cz: i32) -> ChunkBlocks {
     let mut area: Vec<ChunkBlocks> = Vec::with_capacity(49);
+    let mut area_wg: Vec<WgHeights> = Vec::with_capacity(49);
     for dz in -3..=3 {
         for dx in -3..=3 {
             let key = (cx + dx, cz + dz);
-            let proto = cache
-                .entry(key)
-                .or_insert_with(|| Arc::new(o.generate(key.0, key.1)))
-                .as_ref()
-                .clone();
-            area.push(proto);
+            let (proto, wg) = cache.entry(key).or_insert_with(|| {
+                let p = Arc::new(o.generate(key.0, key.1));
+                let w = dec.wg_heights(&p);
+                (p, w)
+            });
+            area.push(proto.as_ref().clone());
+            area_wg.push(wg.clone());
         }
     }
     // area index: (dz + 3) * 7 + (dx + 3)
@@ -132,13 +99,15 @@ fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), A
     for (dx, dz) in order {
         {
             let mut window: Vec<ChunkBlocks> = Vec::with_capacity(9);
+            let mut window_wg: Vec<WgHeights> = Vec::with_capacity(9);
             for wz in -1..=1i32 {
                 for wx in -1..=1i32 {
                     let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
                     window.push(area[ix].clone());
+                    window_wg.push(area_wg[ix].clone());
                 }
             }
-            dec.decorate(o, SEED, cx + dx, cz + dz, &mut window).unwrap();
+            dec.decorate(o, SEED, cx + dx, cz + dz, &mut window, &window_wg).unwrap();
             for wz in -1..=1i32 {
                 for wx in -1..=1i32 {
                     let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
@@ -147,7 +116,9 @@ fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), A
             }
         }
     }
-    area[3 * 7 + 3].clone()
+    let mut centre = area[3 * 7 + 3].clone();
+    centre.palette = dec.palette().to_vec();
+    centre
 }
 
 #[test]
@@ -160,7 +131,7 @@ fn feature_decoration_matches_vanilla_server() {
 
     let o = Overworld::new(SEED);
     let dec = Decorator::new(&o, &ported_only).expect("decorator");
-    let mut cache = HashMap::new();
+    let mut cache: ProtoCache = HashMap::new();
 
     let mut pairs: HashMap<(String, String), usize> = HashMap::new();
     let mut shown = 0usize;
@@ -341,7 +312,11 @@ fn final_chunk_order(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i
                 window.push(area[ix].clone());
             }
         }
-        dec.decorate(o, SEED, cx + dx, cz + dz, &mut window).unwrap();
+        let window_wg: Vec<WgHeights> = (-1..=1i32).flat_map(|wz| (-1..=1i32).map(move |wx| (wx, wz))).map(|(wx, wz)| {
+            let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
+            dec.wg_heights(&area[ix])
+        }).collect();
+        dec.decorate(o, SEED, cx + dx, cz + dz, &mut window, &window_wg).unwrap();
         for wz in -1..=1i32 {
             for wx in -1..=1i32 {
                 let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
@@ -349,5 +324,7 @@ fn final_chunk_order(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i
             }
         }
     }
-    area[3 * 7 + 3].clone()
+    let mut centre = area[3 * 7 + 3].clone();
+    centre.palette = dec.palette().to_vec();
+    centre
 }

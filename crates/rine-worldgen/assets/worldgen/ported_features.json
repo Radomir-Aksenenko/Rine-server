@@ -15,9 +15,20 @@
     "minecraft:count",
     "minecraft:rarity_filter",
     "minecraft:in_square",
+    "minecraft:heightmap",
     "minecraft:height_range",
     "minecraft:biome",
     "minecraft:offset",
     "minecraft:block_predicate_filter"
+  ],
+  "_predicates_comment": "Block predicate types that the port evaluates. A predicate of a block_predicate_filter placement or of a block_column allowed_placement must use only these types (recursively through predicate/predicates).",
+  "predicates": [
+    "minecraft:true",
+    "minecraft:matching_blocks",
+    "minecraft:matching_block_tag",
+    "minecraft:matching_fluids",
+    "minecraft:all_of",
+    "minecraft:any_of",
+    "minecraft:not"
   ]
 }

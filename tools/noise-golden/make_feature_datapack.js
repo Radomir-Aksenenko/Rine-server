@@ -22,11 +22,41 @@ const bundle = JSON.parse(fs.readFileSync(BUNDLE, 'utf8'));
 // feature is allowed when every placement is ported (biome only at top level) and every configured
 // feature in its subtree is ported. Nested placed features of selectors and sequences are checked the same way.
 const PORTED = JSON.parse(fs.readFileSync(path.join(REPO, "crates", "rine-worldgen", "assets", "worldgen", "ported_features.json"), "utf8"));
+// Block predicates: every type (recursively through predicate/predicates) must be in PORTED.predicates.
+const blockPredicateOk = (p) => {
+    if (!p || !PORTED.predicates.includes(p.type)) return false;
+    if (p.type === "minecraft:all_of" || p.type === "minecraft:any_of") return p.predicates.every(blockPredicateOk);
+    if (p.type === "minecraft:not") return blockPredicateOk(p.predicate);
+    return true;
+};
 const placementOk = (list, top) =>
-    (list || []).every((m) => PORTED.placements.includes(m.type) && (top || m.type !== "minecraft:biome"));
+    (list || []).every(
+        (m) =>
+            PORTED.placements.includes(m.type) &&
+            (top || m.type !== "minecraft:biome") &&
+            (m.type !== "minecraft:block_predicate_filter" || blockPredicateOk(m.predicate))
+    );
 const featureOk = (ref) => {
     const cfg = typeof ref === "string" ? bundle.configured[ref] : ref;
     if (!cfg || !PORTED.types.includes(cfg.type)) return false;
+    // Same rule as allow.rs: state providers are simple, weighted, randomized_int over a simple source,
+    // or rule_based with ported predicates (recursively).
+    const stateProviderOk = (sp) => {
+        if (!sp || sp.type === undefined) return true;
+        if (sp.type === "minecraft:weighted") return true;
+        if (sp.type === "minecraft:randomized_int") return sp.source.type === undefined;
+        if (sp.type === "minecraft:rule_based") {
+            return (
+                sp.rules.every((r) => blockPredicateOk(r.if_true) && stateProviderOk(r.then)) &&
+                (sp.fallback === undefined || stateProviderOk(sp.fallback))
+            );
+        }
+        return false;
+    };
+    if (cfg.type === "minecraft:block_column") {
+        if (!cfg.layers.every((l) => stateProviderOk(l.provider)) || !blockPredicateOk(cfg.allowed_placement)) return false;
+    }
+    if (cfg.type === "minecraft:disk" && (!blockPredicateOk(cfg.target) || !stateProviderOk(cfg.state_provider))) return false;
     const sub = (r) => subOk(r);
     switch (cfg.type) {
         case "minecraft:random_boolean_selector":

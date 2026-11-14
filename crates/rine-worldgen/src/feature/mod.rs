@@ -15,8 +15,10 @@
 //! Ordering: `sorter` reproduces `FeatureSorter`; within a chunk the features of each step run in the
 //! sorted order, skipping features that no biome present in the 3x3 chunks has in that step.
 
+pub mod allow;
 pub mod column;
 pub mod disk;
+pub mod heightmap;
 pub mod ice;
 pub mod ore;
 pub mod placement;
@@ -35,6 +37,7 @@ use serde_json::Value;
 
 use crate::overworld::{BiomeMap, ChunkBlocks, Overworld};
 use column::{direction_of, BlockColumn, Layer};
+use heightmap::WgHeights;
 use disk::Disk;
 use ice::BlueIce;
 use ore::{OreFeature, RuleTest, Target};
@@ -409,12 +412,19 @@ impl Decorator {
         &self.palette
     }
 
+    /// Worldgen heightmaps (`WORLD_SURFACE_WG`, `OCEAN_FLOOR_WG`) of a chunk, from its terrain-end blocks.
+    /// Compute them once per proto chunk, before any decoration writes into it.
+    pub fn wg_heights(&self, chunk: &ChunkBlocks) -> WgHeights {
+        heightmap::wg_heights(&chunk.blocks, &self.tags, self.min_y, self.height)
+    }
+
     /// Decorates the centre chunk of the 3x3 `chunks` (raster order, centre at index 4). Writes
-    /// from the centre may land in all nine chunks; the nine are updated in place.
-    pub fn decorate(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks]) -> Result<(), String> {
+    /// from the centre may land in all nine chunks; the nine are updated in place. `wg` holds the
+    /// terrain-end worldgen heights of the nine chunks (`wg_heights` of their protos).
+    pub fn decorate(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights]) -> Result<(), String> {
         let presence = present_biomes(chunks);
         let biome_map = BiomeMap::new(o, cx, cz);
-        let mut region = Region::new(&self.tags, &self.placed_in_biome, biome_map, self.min_y, self.height, cx, cz, chunks);
+        let mut region = Region::new(&self.tags, &self.placed_in_biome, biome_map, self.min_y, self.height, cx, cz, chunks, wg);
 
         let mut rng = WorldgenRng::new(0);
         let origin_x = cx * 16;
@@ -433,10 +443,11 @@ impl Decorator {
             }
         }
 
+        // Only the block ids change here. The palette of the output is `palette()` (the overworld palette
+        // plus the feature states); callers read the chunks with that palette, so it is not cloned per call.
         let out = region.into_blocks();
         for (dst, src) in chunks.iter_mut().zip(out) {
             dst.blocks = src;
-            dst.palette = self.palette.clone();
         }
         Ok(())
     }
