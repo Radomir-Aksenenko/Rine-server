@@ -593,6 +593,7 @@ dependencies = [
  "rayon",
  "rine-data",
  "rine-protocol",
+ "rine-worldgen",
 ]
 
 [[package]]

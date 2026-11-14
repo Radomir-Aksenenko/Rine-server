@@ -126,12 +126,16 @@ function readChunk(regionBuf, cx, cz) {
 
 // --- block states -------------------------------------------------------------------------------
 function canonical(entry) {
-    // 26.3 stores plain states as bare names; states with properties as {Name, Properties}.
+    // 26.3 stores plain states as bare names. States with properties appear either as {Name, Properties} or as
+    // {id, properties} (the datapack form). Some chunks wrap a bare name in an unnamed compound: {"": name}.
     if (typeof entry === 'string') return entry;
-    const props = entry.Properties || {};
+    if (typeof entry[''] === 'string') return entry[''];
+    const name = typeof entry.Name === 'string' ? entry.Name : entry.id;
+    if (typeof name !== 'string') throw new Error('block state without a name: ' + JSON.stringify(entry));
+    const props = entry.Properties || entry.properties || {};
     const keys = Object.keys(props).sort();
-    if (keys.length === 0) return entry.Name;
-    return entry.Name + '[' + keys.map((k) => k + '=' + props[k]).join(',') + ']';
+    if (keys.length === 0) return name;
+    return name + '[' + keys.map((k) => k + '=' + props[k]).join(',') + ']';
 }
 
 function sectionBlocks(section) {

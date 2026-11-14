@@ -94,6 +94,9 @@ function visitChildren(cf) {
         case 'minecraft:sequence':
             (c.features || []).forEach(visitPlaced);
             break;
+        case 'minecraft:root_system':
+            visitPlaced(c.feature);
+            break;
         default:
             break;
     }
@@ -110,6 +113,17 @@ for (const name of biomeNames) {
         })
     );
     biomes[name] = out;
+}
+
+// Every tree and fallen tree configured feature, reached or not: the tree golden places them directly
+// through synthetic placed features (tools/noise-golden/make_tree_golden.js), so their providers, tags and
+// block states must be bundled too.
+for (const f of fs.readdirSync(path.join(DATA, 'feature'))) {
+    if (!f.endsWith('.json')) continue;
+    const json = read(path.join(DATA, 'feature', f));
+    if (json.type !== 'minecraft:tree' && json.type !== 'minecraft:fallen_tree') continue;
+    const ref = 'minecraft:' + f.replace(/\.json$/, '');
+    if (!configured[ref]) configured[ref] = json;
 }
 
 // Block tags referenced by the bundled predicates (`"tag": "minecraft:x"` and `"#minecraft:x"`),
@@ -144,7 +158,85 @@ collectTags(placed);
 collectTags(configured);
 for (const t of tagRefs) flattenTag(t);
 
-const bundle = { biomes, placed, configured, inline, blockTags };
+
+// Block state providers referenced by name (`"minecraft:x"` in a `*provider` key) and by the tree
+// decorators (`worldgen/block_state_provider/<name>.json`), with their own tag references.
+const PROVIDER_DIR = path.join(DATA, 'block_state_provider');
+const blockStateProviders = {};
+function visitProviderRef(ref) {
+    if (typeof ref !== 'string' || !ref.startsWith('minecraft:') || blockStateProviders[ref]) return;
+    const file = path.join(PROVIDER_DIR, ref.replace('minecraft:', '') + '.json');
+    if (!fs.existsSync(file)) return;
+    const json = read(file);
+    blockStateProviders[ref] = json;
+    collectProviderRefs(json);
+}
+function collectProviderRefs(node) {
+    if (Array.isArray(node)) node.forEach(collectProviderRefs);
+    else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+            if (k === 'id' || k === 'type' || k === 'predicate_type' || k === 'tag') continue;
+            if (typeof v === 'string' && v.startsWith('minecraft:')) visitProviderRef(v);
+            else collectProviderRefs(v);
+        }
+    }
+}
+const providerKeyRefs = (node) => {
+    if (Array.isArray(node)) node.forEach(providerKeyRefs);
+    else if (node && typeof node === 'object') {
+        for (const [k, v] of Object.entries(node)) {
+            if (/provider$/.test(k) && typeof v === 'string') visitProviderRef(v);
+            else providerKeyRefs(v);
+        }
+    }
+};
+providerKeyRefs(configured);
+providerKeyRefs(placed);
+collectProviderRefs(blockStateProviders);
+collectTags(blockStateProviders);
+
+// Tags that the tree and fallen tree code tests from Java (BlockTags.LEAVES, LOGS, ...).
+['minecraft:leaves', 'minecraft:logs', 'minecraft:replaceable_by_trees', 'minecraft:prevents_nearby_leaf_decay',
+ 'minecraft:mangrove_roots_can_grow_through', 'minecraft:mangrove_logs_can_grow_through',
+ 'minecraft:cannot_replace_below_tree_trunk', 'minecraft:beneath_tree_podzol_replaceable',
+ 'minecraft:blocks_motion_no_leaves', 'minecraft:snow'].forEach((t) => tagRefs.add(t));
+for (const t of tagRefs) flattenTag(t);
+
+// Block property tables from the 26.3 block report: ordered property values and the default state, for
+// every block named in the bundled data plus the blocks the tree decorators write.
+const REPORT = path.join(VANILLA_GENERATED, 'reports', 'blocks.json');
+const report = read(REPORT);
+const blockNames = new Set();
+const collectNames = (node) => {
+    if (typeof node === 'string') {
+        const m = node.match(/^(?:#)?(minecraft:[a-z0-9_]+)/);
+        if (m) blockNames.add(m[1]);
+    } else if (Array.isArray(node)) node.forEach(collectNames);
+    else if (node && typeof node === 'object') Object.values(node).forEach(collectNames);
+};
+collectNames(configured);
+collectNames(blockStateProviders);
+collectNames(placed);
+[
+    'minecraft:vine', 'minecraft:cocoa', 'minecraft:bee_nest', 'minecraft:creaking_heart',
+    'minecraft:pale_hanging_moss', 'minecraft:mangrove_roots', 'minecraft:muddy_mangrove_roots',
+    'minecraft:mangrove_propagule', 'minecraft:moss_carpet', 'minecraft:podzol', 'minecraft:dirt',
+    'minecraft:pale_moss_carpet', 'minecraft:leaf_litter',
+].forEach((n) => blockNames.add(n));
+const blockProps = {};
+for (const name of [...blockNames].sort()) {
+    const entry = report[name];
+    if (!entry) continue;
+    const props = entry.properties || {};
+    const states = entry.states || [];
+    const def = states.find((s) => s.default) || states[0];
+    blockProps[name] = {
+        properties: props,
+        default: def ? def.properties || {} : {},
+    };
+}
+
+const bundle = { biomes, placed, configured, inline, blockTags, blockStateProviders, blockProps };
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(bundle) + '\n');
 console.log(

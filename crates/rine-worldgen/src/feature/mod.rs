@@ -17,6 +17,7 @@ pub mod region;
 pub mod ore;
 pub mod rng;
 pub mod sorter;
+pub mod tree;
 
 use std::collections::HashMap;
 
@@ -35,6 +36,8 @@ const DECORATION_STEPS: usize = 11;
 
 enum Configured {
     Ore(OreFeature),
+    Tree(tree::TreeFeature),
+    FallenTree(tree::fallen::FallenTree),
 }
 
 struct PlacedFeature {
@@ -56,6 +59,8 @@ pub struct Decorator {
     in_step: Vec<Vec<Vec<bool>>>,
     min_y: i32,
     height: i32,
+    /// Block states and tags of the tree port; `Some` when a tree placed feature is allowed.
+    tree_env: Option<tree::TreeEnv>,
 }
 
 fn bundle() -> &'static Value {
@@ -100,7 +105,12 @@ fn state_name(v: &Value) -> Result<String, String> {
 impl Decorator {
     /// Compiles the decoration of `o` for the placed features `allow` accepts.
     pub fn new(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
-        let bundle = bundle();
+        Self::new_from(bundle(), o, allow)
+    }
+
+    /// Like [`Decorator::new`] with an explicit feature bundle (`features.json` layout). The tree golden uses
+    /// a bundle with synthetic placed features and matching biome lists (`tools/noise-golden/make_tree_golden.js`).
+    pub fn new_from(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
         let biome_names: Vec<String> = o.biome_names().to_vec();
 
         // Biome feature lists, filtered; placed ids in first-appearance order.
@@ -136,6 +146,19 @@ impl Decorator {
         // Compile placed features (ore only so far) and collect block states.
         let mut palette: Vec<String> = o.interner().names().to_vec();
         let mut palette_ids: HashMap<String, u16> = palette.iter().enumerate().map(|(i, s)| (s.clone(), i as u16)).collect();
+        // Tree block states (all property combinations of the blocks the tree configs use), interned once
+        // so runtime `setValue` on tree states is a table lookup. Only when a tree placed feature is allowed.
+        let needs_trees = placed_names.iter().any(|n| {
+            let f = bundle["placed"][n.as_str()]["feature"].as_str().unwrap_or("");
+            matches!(bundle["configured"][f]["type"].as_str(), Some("minecraft:tree") | Some("minecraft:fallen_tree"))
+        });
+        let tree_states = if needs_trees {
+            let wanted = tree::tree_wanted_blocks(bundle);
+            Some(tree::state::TreeStates::build(&bundle["blockProps"], &wanted, &mut palette, &mut palette_ids)?)
+        } else {
+            None
+        };
+
         let mut intern = |palette: &mut Vec<String>, name: String| -> u16 {
             if let Some(&id) = palette_ids.get(&name) {
                 return id;
@@ -158,6 +181,7 @@ impl Decorator {
                         intern(&mut palette, state_name(&t["state"])?);
                     }
                 }
+                Some("minecraft:tree") | Some("minecraft:fallen_tree") => {}
                 Some(other) => {
                     return Err(format!("{name}: configured feature {other} is not ported yet"));
                 }
@@ -173,12 +197,42 @@ impl Decorator {
             .map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().map(|b| b.as_str().unwrap().to_string()).collect()))
             .collect();
         let tags = Tags::new(&palette, &block_tags);
+        let tree_env = match tree_states {
+            Some(states) => {
+                let air = palette.iter().position(|s| s == "minecraft:air").expect("air in palette") as u16;
+                Some(tree::TreeEnv { states, tags: tree::TreeTags::new(&tags)?, air })
+            }
+            None => None,
+        };
 
         let mut placed = Vec::with_capacity(placed_names.len());
         for (id, feature_ref) in raw_configured {
             let name = &placed_names[id];
             let pj = &bundle["placed"][name.as_str()];
             let cfg = &bundle["configured"][feature_ref.as_str()];
+            if let Some(env) = tree_env.as_ref() {
+                let compile_env = tree::CompileEnv { env, tags: &tags, providers: &bundle["blockStateProviders"] };
+                let modifiers = pj["placement"]
+                    .as_array()
+                    .ok_or("placement")?
+                    .iter()
+                    .map(parse_modifier)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("{name}: {e}"))?;
+                match cfg["type"].as_str() {
+                    Some("minecraft:tree") => {
+                        let feature = tree::TreeFeature::compile(cfg, &compile_env).map_err(|e| format!("{name}: {e}"))?;
+                        placed.push(PlacedFeature { name: name.clone(), modifiers, feature: Configured::Tree(feature) });
+                        continue;
+                    }
+                    Some("minecraft:fallen_tree") => {
+                        let feature = tree::fallen::FallenTree::compile(cfg, &compile_env).map_err(|e| format!("{name}: {e}"))?;
+                        placed.push(PlacedFeature { name: name.clone(), modifiers, feature: Configured::FallenTree(feature) });
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             let modifiers = pj["placement"]
                 .as_array()
                 .ok_or("placement")?
@@ -231,6 +285,7 @@ impl Decorator {
             in_step,
             min_y: o.min_y(),
             height: o.height(),
+            tree_env,
         })
     }
 
@@ -300,6 +355,16 @@ impl Decorator {
     fn place_configured(&self, pf: &PlacedFeature, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
         match &pf.feature {
             Configured::Ore(ore) => ore.place(region, rng, pos),
+            Configured::Tree(t) => {
+                let env = self.tree_env.as_ref().expect("tree env");
+                let mut ctx = tree::Ctx::new(region, env, rng);
+                t.place(&mut ctx, pos)
+            }
+            Configured::FallenTree(t) => {
+                let env = self.tree_env.as_ref().expect("tree env");
+                let mut ctx = tree::Ctx::new(region, env, rng);
+                t.place(&mut ctx, pos)
+            }
         }
     }
 }
