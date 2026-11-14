@@ -126,13 +126,13 @@ function readChunk(regionBuf, cx, cz) {
 
 // --- block states -------------------------------------------------------------------------------
 function canonical(entry) {
-    // 26.3 stores plain states as bare names. States with properties appear either as {Name, Properties} or as
-    // {id, properties} (the datapack form). Some chunks wrap a bare name in an unnamed compound: {"": name}.
+    // 26.3 stores plain states as bare names; states with properties as {Name, Properties}.
     if (typeof entry === 'string') return entry;
-    if (typeof entry[''] === 'string') return entry[''];
-    const name = typeof entry.Name === 'string' ? entry.Name : entry.id;
-    if (typeof name !== 'string') throw new Error('block state without a name: ' + JSON.stringify(entry));
-    const props = entry.Properties || entry.properties || {};
+    // Some 26.3 palette entries arrive as a compound whose only child is an unnamed string (`{"": name}`),
+    // others as `{id, properties}` instead of `{Name, Properties}`.
+    if (entry.Name === undefined && entry.id === undefined && typeof entry[''] === 'string') return entry[''];
+    const name = entry.Name ?? entry.id;
+    const props = entry.Properties ?? entry.properties ?? {};
     const keys = Object.keys(props).sort();
     if (keys.length === 0) return name;
     return name + '[' + keys.map((k) => k + '=' + props[k]).join(',') + ']';

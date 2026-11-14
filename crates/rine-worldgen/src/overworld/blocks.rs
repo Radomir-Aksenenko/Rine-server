@@ -79,4 +79,9 @@ impl Interner {
     pub fn names(&self) -> &[String] {
         &self.names
     }
+
+    /// Default state string per plain block id (the `block_states.txt` table).
+    pub fn defaults(&self) -> &HashMap<String, String> {
+        &self.defaults
+    }
 }

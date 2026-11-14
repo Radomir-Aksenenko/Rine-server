@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::order::Pos;
-use super::provider::Provider;
-use super::{dist_manhattan, offset, relative, CompileEnv, Ctx, Dir, TreeFeature, HORIZONTAL};
+use crate::feature::state_provider::StateProvider as Provider;
+use super::{dist_manhattan, offset, relative, TreeCompile, Ctx, Dir, TreeFeature, HORIZONTAL};
 
 #[derive(Debug)]
 pub struct RootPlacer {
@@ -24,7 +24,7 @@ pub struct RootPlacer {
 }
 
 impl RootPlacer {
-    pub fn parse(v: &Value, c: &CompileEnv) -> Result<RootPlacer, String> {
+    pub fn parse(v: &Value, c: &mut TreeCompile) -> Result<RootPlacer, String> {
         let ty = v["type"].as_str().ok_or("root placer type")?;
         if ty != "minecraft:mangrove_root_placer" {
             return Err(format!("unsupported root placer {ty}"));
@@ -147,20 +147,20 @@ impl RootPlacer {
         let cur = ctx.id(pos);
         let base = ctx.env.states.base_name(cur);
         if self.muddy_roots_in.iter().any(|n| n == base) {
-            let muddy = self.muddy_roots_provider.get(ctx.region, &ctx.env.states, ctx.rng, pos);
+            let muddy = ctx.prov(&self.muddy_roots_provider, pos);
             let id = self.waterlogged(ctx, pos, muddy);
             ctx.set_root(pos, id);
             return;
         }
         // RootPlacer.placeRoot
         if self.can_place_root(ctx, pos) {
-            let rp = self.root_provider.get(ctx.region, &ctx.env.states, ctx.rng, pos);
+            let rp = ctx.prov(&self.root_provider, pos);
             let id = self.waterlogged(ctx, pos, rp);
             ctx.set_root(pos, id);
             if let Some((above_provider, chance)) = &self.above_root {
                 let above = offset(pos, 0, 1, 0);
                 if ctx.rng.next_float() < *chance && ctx.is_air(above) {
-                    let s = above_provider.get(ctx.region, &ctx.env.states, ctx.rng, above);
+                    let s = ctx.prov(&above_provider, above);
                     let id = self.waterlogged(ctx, above, s);
                     ctx.set_root(above, id);
                 }

@@ -8,7 +8,7 @@ use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::order::Pos;
 use super::trunk::java_floor_f32;
-use super::{dist_manhattan, offset, relative, CompileEnv, Ctx, Dir, TreeFeature, HORIZONTAL};
+use super::{dist_manhattan, offset, relative, TreeCompile, Ctx, Dir, TreeFeature, HORIZONTAL};
 
 /// `FoliagePlacer.FoliageAttachment`.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -62,7 +62,7 @@ pub struct FoliagePlacer {
 }
 
 impl FoliagePlacer {
-    pub fn parse(v: &Value, _c: &CompileEnv) -> Result<FoliagePlacer, String> {
+    pub fn parse(v: &Value, _c: &TreeCompile) -> Result<FoliagePlacer, String> {
         let ty = v["type"].as_str().ok_or("foliage placer type")?;
         let radius = parse_int_provider(&v["radius"])?;
         let offset = parse_int_provider(&v["offset"])?;
@@ -350,7 +350,7 @@ pub fn try_place_leaf(tree: &TreeFeature, ctx: &mut Ctx, pos: Pos) -> bool {
     let cur = ctx.id(pos);
     let persistent = ctx.env.states.get(cur, "persistent") == Some("true");
     if !persistent && ctx.valid_tree_pos(pos) {
-        let mut state = tree.foliage_provider.get(ctx.region, &ctx.env.states, ctx.rng, pos);
+        let mut state = ctx.prov(&tree.foliage_provider, pos);
         if ctx.env.states.get(state, "waterlogged").is_some() {
             let water = ctx.is_water_at(pos);
             state = ctx.env.states.with(state, "waterlogged", if water { "true" } else { "false" });

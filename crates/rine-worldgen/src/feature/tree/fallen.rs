@@ -11,8 +11,8 @@ use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::decorator::{DecoratorCtx, TreeDecorator};
 use super::order::{JavaSet, Pos};
-use super::provider::Provider;
-use super::{offset, relative, CompileEnv, Ctx, Dir, HORIZONTAL};
+use crate::feature::state_provider::StateProvider as Provider;
+use super::{offset, relative, TreeCompile, Ctx, Dir, HORIZONTAL};
 
 const BEHAVIOUR: &str = include_str!("../../../assets/worldgen/block_behaviour.tsv");
 
@@ -59,15 +59,16 @@ pub struct FallenTree {
 }
 
 impl FallenTree {
-    pub fn compile(cfg: &Value, c: &CompileEnv) -> Result<FallenTree, String> {
-        let decs = |k: &str| -> Result<Vec<TreeDecorator>, String> {
+    pub fn compile(cfg: &Value, c: &mut TreeCompile) -> Result<FallenTree, String> {
+        let trunk_provider = c.provider(&cfg["trunk_provider"])?;
+        let mut decs = |k: &str, c: &mut TreeCompile| -> Result<Vec<TreeDecorator>, String> {
             cfg[k].as_array().ok_or_else(|| format!("fallen {k}"))?.iter().map(|d| TreeDecorator::parse(d, c)).collect()
         };
         Ok(FallenTree {
-            trunk_provider: c.provider(&cfg["trunk_provider"])?,
+            trunk_provider,
             log_length: parse_int_provider(&cfg["log_length"])?,
-            stump_decorators: decs("stump_decorators")?,
-            log_decorators: decs("log_decorators")?,
+            stump_decorators: decs("stump_decorators", c)?,
+            log_decorators: decs("log_decorators", c)?,
         })
     }
 
@@ -99,7 +100,7 @@ impl FallenTree {
     }
 
     fn place_log_block(&self, ctx: &mut Ctx, pos: Pos, sideways: Option<Dir>) -> Pos {
-        let mut id = self.trunk_provider.get(ctx.region, &ctx.env.states, ctx.rng, pos);
+        let mut id = ctx.prov(&self.trunk_provider, pos);
         if let Some(d) = sideways {
             if ctx.env.states.get(id, "axis").is_some() {
                 let axis = match d {

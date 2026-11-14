@@ -4,15 +4,27 @@
 
 use serde_json::Value;
 
+use super::predicate::BlockPredicate;
 use super::rng::WorldgenRng;
 use super::region::Region;
 
-/// `IntProvider`: constant, `UniformInt`, `TrapezoidInt`.
+/// `IntProvider`: constant, `UniformInt`, `TrapezoidInt`, `BiasedToBottomInt`.
 #[derive(Clone, Copy, Debug)]
 pub enum IntProvider {
     Constant(i32),
     Uniform { min: i32, max: i32 },
     Trapezoid { min: i32, max: i32, plateau: i32 },
+    BiasedToBottom { min: i32, max: i32 },
+}
+
+impl IntProvider {
+    /// `minInclusive()` and `maxInclusive()`.
+    pub fn bounds(&self) -> (i32, i32) {
+        match *self {
+            IntProvider::Constant(v) => (v, v),
+            IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max } => (min, max),
+        }
+    }
 }
 
 /// `VerticalAnchor`.
@@ -40,10 +52,12 @@ pub enum HeightProvider {
     Constant(Anchor),
     Uniform { min: Anchor, max: Anchor },
     Trapezoid { min: Anchor, max: Anchor, plateau: i32 },
+    /// `VeryBiasedToBottomHeight` (`inner` is the minimum gap, 1 by default).
+    VeryBiased { min: Anchor, max: Anchor, inner: i32 },
 }
 
 /// The placement modifiers that the ore placements use.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Modifier {
     /// `count` (`CountPlacement`, a `RepeatingPlacement`).
     Count(IntProvider),
@@ -55,6 +69,8 @@ pub enum Modifier {
     HeightRange(HeightProvider),
     /// `biome` (`BiomeFilter`): the top placed feature must be in the biome at the origin.
     Biome,
+    /// `block_predicate_filter` (`BlockPredicateFilter`): the predicate holds at the origin.
+    BlockPredicate(BlockPredicate),
     /// `offset` (`OffsetPlacement`).
     Offset(IntProvider, IntProvider, IntProvider),
 }
@@ -62,6 +78,11 @@ pub enum Modifier {
 pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
     match *p {
         IntProvider::Constant(v) => v,
+        // BiasedToBottomInt.sample: min + nextInt(nextInt(max - min + 1) + 1).
+        IntProvider::BiasedToBottom { min, max } => {
+            let bound = rng.next_int_bound(max - min + 1) + 1;
+            min + rng.next_int_bound(bound)
+        }
         IntProvider::Uniform { min, max } => rng.next_int_between(min, max),
         IntProvider::Trapezoid { min, max, plateau } => {
             // TrapezoidInt.sample
@@ -79,6 +100,15 @@ pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
     }
 }
 
+/// `Mth.nextInt(random, min, max)`.
+fn mth_next_int(rng: &mut WorldgenRng, min: i32, max: i32) -> i32 {
+    if min >= max {
+        min
+    } else {
+        rng.next_int_bound(max - min + 1) + min
+    }
+}
+
 pub fn sample_height(p: &HeightProvider, rng: &mut WorldgenRng, min_gen_y: i32, gen_depth: i32) -> i32 {
     match *p {
         HeightProvider::Constant(a) => a.resolve(min_gen_y, gen_depth),
@@ -90,6 +120,17 @@ pub fn sample_height(p: &HeightProvider, rng: &mut WorldgenRng, min_gen_y: i32, 
             } else {
                 rng.next_int_between(lo, hi)
             }
+        }
+        HeightProvider::VeryBiased { min, max, inner } => {
+            // VeryBiasedToBottomHeight.sample; Mth.nextInt(r, a, b) draws nothing when a >= b.
+            let lo = min.resolve(min_gen_y, gen_depth);
+            let hi = max.resolve(min_gen_y, gen_depth);
+            if hi - lo - inner + 1 <= 0 {
+                return lo;
+            }
+            let upper = mth_next_int(rng, lo + inner, hi);
+            let biased_upper = mth_next_int(rng, lo, upper - 1);
+            mth_next_int(rng, lo, biased_upper - 1 + inner)
         }
         HeightProvider::Trapezoid { min, max, plateau } => {
             let lo = min.resolve(min_gen_y, gen_depth);
@@ -109,20 +150,21 @@ pub fn sample_height(p: &HeightProvider, rng: &mut WorldgenRng, min_gen_y: i32, 
 }
 
 /// Applies one modifier to `origin`, pushing the outputs (in Java output order) into `out`.
-/// `top` is the placed-feature id for `biome` checks (`PlacementContext.topFeature`).
-pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32), top: usize, out: &mut Vec<(i32, i32, i32)>) {
+/// `top` is the placed-feature id for `biome` checks (`PlacementContext.topFeature`); nested placements
+/// have none, and vanilla throws for `biome` there, so that case is a bug in the data and panics.
+pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32), top: Option<usize>, out: &mut Vec<(i32, i32, i32)>) {
     let (ox, oy, oz) = origin;
-    match *m {
+    match m {
         Modifier::Count(p) => {
             // RepeatingPlacement.modify: count(random, origin) then emit origin count times.
-            let count = sample_int(&p, rng);
+            let count = sample_int(p, rng);
             for _ in 0..count {
                 out.push(origin);
             }
         }
         Modifier::RarityFilter(chance) => {
             // PlacementFilter.modify: shouldPlace(random) -> emit origin.
-            if rng.next_float() < 1.0f32 / chance as f32 {
+            if rng.next_float() < 1.0f32 / *chance as f32 {
                 out.push(origin);
             }
         }
@@ -132,18 +174,24 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
             out.push((x, oy, z));
         }
         Modifier::HeightRange(p) => {
-            let y = sample_height(&p, rng, region.min_y(), region.height());
+            let y = sample_height(p, rng, region.min_y(), region.height());
             out.push((ox, y, oz));
         }
         Modifier::Biome => {
+            let top = top.expect("biome filter on a nested placed feature");
             if region.biome_has_feature(ox, oy, oz, top) {
                 out.push(origin);
             }
         }
+        Modifier::BlockPredicate(p) => {
+            if p.test(region, ox, oy, oz) {
+                out.push(origin);
+            }
+        }
         Modifier::Offset(x, y, z) => {
-            let dx = sample_int(&x, rng);
-            let dy = sample_int(&y, rng);
-            let dz = sample_int(&z, rng);
+            let dx = sample_int(x, rng);
+            let dy = sample_int(y, rng);
+            let dz = sample_int(z, rng);
             out.push((ox + dx, oy + dy, oz + dz));
         }
     }
@@ -177,6 +225,7 @@ pub fn parse_int_provider(v: &Value) -> Result<IntProvider, String> {
             max: int("max_inclusive")?,
             plateau: int("plateau")?,
         }),
+        "minecraft:biased_to_bottom" => Ok(IntProvider::BiasedToBottom { min: int("min_inclusive")?, max: int("max_inclusive")? }),
         other => Err(format!("unsupported int provider {other}")),
     }
 }
@@ -188,6 +237,11 @@ pub fn parse_height_provider(v: &Value) -> Result<HeightProvider, String> {
         "minecraft:uniform" => Ok(HeightProvider::Uniform {
             min: parse_anchor(&v["min_inclusive"])?,
             max: parse_anchor(&v["max_inclusive"])?,
+        }),
+        "minecraft:very_biased_to_bottom" => Ok(HeightProvider::VeryBiased {
+            min: parse_anchor(&v["min_inclusive"])?,
+            max: parse_anchor(&v["max_inclusive"])?,
+            inner: v["inner"].as_i64().unwrap_or(1) as i32,
         }),
         "minecraft:trapezoid" => Ok(HeightProvider::Trapezoid {
             min: parse_anchor(&v["min_inclusive"])?,

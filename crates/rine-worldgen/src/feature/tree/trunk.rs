@@ -10,7 +10,7 @@ use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::foliage::Attachment;
 use super::order::Pos;
-use super::{offset, relative, Ctx, CompileEnv, Dir, TreeFeature, HORIZONTAL};
+use super::{offset, relative, Ctx, TreeCompile, Dir, TreeFeature, HORIZONTAL};
 
 /// `Mth.floor(float)` / `Mth.floor(double)` (`(int)v`, minus one when `v < (int)v`).
 #[inline]
@@ -113,7 +113,7 @@ impl std::fmt::Debug for TrunkPlacer {
 }
 
 impl TrunkPlacer {
-    pub fn parse(v: &Value, c: &CompileEnv) -> Result<TrunkPlacer, String> {
+    pub fn parse(v: &Value, c: &TreeCompile) -> Result<TrunkPlacer, String> {
         let ty = v["type"].as_str().ok_or("trunk placer type")?;
         let base_height = v["base_height"].as_i64().ok_or("base_height")? as i32;
         let height_rand_a = v["height_rand_a"].as_i64().ok_or("height_rand_a")? as i32;
@@ -170,7 +170,7 @@ impl TrunkPlacer {
     }
 
     fn place_below_trunk_block(&self, tree: &TreeFeature, ctx: &mut Ctx, p: Pos) {
-        if let Some(id) = tree.below_trunk.optional(ctx.region, &ctx.env.states, ctx.rng, p) {
+        if let Some(id) = ctx.prov_opt(&tree.below_trunk, p) {
             ctx.set_trunk(p, id);
         }
     }
@@ -178,7 +178,7 @@ impl TrunkPlacer {
     /// `placeLog` with an optional `trySetValue(AXIS, axis)` modifier. Returns whether a log was written.
     fn place_log(&self, tree: &TreeFeature, ctx: &mut Ctx, p: Pos, axis: Option<Axis>) -> bool {
         if self.valid_tree_pos(ctx, p) {
-            let mut id = tree.trunk_provider.get(ctx.region, &ctx.env.states, ctx.rng, p);
+            let mut id = ctx.prov(&tree.trunk_provider, p);
             if let Some(a) = axis {
                 if ctx.env.states.get(id, "axis").is_some() {
                     id = ctx.env.states.with(id, "axis", a.name());

@@ -9,8 +9,8 @@ use serde_json::Value;
 
 
 use super::order::Pos;
-use super::provider::Provider;
-use super::{offset, relative, CompileEnv, Ctx, Dir, HORIZONTAL};
+use crate::feature::state_provider::StateProvider as Provider;
+use super::{offset, relative, TreeCompile, Ctx, Dir, HORIZONTAL};
 
 /// Positions visible to decorators: `roots`, `logs`, `leaves` (sorted by Y, stable).
 pub struct DecoratorCtx {
@@ -67,7 +67,7 @@ pub enum TreeDecorator {
 }
 
 impl TreeDecorator {
-    pub fn parse(v: &Value, c: &CompileEnv) -> Result<TreeDecorator, String> {
+    pub fn parse(v: &Value, c: &mut TreeCompile) -> Result<TreeDecorator, String> {
         let ty = v["type"].as_str().ok_or("decorator type")?;
         let f = |k: &str| v[k].as_f64().map(|x| x as f32).ok_or_else(|| format!("{ty}: {k}"));
         let dirs = |k: &str| -> Result<Vec<Dir>, String> {
@@ -302,7 +302,7 @@ fn attached_to_leaves(
                     }
                 }
             }
-            let id = provider.get(ctx.region, &ctx.env.states, ctx.rng, placement);
+            let id = ctx.prov(&provider, placement);
             d.set(ctx, placement, id);
         }
     }
@@ -325,7 +325,7 @@ fn attached_to_logs(p: f32, provider: &Provider, directions: &[Dir], d: &mut Dec
         let dir = directions[ctx.rng.next_int_bound(directions.len() as i32) as usize];
         let placement = relative(pos, dir, 1);
         if ctx.rng.next_float() <= p && ctx.is_air(placement) {
-            let id = provider.get(ctx.region, &ctx.env.states, ctx.rng, placement);
+            let id = ctx.prov(&provider, placement);
             d.set(ctx, placement, id);
         }
     }
@@ -376,7 +376,7 @@ fn place_on_ground(tries: i32, radius: i32, height: i32, provider: &Provider, d:
         let above_id = ctx.id(above);
         let above_ok = ctx.is_air(above) || ctx.env.states.is_vine(above_id);
         if above_ok && solid_render(ctx, pos) && motion_blocking_no_leaves(ctx, pos.0, pos.2) <= above.1 {
-            let id = provider.get(ctx.region, &ctx.env.states, ctx.rng, above);
+            let id = ctx.prov(&provider, above);
             d.set(ctx, above, id);
         }
     }
@@ -424,7 +424,7 @@ fn place_block_at(provider: &Provider, d: &mut DecoratorCtx, ctx: &mut Ctx, pos:
     let mut dy = 2;
     while dy >= -3 {
         let cursor = offset(pos, 0, dy, 0);
-        if let Some(id) = provider.optional(ctx.region, &ctx.env.states, ctx.rng, cursor) {
+        if let Some(id) = ctx.prov_opt(&provider, cursor) {
             d.set(ctx, cursor, id);
             break;
         }

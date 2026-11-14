@@ -199,7 +199,7 @@ collectTags(blockStateProviders);
 ['minecraft:leaves', 'minecraft:logs', 'minecraft:replaceable_by_trees', 'minecraft:prevents_nearby_leaf_decay',
  'minecraft:mangrove_roots_can_grow_through', 'minecraft:mangrove_logs_can_grow_through',
  'minecraft:cannot_replace_below_tree_trunk', 'minecraft:beneath_tree_podzol_replaceable',
- 'minecraft:blocks_motion_no_leaves', 'minecraft:snow'].forEach((t) => tagRefs.add(t));
+ 'minecraft:blocks_motion_no_leaves', 'minecraft:snow', 'minecraft:supports_vegetation', 'minecraft:supports_mangrove_propagule', 'minecraft:supports_hanging_mangrove_propagule'].forEach((t) => tagRefs.add(t));
 for (const t of tagRefs) flattenTag(t);
 
 // Block property tables from the 26.3 block report: ordered property values and the default state, for

@@ -13,21 +13,20 @@ pub mod decorator;
 pub mod fallen;
 pub mod foliage;
 pub mod order;
-pub mod provider;
 pub mod root;
 pub mod state;
 pub mod trunk;
 
 use serde_json::Value;
 
-use crate::feature::placement::parse_int_provider;
 use crate::feature::region::{Region, Tags};
 use crate::feature::rng::WorldgenRng;
 
 use decorator::TreeDecorator;
 use foliage::FoliagePlacer;
 use order::{JavaSet, Pos};
-use provider::{Predicate, Provider};
+use crate::feature::state::Palette;
+use crate::feature::state_provider::{self, StateProvider as Provider};
 use root::RootPlacer;
 use state::TreeStates;
 use trunk::TrunkPlacer;
@@ -238,6 +237,18 @@ impl<'a, 'r> Ctx<'a, 'r> {
         self.region.set_block_in_section(p.0, p.1, p.2, id);
     }
 
+    /// `getState` of a provider at `pos` (draws from the RNG as vanilla does).
+    #[inline]
+    pub fn prov(&mut self, p: &Provider, pos: Pos) -> u16 {
+        p.get(&*self.region, self.rng, pos.0, pos.1, pos.2)
+    }
+
+    /// `getOptionalState`: `None` when no rule applies.
+    #[inline]
+    pub fn prov_opt(&mut self, p: &Provider, pos: Pos) -> Option<u16> {
+        p.get_optional(&*self.region, self.rng, pos.0, pos.1, pos.2)
+    }
+
     /// Tree setter: `rootPositions.add(pos)` then `setBlock`.
     #[inline]
     pub fn set_root(&mut self, p: Pos, id: u16) {
@@ -262,44 +273,6 @@ impl<'a, 'r> Ctx<'a, 'r> {
         self.decorations.insert(p);
         self.set(p, id);
     }
-}
-
-/// Block names the tree configs and their block state providers use, plus the blocks the decorators write.
-/// Only names present in `blockProps` get states; `TreeStates::build` adds every block with a `distance`
-/// property on top of this list.
-pub fn tree_wanted_blocks(bundle: &Value) -> Vec<String> {
-    fn walk(v: &Value, out: &mut Vec<String>) {
-        match v {
-            Value::String(s) => {
-                let n = s.strip_prefix('#').unwrap_or(s);
-                if n.starts_with("minecraft:") && !out.iter().any(|x| x == n) {
-                    out.push(n.to_string());
-                }
-            }
-            Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
-            Value::Object(o) => o.values().for_each(|x| walk(x, out)),
-            _ => {}
-        }
-    }
-    let mut out: Vec<String> = Vec::new();
-    if let Some(cfgs) = bundle["configured"].as_object() {
-        for cfg in cfgs.values() {
-            if matches!(cfg["type"].as_str(), Some("minecraft:tree") | Some("minecraft:fallen_tree")) {
-                walk(cfg, &mut out);
-            }
-        }
-    }
-    if let Some(provs) = bundle["blockStateProviders"].as_object() {
-        for p in provs.values() {
-            walk(p, &mut out);
-        }
-    }
-    for n in ["minecraft:vine", "minecraft:cocoa", "minecraft:bee_nest", "minecraft:creaking_heart", "minecraft:pale_hanging_moss"] {
-        if !out.iter().any(|x| x == n) {
-            out.push(n.to_string());
-        }
-    }
-    out
 }
 
 /// `TreeFeature.getLowestTrunkOrRootOfTree`: logs, roots, or both, from the context lists.
@@ -364,110 +337,34 @@ pub struct TreeFeature {
     pub below_trunk: Provider,
 }
 
-/// Compile-time inputs: the bundled block state providers (by `minecraft:` name) and the tag table.
-pub struct CompileEnv<'a> {
-    pub env: &'a TreeEnv,
-    pub tags: &'a Tags,
+/// Compile-time inputs: the palette, the tree block schemas, the bundled block state providers (by
+/// `minecraft:` name) and the tag names. Providers and predicates are the shared `state_provider` and
+/// `predicate` modules.
+pub struct TreeCompile<'a> {
+    pub states: &'a TreeStates,
+    pub pal: &'a mut Palette,
+    pub tag_names: &'a [String],
     pub providers: &'a Value,
 }
 
-impl CompileEnv<'_> {
+impl TreeCompile<'_> {
     /// Tag id for a `minecraft:` or `#minecraft:` name.
     pub fn tag(&self, name: &str) -> Result<u16, String> {
         let n = name.strip_prefix('#').unwrap_or(name);
-        self.tags.id(n).ok_or_else(|| format!("tag {n} not bundled"))
+        self.tag_names
+            .binary_search_by(|t| t.as_str().cmp(n))
+            .map(|i| i as u16)
+            .map_err(|_| format!("tag {n} not bundled"))
     }
 
-    /// A block state from `{"id": ..., "properties": {...}}` or a bare block name.
-    pub fn block_state(&self, v: &Value) -> Result<u16, String> {
-        let (name, props): (&str, Vec<(String, String)>) = match v {
-            Value::String(s) => (s.as_str(), Vec::new()),
-            Value::Object(o) => {
-                let name = o.get("id").or_else(|| o.get("Name")).and_then(|x| x.as_str()).ok_or("block state without id")?;
-                let mut props = Vec::new();
-                let pk = o.get("properties").or_else(|| o.get("Properties"));
-                if let Some(p) = pk.and_then(|x| x.as_object()) {
-                    for (k, v) in p {
-                        props.push((k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())));
-                    }
-                }
-                (name, props)
-            }
-            other => return Err(format!("block state {other}")),
-        };
-        let refs: Vec<(&str, &str)> = props.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        if !self.env.states.has_block(name) {
-            return Err(format!("block {name} has no schema"));
+    /// `BlockStateProvider`: a provider or block state object, or a bundled provider name
+    /// (`minecraft:soil_beneath_tree`).
+    pub fn provider(&mut self, v: &Value) -> Result<Provider, String> {
+        let providers = self.providers;
+        if let Some(json) = v.as_str().and_then(|name| providers.get(name)) {
+            return state_provider::parse(json, self.tag_names, self.pal);
         }
-        Ok(self.env.states.id(name, &refs))
-    }
-
-    /// `BlockStateProvider` (`parse`): a provider object, a `worldgen/block_state_provider` reference, or a
-    /// bare block state.
-    pub fn provider(&self, v: &Value) -> Result<Provider, String> {
-        match v {
-            Value::String(s) => {
-                if let Some(p) = self.providers.get(s.as_str()) {
-                    self.provider_json(p)
-                } else {
-                    Ok(Provider::Simple(self.block_state(v)?))
-                }
-            }
-            Value::Object(o) if o.contains_key("type") => self.provider_json(v),
-            Value::Object(_) => Ok(Provider::Simple(self.block_state(v)?)),
-            other => Err(format!("provider {other}")),
-        }
-    }
-
-    fn provider_json(&self, v: &Value) -> Result<Provider, String> {
-        let ty = v["type"].as_str().ok_or_else(|| format!("provider without type: {v}"))?;
-        match ty {
-            "minecraft:simple" => Ok(Provider::Simple(self.block_state(&v["state"])?)),
-            "minecraft:weighted" => {
-                let entries = v["entries"].as_array().ok_or("weighted entries")?;
-                let mut out = Vec::with_capacity(entries.len());
-                for e in entries {
-                    out.push((self.block_state(&e["data"])?, e["weight"].as_i64().ok_or("weight")? as i32));
-                }
-                Ok(Provider::Weighted(out))
-            }
-            "minecraft:rule_based" => {
-                let mut rules = Vec::new();
-                for r in v["rules"].as_array().ok_or("rules")? {
-                    rules.push((self.predicate(&r["if_true"])?, self.provider(&r["then"])?));
-                }
-                let fallback = match v.get("fallback") {
-                    Some(f) => Some(Box::new(self.provider(f)?)),
-                    None => None,
-                };
-                Ok(Provider::RuleBased { rules, fallback })
-            }
-            "minecraft:randomized_int" => Ok(Provider::RandomizedInt {
-                source: Box::new(self.provider(&v["source"])?),
-                property: v["property"].as_str().ok_or("property")?.to_string(),
-                values: parse_int_provider(&v["values"])?,
-            }),
-            other => Err(format!("unsupported block state provider {other}")),
-        }
-    }
-
-    /// `BlockPredicate` subset of the tree providers.
-    pub fn predicate(&self, v: &Value) -> Result<Predicate, String> {
-        let ty = v["type"].as_str().ok_or("predicate type")?;
-        match ty {
-            "minecraft:matching_block_tag" => Ok(Predicate::MatchingTag(self.tag(v["tag"].as_str().ok_or("tag")?)?)),
-            "minecraft:not" => Ok(Predicate::Not(Box::new(self.predicate(&v["predicate"])?))),
-            "minecraft:matching_blocks" => {
-                let names: Vec<String> = match &v["blocks"] {
-                    Value::String(s) => vec![s.clone()],
-                    Value::Array(a) => a.iter().map(|x| x.as_str().unwrap_or_default().to_string()).collect(),
-                    _ => return Err("matching_blocks blocks".into()),
-                };
-                let off = v["offset"].as_array().map(|a| (a[0].as_i64().unwrap() as i32, a[1].as_i64().unwrap() as i32, a[2].as_i64().unwrap() as i32));
-                Ok(Predicate::MatchingBlocks { names, offset: off.unwrap_or((0, 0, 0)) })
-            }
-            other => Err(format!("unsupported block predicate {other}")),
-        }
+        state_provider::parse(v, self.tag_names, self.pal)
     }
 
     pub fn trunk(&self, v: &Value) -> Result<TrunkPlacer, String> {
@@ -481,7 +378,7 @@ impl CompileEnv<'_> {
 
 impl TreeFeature {
     /// Compiles a `minecraft:tree` configured feature (`features.json` `configured` entry).
-    pub fn compile(cfg: &Value, c: &CompileEnv) -> Result<Self, String> {
+    pub fn compile(cfg: &Value, c: &mut TreeCompile) -> Result<Self, String> {
         let root = match cfg.get("root_placer") {
             Some(r) => Some(RootPlacer::parse(r, c)?),
             None => None,
