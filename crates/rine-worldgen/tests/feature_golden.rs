@@ -282,7 +282,12 @@ fn tree_decoration_matches_vanilla_server() {
         eprintln!("chunk ({cx},{cz}): {mismatch} mismatched blocks");
     }
     eprintln!("total: {total_mismatch} / {total_blocks}");
-    eprintln!("treeified bins approximated: {}", rine_worldgen::feature::tree::order::TREEIFIED_BINS.load(std::sync::atomic::Ordering::Relaxed));
+    use rine_worldgen::feature::tree::order::{TIE_BREAKS, TREEIFY_EVENTS};
+    eprintln!(
+        "treeify events: {}, identity-hash tie breaks: {}",
+        TREEIFY_EVENTS.load(std::sync::atomic::Ordering::Relaxed),
+        TIE_BREAKS.load(std::sync::atomic::Ordering::Relaxed)
+    );
     let mut top: Vec<_> = pairs.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1));
     for ((g, m), n) in top.iter().take(30) {
