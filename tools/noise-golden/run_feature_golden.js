@@ -79,6 +79,10 @@ const onOutput = (chunk) => {
     process.stdout.write(text);
     if (stage === 'starting' && log.includes('Done (')) {
         stage = 'forced';
+        // Freeze ticking first: scheduled fluid/block ticks, random ticks (grass, sugar cane, kelp, bamboo)
+        // and weather are gated by TickRateManager.runsNormally(). Distance-manager updates still run, so
+        // forceloaded chunks keep generating.
+        send('tick freeze');
         send(`forceload add ${forceMin} ${forceMinZ} ${forceMax} ${forceMaxZ}`);
         armIdle();
     } else if (stage === 'forced') {

@@ -1,0 +1,23 @@
+{
+  "_comment": "Shared golden allow rule for decoration ports. tools/noise-golden/make_feature_datapack.js and crates/rine-worldgen/tests/feature_golden.rs both read this file. A top-level placed feature is allowed when its placement types are in placements (biome only at top level) and its configured feature is in types, recursively for every nested placed feature of a selector or sequence.",
+  "types": [
+    "minecraft:ore",
+    "minecraft:disk",
+    "minecraft:spring_feature",
+    "minecraft:block_column",
+    "minecraft:blue_ice",
+    "minecraft:random_boolean_selector",
+    "minecraft:simple_random_selector",
+    "minecraft:weighted_random_selector",
+    "minecraft:sequence"
+  ],
+  "placements": [
+    "minecraft:count",
+    "minecraft:rarity_filter",
+    "minecraft:in_square",
+    "minecraft:height_range",
+    "minecraft:biome",
+    "minecraft:offset",
+    "minecraft:block_predicate_filter"
+  ]
+}

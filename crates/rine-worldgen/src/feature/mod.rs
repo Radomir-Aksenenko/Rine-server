@@ -2,31 +2,46 @@
 //!
 //! Data comes from `assets/worldgen/features.json` (`tools/noise-golden/bundle_features.js`): biome
 //! feature lists, placed features and configured features reached from the overworld biome list.
-//! `allow` filters placed features by id before anything else, so a golden can run vanilla with the
-//! same filtered biome lists (a datapack with the same `features` arrays).
+//! `allow` filters the top-level placed features by id before anything else, so a golden can run vanilla
+//! with the same filtered biome lists (a datapack with the same `features` arrays).
 //!
-//! Implemented so far: the ore configured feature with its placement chain (count, rarity, in_square,
-//! height_range, biome, offset). Every other configured feature type is reported as an error when it is
-//! allowed, so an unported feature can never be silently skipped.
+//! Compilation is recursive: a placed feature's configured feature may reference more placed features
+//! (selectors, sequences), which are compiled into the same table. Every configured type and placement
+//! modifier outside the ported set is an error, so an unported feature is never skipped silently.
+//!
+//! Ported configured features: `ore`, `disk`, `spring_feature`, `block_column`, `blue_ice`,
+//! `random_boolean_selector`, `simple_random_selector`, `weighted_random_selector`, `sequence`.
 //!
 //! Ordering: `sorter` reproduces `FeatureSorter`; within a chunk the features of each step run in the
 //! sorted order, skipping features that no biome present in the 3x3 chunks has in that step.
 
-pub mod placement;
-pub mod region;
+pub mod column;
+pub mod disk;
+pub mod ice;
 pub mod ore;
+pub mod placement;
+pub mod predicate;
+pub mod region;
 pub mod rng;
 pub mod sorter;
+pub mod spring;
+pub mod state;
+pub mod state_provider;
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
 use crate::overworld::{BiomeMap, ChunkBlocks, Overworld};
+use column::{direction_of, BlockColumn, Layer};
+use disk::Disk;
+use ice::BlueIce;
 use ore::{OreFeature, RuleTest, Target};
-use placement::{parse_modifier, Modifier};
+use placement::{parse_int_provider, parse_modifier, Modifier};
 use region::{Region, Tags};
 use rng::WorldgenRng;
+use spring::Spring;
+use state::Palette;
 
 const FEATURES_JSON: &str = include_str!("../../assets/worldgen/features.json");
 
@@ -35,10 +50,21 @@ const DECORATION_STEPS: usize = 11;
 
 enum Configured {
     Ore(OreFeature),
+    Disk(Disk),
+    Spring(Spring),
+    BlockColumn(BlockColumn),
+    BlueIce(BlueIce),
+    /// `RandomBooleanSelectorFeature`: a placed-feature id per branch.
+    RandomBoolean { on_true: usize, on_false: usize },
+    /// `SimpleRandomSelectorFeature`: uniform over the list.
+    SimpleRandom(Vec<usize>),
+    /// `WeightedRandomSelectorFeature`: `(placed id, weight)`; `total` > 0.
+    WeightedRandom { entries: Vec<(usize, i32)>, total: i32 },
+    /// `SequenceFeature`: all placed features in order, stopping at the first failure.
+    Sequence(Vec<usize>),
 }
 
 struct PlacedFeature {
-    name: String,
     modifiers: Vec<Modifier>,
     feature: Configured,
 }
@@ -63,24 +89,24 @@ fn bundle() -> &'static Value {
     BUNDLE.get_or_init(|| serde_json::from_str(FEATURES_JSON).expect("bundled features.json"))
 }
 
-fn parse_predicate(v: &Value, tags: &Tags) -> Result<RuleTest, String> {
+fn parse_predicate(v: &Value, tag_names: &[String]) -> Result<RuleTest, String> {
     let ty = v["predicate_type"].as_str().ok_or_else(|| format!("predicate without type: {v}"))?;
     match ty {
         "minecraft:tag_match" => {
             let name = v["tag"].as_str().ok_or("tag_match without tag")?;
-            let id = tags.id(name).ok_or_else(|| format!("tag {name} not bundled"))?;
-            Ok(RuleTest::TagMatch(id))
+            let id = tag_names.binary_search_by(|n| n.as_str().cmp(name)).map_err(|_| format!("tag {name} not bundled"))?;
+            Ok(RuleTest::TagMatch(id as u16))
         }
         "minecraft:any_of" | "minecraft:all_of" => {
             let rules = v["rules"]
                 .as_array()
                 .ok_or("rules")?
                 .iter()
-                .map(|r| parse_predicate(r, tags))
+                .map(|r| parse_predicate(r, tag_names))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(if ty == "minecraft:any_of" { RuleTest::AnyOf(rules) } else { RuleTest::AllOf(rules) })
         }
-        "minecraft:not" => Ok(RuleTest::Not(Box::new(parse_predicate(&v["rule"], tags)?))),
+        "minecraft:not" => Ok(RuleTest::Not(Box::new(parse_predicate(&v["rule"], tag_names)?))),
         "minecraft:height_match" => Ok(RuleTest::HeightMatch {
             min: v["min_inclusive"].as_i64().ok_or("min_inclusive")? as i32,
             max: v["max_inclusive"].as_i64().ok_or("max_inclusive")? as i32,
@@ -89,23 +115,202 @@ fn parse_predicate(v: &Value, tags: &Tags) -> Result<RuleTest, String> {
     }
 }
 
-/// Block state strings used by the ore targets are canonical names (no properties).
-fn state_name(v: &Value) -> Result<String, String> {
-    match v.as_str() {
-        Some(s) if !s.contains('[') => Ok(s.to_string()),
-        _ => Err(format!("unsupported block state in ore target: {v}")),
+/// Compiles the JSON of the decorations into `placed`, interning block states into `pal`.
+struct Compiler<'a> {
+    bundle: &'a Value,
+    pal: Palette,
+    tag_names: Vec<String>,
+    sea_level: i32,
+    placed: Vec<PlacedFeature>,
+    /// Named placed features (`minecraft:...`), by name.
+    named: HashMap<String, usize>,
+    /// Inline placed features (`{feature, placement}` objects), by their JSON text.
+    inline: HashMap<String, usize>,
+}
+
+impl<'a> Compiler<'a> {
+    /// Compiles a named placed feature once; returns its id.
+    fn placed_named(&mut self, name: &str) -> Result<usize, String> {
+        if let Some(&i) = self.named.get(name) {
+            return Ok(i);
+        }
+        let bundle = self.bundle;
+        let pj = &bundle["placed"][name];
+        if pj.is_null() {
+            return Err(format!("placed feature {name} not bundled"));
+        }
+        let i = self.placed_from_parts(&pj["feature"], &pj["placement"], name)?;
+        self.named.insert(name.to_string(), i);
+        Ok(i)
+    }
+
+    /// A placed-feature reference inside a configured feature: a name or an inline `{feature, placement}`.
+    fn placed_ref(&mut self, v: &Value) -> Result<usize, String> {
+        if let Some(name) = v.as_str() {
+            return self.placed_named(name);
+        }
+        let key = v.to_string();
+        if let Some(&i) = self.inline.get(&key) {
+            return Ok(i);
+        }
+        let i = self.placed_from_parts(&v["feature"], &v["placement"], "inline")?;
+        self.inline.insert(key, i);
+        Ok(i)
+    }
+
+    fn placed_from_parts(&mut self, feature: &Value, placement: &Value, label: &str) -> Result<usize, String> {
+        let feature = self.configured(feature).map_err(|e| format!("{label}: {e}"))?;
+        let list = placement.as_array().ok_or_else(|| format!("{label}: placement list missing"))?;
+        let mut modifiers = Vec::with_capacity(list.len());
+        for m in list {
+            let modifier = match m["type"].as_str() {
+                Some("minecraft:block_predicate_filter") => {
+                    Modifier::BlockPredicate(predicate::parse(&m["predicate"], &self.tag_names, &mut self.pal).map_err(|e| format!("{label}: {e}"))?)
+                }
+                _ => parse_modifier(m).map_err(|e| format!("{label}: {e}"))?,
+            };
+            modifiers.push(modifier);
+        }
+        self.placed.push(PlacedFeature { modifiers, feature });
+        Ok(self.placed.len() - 1)
+    }
+
+    /// Configured feature from a name or an inline object.
+    fn configured(&mut self, v: &Value) -> Result<Configured, String> {
+        let bundle = self.bundle;
+        let cfg = match v.as_str() {
+            Some(name) => {
+                let c = &bundle["configured"][name];
+                if c.is_null() {
+                    return Err(format!("configured feature {name} not bundled"));
+                }
+                c
+            }
+            None => v,
+        };
+        let ty = cfg["type"].as_str().ok_or_else(|| format!("configured feature without type: {cfg}"))?;
+        let tn = &self.tag_names;
+        match ty {
+            "minecraft:ore" => Ok(Configured::Ore(self.ore(cfg)?)),
+            "minecraft:disk" => Ok(Configured::Disk(Disk {
+                state: state_provider::parse(&cfg["state_provider"], tn, &mut self.pal)?,
+                target: predicate::parse(&cfg["target"], tn, &mut self.pal)?,
+                radius: parse_int_provider(&cfg["radius"])?,
+                half_height: cfg["half_height"].as_i64().ok_or("half_height")? as i32,
+            })),
+            "minecraft:spring_feature" => {
+                let fluid = cfg["state"]["id"].as_str().ok_or("spring state")?;
+                let state = spring::legacy_state(fluid, &mut self.pal);
+                let mut blocks = Vec::new();
+                for b in cfg["valid_blocks"].as_array().ok_or("valid_blocks")? {
+                    blocks.push(self.pal.block(b.as_str().ok_or("valid block name")?));
+                }
+                Ok(Configured::Spring(Spring {
+                    state,
+                    requires_block_below: cfg["requires_block_below"].as_bool().unwrap_or(true),
+                    rock_count: cfg["rock_count"].as_i64().unwrap_or(4) as i32,
+                    hole_count: cfg["hole_count"].as_i64().unwrap_or(1) as i32,
+                    valid: predicate::BlockPredicate::MatchingBlocks { offset: [0; 3], blocks },
+                }))
+            }
+            "minecraft:block_column" => {
+                let mut layers = Vec::new();
+                for l in cfg["layers"].as_array().ok_or("layers")? {
+                    layers.push(Layer {
+                        height: parse_int_provider(&l["height"])?,
+                        state: state_provider::parse(&l["provider"], tn, &mut self.pal)?,
+                    });
+                }
+                Ok(Configured::BlockColumn(BlockColumn {
+                    layers,
+                    direction: direction_of(cfg["direction"].as_str().ok_or("direction")?)?,
+                    allowed: predicate::parse(&cfg["allowed_placement"], tn, &mut self.pal)?,
+                    prioritize_tip: cfg["prioritize_tip"].as_bool().unwrap_or(false),
+                }))
+            }
+            "minecraft:blue_ice" => Ok(Configured::BlueIce(BlueIce {
+                sea_level: self.sea_level,
+                blue_ice: self.pal.default_state("minecraft:blue_ice"),
+                water_block: self.pal.block("minecraft:water"),
+                packed_block: self.pal.block("minecraft:packed_ice"),
+                ice_block: self.pal.block("minecraft:ice"),
+                blue_block: self.pal.block("minecraft:blue_ice"),
+            })),
+            "minecraft:random_boolean_selector" => Ok(Configured::RandomBoolean {
+                on_true: self.placed_ref(&cfg["feature_true"])?,
+                on_false: self.placed_ref(&cfg["feature_false"])?,
+            }),
+            "minecraft:simple_random_selector" => {
+                let mut list = Vec::new();
+                for f in cfg["features"].as_array().ok_or("features")? {
+                    list.push(self.placed_ref(f)?);
+                }
+                if list.is_empty() {
+                    return Err("simple_random_selector without features".into());
+                }
+                Ok(Configured::SimpleRandom(list))
+            }
+            "minecraft:weighted_random_selector" => {
+                let mut entries = Vec::new();
+                for e in cfg["features"].as_array().ok_or("features")? {
+                    let weight = e["weight"].as_i64().ok_or("weight")? as i32;
+                    entries.push((self.placed_ref(&e["data"])?, weight));
+                }
+                let total: i32 = entries.iter().map(|e| e.1).sum();
+                if total <= 0 {
+                    return Err("weighted_random_selector without weight".into());
+                }
+                Ok(Configured::WeightedRandom { entries, total })
+            }
+            "minecraft:sequence" => {
+                let mut list = Vec::new();
+                for f in cfg["features"].as_array().ok_or("features")? {
+                    list.push(self.placed_ref(f)?);
+                }
+                Ok(Configured::Sequence(list))
+            }
+            other => Err(format!("configured feature {other} is not ported")),
+        }
+    }
+
+    fn ore(&mut self, cfg: &Value) -> Result<OreFeature, String> {
+        let mut targets = Vec::new();
+        for t in cfg["targets"].as_array().ok_or("targets")? {
+            let test = parse_predicate(&t["target"], &self.tag_names)?;
+            let state = state_provider::state_of(&t["state"], &mut self.pal)?;
+            targets.push(Target { test, state });
+        }
+        Ok(OreFeature {
+            targets,
+            size: cfg["size"].as_i64().ok_or("size")? as i32,
+            discard_chance_on_air_exposure: cfg["discard_chance_on_air_exposure"].as_f64().unwrap_or(0.0) as f32,
+        })
     }
 }
 
 impl Decorator {
-    /// Compiles the decoration of `o` for the placed features `allow` accepts.
+    /// Compiles the decoration of `o` for the top-level placed features `allow` accepts.
     pub fn new(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
         let bundle = bundle();
         let biome_names: Vec<String> = o.biome_names().to_vec();
+        let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
+            .as_object()
+            .ok_or("blockTags")?
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().map(|b| b.as_str().unwrap().to_string()).collect()))
+            .collect();
 
-        // Biome feature lists, filtered; placed ids in first-appearance order.
-        let mut placed_ids: HashMap<String, usize> = HashMap::new();
-        let mut placed_names: Vec<String> = Vec::new();
+        let mut c = Compiler {
+            bundle,
+            pal: Palette::new(o.interner().names(), o.interner().defaults().clone()),
+            tag_names: region::tag_names(&block_tags),
+            sea_level: o.sea_level(),
+            placed: Vec::new(),
+            named: HashMap::new(),
+            inline: HashMap::new(),
+        };
+
+        // Biome feature lists, filtered; ids are placed-feature indices.
         let mut biome_lists: Vec<Vec<Vec<usize>>> = Vec::with_capacity(biome_names.len());
         for name in &biome_names {
             let steps = bundle["biomes"][name].as_array().ok_or_else(|| format!("biome {name} not bundled"))?;
@@ -117,100 +322,18 @@ impl Decorator {
                     if !allow(f) {
                         continue;
                     }
-                    let id = match placed_ids.get(f) {
-                        Some(&id) => id,
-                        None => {
-                            let id = placed_names.len();
-                            placed_names.push(f.to_string());
-                            placed_ids.insert(f.to_string(), id);
-                            id
-                        }
-                    };
-                    ids.push(id);
+                    ids.push(c.placed_named(f)?);
                 }
                 lists.push(ids);
             }
             biome_lists.push(lists);
         }
 
-        // Compile placed features (ore only so far) and collect block states.
-        let mut palette: Vec<String> = o.interner().names().to_vec();
-        let mut palette_ids: HashMap<String, u16> = palette.iter().enumerate().map(|(i, s)| (s.clone(), i as u16)).collect();
-        let mut intern = |palette: &mut Vec<String>, name: String| -> u16 {
-            if let Some(&id) = palette_ids.get(&name) {
-                return id;
-            }
-            let id = palette.len() as u16;
-            palette.push(name.clone());
-            palette_ids.insert(name, id);
-            id
-        };
-
-        // First pass for states only, so the tag table covers the final palette.
-        let mut raw_configured: Vec<(usize, String)> = Vec::new();
-        for (id, name) in placed_names.iter().enumerate() {
-            let placed = &bundle["placed"][name.as_str()];
-            let feature_ref = placed["feature"].as_str().ok_or_else(|| format!("{name}: inline feature not supported"))?;
-            let cfg = &bundle["configured"][feature_ref];
-            match cfg["type"].as_str() {
-                Some("minecraft:ore") => {
-                    for t in cfg["targets"].as_array().ok_or("targets")? {
-                        intern(&mut palette, state_name(&t["state"])?);
-                    }
-                }
-                Some(other) => {
-                    return Err(format!("{name}: configured feature {other} is not ported yet"));
-                }
-                None => return Err(format!("{name}: configured feature without type")),
-            }
-            raw_configured.push((id, feature_ref.to_string()));
-        }
-
-        let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
-            .as_object()
-            .ok_or("blockTags")?
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().map(|b| b.as_str().unwrap().to_string()).collect()))
-            .collect();
-        let tags = Tags::new(&palette, &block_tags);
-
-        let mut placed = Vec::with_capacity(placed_names.len());
-        for (id, feature_ref) in raw_configured {
-            let name = &placed_names[id];
-            let pj = &bundle["placed"][name.as_str()];
-            let cfg = &bundle["configured"][feature_ref.as_str()];
-            let modifiers = pj["placement"]
-                .as_array()
-                .ok_or("placement")?
-                .iter()
-                .map(parse_modifier)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| format!("{name}: {e}"))?;
-            let targets = cfg["targets"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|t| {
-                    Ok(Target {
-                        test: parse_predicate(&t["target"], &tags)?,
-                        state: palette_ids[&state_name(&t["state"])?],
-                    })
-                })
-                .collect::<Result<Vec<_>, String>>()
-                .map_err(|e: String| format!("{name}: {e}"))?;
-            let ore = OreFeature {
-                targets,
-                size: cfg["size"].as_i64().ok_or("size")? as i32,
-                discard_chance_on_air_exposure: cfg["discard_chance_on_air_exposure"].as_f64().unwrap_or(0.0) as f32,
-            };
-            placed.push(PlacedFeature { name: name.clone(), modifiers, feature: Configured::Ore(ore) });
-        }
-
         // Feature order per step (FeatureSorter over the filtered biome lists).
         let steps = sorter::build_features_per_step(&biome_lists)?;
 
         // Biome membership tables.
-        let placed_count = placed.len();
+        let placed_count = c.placed.len();
         let mut placed_in_biome = vec![vec![false; placed_count]; biome_names.len()];
         let mut in_step = vec![vec![vec![false; placed_count]; DECORATION_STEPS.max(steps.len())]; biome_names.len()];
         for (b, lists) in biome_lists.iter().enumerate() {
@@ -222,10 +345,12 @@ impl Decorator {
             }
         }
 
+        // The tag and fluid tables cover the final palette.
+        let tags = Tags::new(&c.pal, &block_tags);
         Ok(Decorator {
-            palette,
+            palette: c.pal.states().to_vec(),
             tags,
-            placed,
+            placed: c.placed,
             steps,
             placed_in_biome,
             in_step,
@@ -259,7 +384,7 @@ impl Decorator {
                     continue;
                 }
                 rng.set_feature_seed(decoration_seed, index as i32, step as i32);
-                self.place_with_biome_check(p, &mut region, &mut rng, (origin_x, origin_y, origin_z));
+                self.run_placed(p, &mut region, &mut rng, (origin_x, origin_y, origin_z), Some(p));
             }
         }
 
@@ -271,18 +396,19 @@ impl Decorator {
         Ok(())
     }
 
-    /// `FeaturePlacer.placeWithBiomeCheck`: the modifier stack, then the configured feature.
-    fn place_with_biome_check(&self, p: usize, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32)) -> bool {
+    /// `FeaturePlacer.place` for placed feature `p`: the modifier stack, then the configured feature at
+    /// every position that survives it. `top` is the feature the `biome` filter checks (`biomeCheck`).
+    fn run_placed(&self, p: usize, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32), top: Option<usize>) -> bool {
         let pf = &self.placed[p];
         if pf.modifiers.is_empty() {
-            return self.place_configured(pf, region, rng, origin);
+            return self.place_configured(p, region, rng, origin);
         }
         let mut placed_any = false;
         let mut stack: Vec<((i32, i32, i32), usize)> = vec![(origin, 0)];
         let mut out = Vec::new();
         while let Some((pos, mi)) = stack.pop() {
             out.clear();
-            placement::modify(&pf.modifiers[mi], region, rng, pos, p, &mut out);
+            placement::modify(&pf.modifiers[mi], region, rng, pos, top, &mut out);
             let next = mi + 1;
             if next < pf.modifiers.len() {
                 for &q in out.iter().rev() {
@@ -290,16 +416,50 @@ impl Decorator {
                 }
             } else {
                 for &q in &out {
-                    placed_any |= self.place_configured(pf, region, rng, q);
+                    placed_any |= self.place_configured(p, region, rng, q);
                 }
             }
         }
         placed_any
     }
 
-    fn place_configured(&self, pf: &PlacedFeature, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
-        match &pf.feature {
-            Configured::Ore(ore) => ore.place(region, rng, pos),
+    /// `ConfiguredFeature.place` for the configured feature of placed feature `p`.
+    fn place_configured(&self, p: usize, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
+        match &self.placed[p].feature {
+            Configured::Ore(f) => f.place(region, rng, pos),
+            Configured::Disk(f) => f.place(region, rng, pos),
+            Configured::Spring(f) => f.place(region, pos),
+            Configured::BlockColumn(f) => f.place(region, rng, pos),
+            Configured::BlueIce(f) => f.place(region, rng, pos),
+            Configured::RandomBoolean { on_true, on_false } => {
+                let result = rng.next_bool();
+                self.run_placed(if result { *on_true } else { *on_false }, region, rng, pos, None)
+            }
+            Configured::SimpleRandom(list) => {
+                let index = rng.next_int_bound(list.len() as i32) as usize;
+                self.run_placed(list[index], region, rng, pos, None)
+            }
+            Configured::WeightedRandom { entries, total } => {
+                // WeightedList.getRandom: nextInt(totalWeight), then the first entry whose running sum exceeds it.
+                let mut selection = rng.next_int_bound(*total);
+                let mut chosen = entries[entries.len() - 1].0;
+                for &(q, w) in entries {
+                    selection -= w;
+                    if selection < 0 {
+                        chosen = q;
+                        break;
+                    }
+                }
+                self.run_placed(chosen, region, rng, pos, None)
+            }
+            Configured::Sequence(list) => {
+                for &q in list {
+                    if !self.run_placed(q, region, rng, pos, None) {
+                        return false;
+                    }
+                }
+                true
+            }
         }
     }
 }
