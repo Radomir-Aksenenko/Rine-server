@@ -21,6 +21,8 @@ pub mod actions;
 pub mod durability;
 pub mod playerdata;
 pub mod fluids;
+#[cfg(test)]
+mod bench;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;

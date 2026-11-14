@@ -144,19 +144,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
             // spawn N primed TNT in a cube above the player: stress test
             let n: usize = args.first().and_then(|c| c.parse().ok()).unwrap_or(100).min(2_000_000);
             let pos = g.player(slot).unwrap().pos;
-            let side = (n as f64).cbrt().ceil() as i64;
-            let mut k = 0;
-            'o: for dy in 0..side {
-                for dx in 0..side {
-                    for dz in 0..side {
-                        if k >= n {
-                            break 'o;
-                        }
-                        entity::spawn_tnt(g, [pos[0] + (dx - side / 2) as f64, pos[1] + 5.0 + dy as f64, pos[2] + (dz - side / 2) as f64], 80);
-                        k += 1;
-                    }
-                }
-            }
+            let k = spawn_tnt_cube(g, pos, n);
             reply(g, Text::plain(format!("Заспавнено TNT: {k}")).color("gold"));
         }
         "stop" => {
@@ -167,6 +155,24 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
         }
         _ => reply(g, Text::plain(format!("Неизвестная команда: /{cmd}. /help")).color("red")),
     }
+}
+
+/// Spawn `n` primed TNT in a cube 5 blocks above `pos` (stress test).
+pub fn spawn_tnt_cube(g: &mut Game, pos: [f64; 3], n: usize) -> usize {
+    let side = (n as f64).cbrt().ceil() as i64;
+    let mut k = 0;
+    'o: for dy in 0..side {
+        for dx in 0..side {
+            for dz in 0..side {
+                if k >= n {
+                    break 'o;
+                }
+                entity::spawn_tnt(g, [pos[0] + (dx - side / 2) as f64, pos[1] + 5.0 + dy as f64, pos[2] + (dz - side / 2) as f64], 80);
+                k += 1;
+            }
+        }
+    }
+    k
 }
 
 /// Commands only operators may run.

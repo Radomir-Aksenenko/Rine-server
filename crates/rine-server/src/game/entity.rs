@@ -80,6 +80,9 @@ pub struct Entities {
     /// Entities spawned since the tracker last ran; their spawn packets go out
     /// right away (between ticks) instead of waiting for the periodic tracker pass.
     pub fresh: Vec<i32>,
+    /// Entity ids by chunk, rebuilt on the tracker's periodic pass. Entries can
+    /// be stale (an entity may have moved): the tracker checks positions.
+    pub grid: AHashMap<ChunkPos, Vec<i32>>,
 }
 
 impl Entities {

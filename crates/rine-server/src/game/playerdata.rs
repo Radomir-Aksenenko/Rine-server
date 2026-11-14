@@ -185,7 +185,7 @@ fn store(world_dir: &str, uuid: Uuid, data: PlayerData, sync: bool) {
         write_job(&path, uuid, gen, &data);
     } else {
         IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
-        rayon::spawn(move || {
+        super::world::spawn_background(move || {
             write_job(&path, uuid, gen, &data);
             IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
         });

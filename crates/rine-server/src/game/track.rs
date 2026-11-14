@@ -1,32 +1,67 @@
 //! Entity tracking and movement broadcast.
 //!
-//! Every moving entity's update is encoded once per tick into a Frame; the
-//! per-viewer pass (parallel over players) only clones refcounted frames.
-//! Visibility is recomputed when a viewer changes chunk, and every 10 ticks.
+//! A client only knows a bounded set of entities (`Player::tracked`): at most
+//! `MAX_TRACKED`, nearest chunks first, and at most `SPAWN_PER_TICK` spawns per
+//! tick. Entities outside that set are still simulated, just never sent.
+//! Moves and metadata of tracked entities are skipped while a client's
+//! outbound backlog is over `BACKLOG_SOFT`: they are low priority and the next
+//! sync catches the client up. Keepalive and the player's own position are
+//! sent elsewhere and always go out.
+//!
+//! Visibility is recomputed when a viewer changes chunk and on every 10th
+//! tick. The entity grid (`Entities::grid`) is rebuilt on those 10th ticks;
+//! between rebuilds each candidate is checked at its current position.
 
 use super::entity;
-use super::player::Stack;
+use super::player::{Player, Stack};
 use super::Game;
 use crate::out;
 use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
 use rayon::prelude::*;
 use rine_world::ChunkPos;
+use std::sync::atomic::Ordering;
 
-/// Entities (players + others) grouped by chunk for visibility queries.
-pub struct Grid {
-    pub cells: AHashMap<ChunkPos, Vec<i32>>,
+/// Entities a client may track at once. Nearest chunks are chosen first.
+pub const MAX_TRACKED: usize = 2000;
+/// Entity spawns (each one or two packets) sent to one client per tick.
+pub const SPAWN_PER_TICK: u32 = 200;
+/// Entities checked per between-tick spawn pass; the rest of a bulk spawn
+/// (`/tnt`) waits for the periodic pass.
+const FRESH_SCAN: usize = 256;
+/// Outbound bytes not yet written above which low-priority updates are dropped.
+pub const BACKLOG_SOFT: usize = 1 << 20;
+/// Player visibility range in chunks (vanilla default tracking).
+const PLAYER_RANGE: i32 = 32;
+
+fn lagging(p: &Player) -> bool {
+    p.backlog.load(Ordering::Relaxed) > BACKLOG_SOFT
 }
 
-/// Spawn packets for entities created since the last tracker pass, sent at
-/// once to every player that can see them. Runs between ticks too, so a
-/// dropped item appears when the drop packet is handled instead of up to ten
-/// ticks later (the periodic pass only recomputes visibility every 10 ticks).
+/// Chunk offsets within `r`, nearest (Chebyshev distance) first.
+fn offsets(r: i32) -> Vec<(i32, i32)> {
+    let mut v: Vec<(i32, i32)> = (-r..=r).flat_map(|dx| (-r..=r).map(move |dz| (dx, dz))).collect();
+    v.sort_by_key(|(dx, dz)| dx.abs().max(dz.abs()));
+    v
+}
+
+/// True if chunk `q` is within the viewer's view `view` and the entity's `range`
+/// around chunk `c`.
+fn in_view(q: ChunkPos, c: ChunkPos, view: i32, range: i32) -> bool {
+    let (dx, dz) = ((q.x - c.x).abs(), (q.z - c.z).abs());
+    dx <= view && dz <= view && dx <= range && dz <= range
+}
+
+/// Spawn packets for entities created since the last tracker pass, sent to
+/// every player that can see them. Runs between ticks too, so a dropped item
+/// appears when the drop packet is handled instead of up to ten ticks later.
+/// Bounded: at most `FRESH_SCAN` entities per call.
 pub fn spawn_fresh(g: &mut Game) {
     if g.entities.fresh.is_empty() {
         return;
     }
-    let fresh = std::mem::take(&mut g.entities.fresh);
+    let mut fresh = std::mem::take(&mut g.entities.fresh);
+    fresh.truncate(FRESH_SCAN);
     let Game { entities, players, .. } = g;
     for eid in fresh {
         let Some(&i) = entities.index.get(&eid) else { continue };
@@ -37,21 +72,23 @@ pub fn spawn_fresh(g: &mut Game) {
         let c = e.chunk();
         let range = e.kind.track_range();
         for p in players.iter_mut().flatten() {
-            if p.tracked.contains(&eid) {
+            if p.tracked.contains(&eid) || p.tracked.len() >= MAX_TRACKED || p.spawned_tick >= SPAWN_PER_TICK || lagging(p) {
                 continue;
             }
-            let pc = p.chunk();
-            let (dx, dz) = (c.x - pc.x, c.z - pc.z);
-            if dx.abs() > p.view || dz.abs() > p.view || dx.abs() > range || dz.abs() > range || !p.loaded.contains(&c) {
+            if !in_view(c, p.chunk(), p.view, range) || !p.loaded.contains(&c) {
                 continue;
             }
             entity::spawn_frames(e, &mut p.out);
             p.tracked.insert(eid);
+            p.spawned_tick += 1;
         }
     }
 }
 
 pub fn tick(g: &mut Game) {
+    for p in g.players.iter_mut().flatten() {
+        p.spawned_tick = 0;
+    }
     spawn_fresh(g);
     // ---- 1. movement frames for players
     let mut moves: AHashMap<i32, Vec<Bytes>> = AHashMap::new();
@@ -95,45 +132,33 @@ pub fn tick(g: &mut Game) {
         m
     });
 
-    // ---- 2. visibility grid
-    let mut cells: AHashMap<ChunkPos, Vec<i32>> = AHashMap::new();
-    struct Vis {
-        eid: i32,
-        is_player: bool,
-        range: i32,
-    }
-    let mut info: AHashMap<i32, (Vis, ChunkPos)> = AHashMap::new();
-    for p in g.players.iter().flatten() {
-        let c = p.chunk();
-        cells.entry(c).or_default().push(p.eid);
-        info.insert(p.eid, (Vis { eid: p.eid, is_player: true, range: 32 }, c));
-    }
-    for e in g.entities.list.iter() {
-        if e.removed {
-            continue;
-        }
-        let c = e.chunk();
-        cells.entry(c).or_default().push(e.eid);
-        info.insert(e.eid, (Vis { eid: e.eid, is_player: false, range: e.kind.track_range() }, c));
-    }
-
+    // ---- 2. spatial grid of entities, rebuilt on the periodic pass
     let full = g.tick % 10 == 0;
-    let ents = &g.entities;
-    let players_ro: AHashMap<i32, usize> = g.by_eid.clone();
-    // snapshot spawn data for players (other players need it to spawn them)
-    let player_spawn: AHashMap<i32, Vec<Bytes>> = if full || g.players.iter().flatten().any(|p| p.center != p.chunk() || p.joined_tick + 2 > g.tick) {
-        g.players.iter().flatten().map(|p| (p.eid, player_spawn_frames(p))).collect()
-    } else {
-        AHashMap::new()
-    };
+    {
+        let ents = &mut g.entities;
+        if full || ents.grid.is_empty() {
+            ents.grid.clear();
+            for e in ents.list.iter().filter(|e| !e.removed) {
+                ents.grid.entry(e.chunk()).or_default().push(e.eid);
+            }
+        }
+    }
+    // players are few: index them per tick
+    let mut player_chunk: AHashMap<i32, ChunkPos> = AHashMap::new();
+    for p in g.players.iter().flatten() {
+        player_chunk.insert(p.eid, p.chunk());
+    }
+    let any_recompute = full || g.players.iter().flatten().any(|p| p.vis_chunk != Some(p.chunk()));
+    // spawn data for every player (other players need it to appear)
+    let player_spawn: AHashMap<i32, Vec<Bytes>> = if any_recompute { g.players.iter().flatten().map(|p| (p.eid, player_spawn_frames(p))).collect() } else { AHashMap::new() };
     let removed_ref = &removed;
     let moves_ref = &moves;
     let extra_ref = &extra_map;
-    let tick = g.tick;
+    let ents = &g.entities;
+    let grid = &ents.grid;
 
     // ---- 3. per-viewer pass in parallel
     g.players.par_iter_mut().flatten().for_each(|p| {
-        let recompute = full || p.joined_tick + 2 > tick || !player_spawn.is_empty();
         let mut despawn: Vec<i32> = Vec::new();
         // removed entities
         if !removed_ref.is_empty() {
@@ -146,60 +171,79 @@ pub fn tick(g: &mut Game) {
                 }
             });
         }
-        if recompute {
-            let c = p.chunk();
-            let r = p.view;
-            let mut visible: AHashSet<i32> = AHashSet::with_capacity(p.tracked.len() + 16);
-            for dx in -r..=r {
-                for dz in -r..=r {
+        let c = p.chunk();
+        let view = p.view;
+        if full || p.vis_chunk != Some(c) {
+            p.vis_chunk = Some(c);
+            let loaded = &p.loaded;
+            // despawn whatever left the view (checked at current positions)
+            p.tracked.retain(|&e| {
+                let at = match player_chunk.get(&e) {
+                    Some(&pc) => Some((pc, PLAYER_RANGE)),
+                    None => ents.index.get(&e).map(|&i| {
+                        let en = &ents.list[i];
+                        (en.chunk(), en.kind.track_range())
+                    }),
+                };
+                let keep = matches!(at, Some((q, r)) if in_view(q, c, view, r) && loaded.contains(&q));
+                if !keep {
+                    despawn.push(e);
+                }
+                keep
+            });
+            // players first: they are few and never count against the entity cap
+            for (&e, &pc) in player_chunk.iter() {
+                if e == p.eid || p.tracked.contains(&e) || !in_view(pc, c, view, PLAYER_RANGE) || !p.loaded.contains(&pc) {
+                    continue;
+                }
+                if let Some(fs) = player_spawn.get(&e) {
+                    p.out.extend(fs.iter().cloned());
+                    p.tracked.insert(e);
+                }
+            }
+            // entities: budgeted, nearest chunks first
+            if !lagging(p) {
+                let entities_tracked = p.tracked.iter().filter(|e| !player_chunk.contains_key(e)).count();
+                let mut room = MAX_TRACKED.saturating_sub(entities_tracked).min(SPAWN_PER_TICK.saturating_sub(p.spawned_tick) as usize);
+                'scan: for (dx, dz) in offsets(view) {
+                    if room == 0 {
+                        break;
+                    }
                     let q = ChunkPos::new(c.x + dx, c.z + dz);
                     if !p.loaded.contains(&q) {
                         continue;
                     }
-                    if let Some(list) = cells.get(&q) {
+                    if let Some(list) = grid.get(&q) {
                         for &e in list {
-                            if e == p.eid {
+                            if room == 0 {
+                                break 'scan;
+                            }
+                            if p.tracked.contains(&e) {
                                 continue;
                             }
-                            let (vis, _) = &info[&e];
-                            if dx.abs() <= vis.range && dz.abs() <= vis.range {
-                                visible.insert(vis.eid);
+                            let Some(&i) = ents.index.get(&e) else { continue };
+                            let en = &ents.list[i];
+                            if en.removed {
+                                continue;
                             }
+                            let ca = en.chunk();
+                            if !in_view(ca, c, view, en.kind.track_range()) || !p.loaded.contains(&ca) {
+                                continue;
+                            }
+                            entity::spawn_frames(en, &mut p.out);
+                            p.tracked.insert(e);
+                            p.spawned_tick += 1;
+                            room -= 1;
                         }
                     }
-                }
-            }
-            // despawn no longer visible
-            p.tracked.retain(|e| {
-                if visible.contains(e) {
-                    true
-                } else {
-                    despawn.push(*e);
-                    false
-                }
-            });
-            // spawn newly visible
-            for e in visible {
-                if p.tracked.contains(&e) {
-                    continue;
-                }
-                let (vis, _) = &info[&e];
-                if vis.is_player {
-                    if let Some(fs) = player_spawn.get(&e) {
-                        p.out.extend(fs.iter().cloned());
-                        p.tracked.insert(e);
-                    }
-                } else if let Some(ent) = ents.get(e) {
-                    entity::spawn_frames(ent, &mut p.out);
-                    p.tracked.insert(e);
                 }
             }
         }
         if !despawn.is_empty() {
             p.out.push(out::frame(out::remove_entities(&despawn)));
         }
-        // movement of tracked entities
-        if !moves_ref.is_empty() || !extra_ref.is_empty() {
+        // movement of tracked entities (skipped while the client is backlogged)
+        if !lagging(p) && (!moves_ref.is_empty() || !extra_ref.is_empty()) {
             for e in p.tracked.iter() {
                 if let Some(fs) = moves_ref.get(e) {
                     p.out.extend(fs.iter().cloned());
@@ -210,7 +254,6 @@ pub fn tick(g: &mut Game) {
             }
         }
     });
-    let _ = players_ro;
 }
 
 /// Frames that spawn player `p` on another client.

@@ -43,6 +43,22 @@ pub struct World {
     pub relight: AHashSet<ChunkPos>,
 }
 
+static BACKGROUND: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
+
+/// Run `f` on the background pool: chunk generation, lighting, chunk saves and
+/// player data writes. It is deliberately not the global rayon pool. The game
+/// thread's `par_iter` calls queue behind whatever sits in the global pool, so
+/// a join that queued hundreds of chunk jobs stalled the next tick for as long
+/// as they took. Half the cores (at least one) serve background work.
+pub fn spawn_background(f: impl FnOnce() + Send + 'static) {
+    BACKGROUND
+        .get_or_init(|| {
+            let n = std::thread::available_parallelism().map_or(2, |n| n.get()) / 2;
+            rayon::ThreadPoolBuilder::new().num_threads(n.max(1)).thread_name(|i| format!("bg-{i}")).build().expect("background pool")
+        })
+        .spawn(f);
+}
+
 impl World {
     pub fn new(seed: i64, dir: &str) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
@@ -69,7 +85,7 @@ impl World {
         let tx = self.tx.clone();
         let gen = self.generator.clone();
         let store = self.store.clone();
-        rayon::spawn(move || {
+        spawn_background(move || {
             let mut chunk = match store.load(pos) {
                 Some(c) => c,
                 None => {
@@ -213,7 +229,7 @@ impl World {
                 if s.chunk.dirty {
                     let store = self.store.clone();
                     let chunk = s.chunk;
-                    rayon::spawn(move || store.save(&chunk));
+                    spawn_background(move || store.save(&chunk));
                 }
             }
         }

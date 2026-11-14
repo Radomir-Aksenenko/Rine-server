@@ -45,6 +45,8 @@ pub struct NewPlayer {
     pub outbound: mpsc::UnboundedSender<Out>,
     /// Cleared by the reader task when the socket closes.
     pub alive: Arc<std::sync::atomic::AtomicBool>,
+    /// Bytes queued in `outbound` and not yet written; the writer decrements it.
+    pub backlog: Arc<AtomicUsize>,
 }
 
 pub struct Shared {
@@ -269,11 +271,12 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     shared.online.fetch_add(1, Ordering::Relaxed);
     let Conn { mut rd, wr, mut dec, buf, .. } = c;
     let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    let np = NewPlayer { name: name.clone(), uuid, properties: Vec::new(), info, addr, inbound: in_rx, outbound: out_tx, alive: alive.clone() };
+    let backlog = Arc::new(AtomicUsize::new(0));
+    let np = NewPlayer { name: name.clone(), uuid, properties: Vec::new(), info, addr, inbound: in_rx, outbound: out_tx, alive: alive.clone(), backlog: backlog.clone() };
     if shared.new_players.send(np).is_err() {
         anyhow::bail!("game loop gone");
     }
-    let writer = tokio::spawn(writer_task(wr, out_rx));
+    let writer = tokio::spawn(writer_task(wr, out_rx, backlog.clone()));
     // reader loop: decode frames and push raw payloads to the game thread
     let mut buf = buf;
     let res: anyhow::Result<()> = async {
@@ -303,7 +306,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     res
 }
 
-async fn writer_task(mut wr: OwnedWriteHalf, mut rx: mpsc::UnboundedReceiver<Out>) {
+async fn writer_task(mut wr: OwnedWriteHalf, mut rx: mpsc::UnboundedReceiver<Out>, backlog: Arc<AtomicUsize>) {
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     while let Some(first) = rx.recv().await {
         let mut close = false;
@@ -325,9 +328,12 @@ async fn writer_task(mut wr: OwnedWriteHalf, mut rx: mpsc::UnboundedReceiver<Out
             }
         }
         if !scratch.is_empty() {
+            let n = scratch.len();
             if wr.write_all(&scratch).await.is_err() {
                 return;
             }
+            // saturating: a batch that was never counted must not wrap the counter
+            let _ = backlog.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(n)));
             scratch.clear();
         }
         if close {
