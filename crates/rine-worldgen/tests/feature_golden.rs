@@ -82,8 +82,19 @@ fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), A
         }
     }
     // area index: (dz + 3) * 7 + (dx + 3)
-    for dz in -2..=2i32 {
-        for dx in -2..=2i32 {
+    let order: Vec<(i32,i32)> = {
+        let mut v: Vec<(i32,i32)> = (-2..=2).flat_map(|z| (-2..=2).map(move |x| (x, z))).collect();
+        match std::env::var("RINE_ORDER").as_deref() {
+            Ok("reverse") => v.reverse(),
+            Ok("center") => v.sort_by_key(|&(x, z)| x * x + z * z),
+            _ => {}
+        }
+        let ring: i32 = std::env::var("RINE_RING").ok().and_then(|r| r.parse().ok()).unwrap_or(2);
+        v.retain(|&(x, z)| x.abs() <= ring && z.abs() <= ring);
+        v
+    };
+    for (dx, dz) in order {
+        {
             let mut window: Vec<ChunkBlocks> = Vec::with_capacity(9);
             for wz in -1..=1i32 {
                 for wx in -1..=1i32 {
@@ -128,6 +139,10 @@ fn ore_decoration_matches_vanilla_server() {
             let m = mine.blocks[i] as usize;
             let (a, b) = (canonical(&gpal[g as usize]), canonical(&mine.palette[m]));
             if a != b {
+                if std::env::var("RINE_DUMP").ok().as_deref() == Some(&format!("{cx},{cz}")) && mismatch < 40 {
+                    let i = i as i32;
+                    eprintln!("  y={} x={} z={} golden={} mine={}", i / 256 - 64, (i % 16), (i / 16) % 16, a, b);
+                }
                 mismatch += 1;
                 *pairs.entry((a, b)).or_default() += 1;
             }
