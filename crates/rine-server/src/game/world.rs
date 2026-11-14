@@ -33,6 +33,8 @@ pub struct World {
     pub store: Arc<RegionStore>,
     /// Block changes this tick, keyed by section (cx, sy, cz).
     pub changes: AHashMap<(i32, i32, i32), Vec<(u16, u16)>>,
+    /// Positions changed since the last neighbor pass (see `neighbors::settle`).
+    pub touched: Vec<BlockPos>,
     /// Chunks whose lighting must be recomputed (after block changes).
     pub relight: AHashSet<ChunkPos>,
 }
@@ -48,6 +50,7 @@ impl World {
             generator: Arc::new(Generator::new(seed)),
             store: Arc::new(RegionStore::open(dir)),
             changes: AHashMap::new(),
+            touched: Vec::new(),
             relight: AHashSet::new(),
         }
     }
@@ -139,6 +142,7 @@ impl World {
         if old != state {
             let rel = (((p.x & 15) << 8) | ((p.z & 15) << 4) | (p.y & 15)) as u16;
             self.changes.entry((cp.x, p.y >> 4, cp.z)).or_default().push((rel, state));
+            self.touched.push(p);
             let b = &rine_data::get().blocks;
             let (so, sn) = (b.state(old), b.state(state));
             if so.light_emit != sn.light_emit || so.light_block != sn.light_block {

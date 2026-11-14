@@ -32,6 +32,37 @@ pub fn block_drops(state: u16, tool_item: u32) -> Vec<Stack> {
     out
 }
 
+/// Per-tick break progress of `state` mined by `tool_item`, as vanilla's
+/// `BlockState.getDestroyProgress` (no enchantments or effects; the player is
+/// assumed on the ground and dry). A value >= 1 means instant break.
+pub fn destroy_progress(state: u16, tool_item: u32) -> f32 {
+    let d = rine_data::get();
+    let st = d.blocks.state(state);
+    let hard = st.hardness;
+    if hard < 0.0 {
+        return 0.0;
+    }
+    if hard == 0.0 {
+        return 1.0;
+    }
+    let lt = loot();
+    let block = st.block as u32;
+    let mut speed = 1.0f32;
+    if tool_item == lt.shears {
+        speed = lt.shears_speed.get(&block).copied().unwrap_or(1.0);
+    } else if let Some(info) = lt.tools.get(tool_item as usize) {
+        if let Some(kind) = info.kind {
+            if lt.mineable[kind].binary_search(&block).is_ok() {
+                // wooden, stone, copper, iron, golden, diamond, netherite
+                const SPEED: [f32; 7] = [2.0, 4.0, 5.0, 6.0, 12.0, 8.0, 9.0];
+                speed = info.tier.map(|t| SPEED[t]).unwrap_or(1.0);
+            }
+        }
+    }
+    let harvest = !d.blocks.has(state, flag::TOOL_REQUIRED) || lt.tool_correct(block, tool_item);
+    speed / hard / if harvest { 30.0 } else { 100.0 }
+}
+
 // ---------------------------------------------------------------------------
 // Compiled representation
 // ---------------------------------------------------------------------------
@@ -80,6 +111,8 @@ struct Loot {
     shears_blocks: Vec<u32>,
     /// Item id of `minecraft:shears`, `u32::MAX` if absent.
     shears: u32,
+    /// Shears mining speed per block index (minor 2, major 5, extreme 15).
+    shears_speed: AHashMap<u32, f32>,
 }
 
 static LOOT: OnceLock<Loot> = OnceLock::new();
@@ -125,7 +158,13 @@ impl Loot {
         );
         let shears = items.get("minecraft:shears").copied().unwrap_or(u32::MAX);
 
-        Loot { tables, tools, mineable, incorrect, shears_blocks, shears }
+        let mut shears_speed = AHashMap::new();
+        for (t, sp) in SHEARS_TAGS.iter().zip([2.0f32, 5.0, 15.0]) {
+            for blk in b.block_names(tag_members(d, "minecraft:block", t)) {
+                shears_speed.insert(blk, sp);
+            }
+        }
+        Loot { tables, tools, mineable, incorrect, shears_blocks, shears, shears_speed }
     }
 
     /// Whether `tool` may harvest `block` when the block requires a correct tool.

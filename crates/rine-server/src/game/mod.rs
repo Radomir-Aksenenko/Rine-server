@@ -9,6 +9,7 @@ pub mod handle;
 pub mod track;
 pub mod entity;
 pub mod commands;
+pub mod neighbors;
 pub mod interact;
 pub mod explosion;
 pub mod loot;
@@ -30,8 +31,12 @@ use world::World;
 
 pub const TICK: Duration = Duration::from_millis(50);
 
+const OPS_FILE: &str = "ops.txt";
+
 pub struct Game {
     pub shared: Arc<Shared>,
+    /// Operator nicknames: `ops` from rine.toml plus `ops.txt`.
+    pub ops: Vec<String>,
     pub world: World,
     pub players: Vec<Option<Player>>,
     pub by_eid: AHashMap<i32, usize>,
@@ -62,7 +67,16 @@ impl Game {
         let regs = &rine_data::get().registries;
         let dim_type_id = regs.synced("minecraft:dimension_type").id("minecraft:overworld").unwrap_or(0);
         let clock_ids = regs.synced("minecraft:world_clock").id("minecraft:overworld").into_iter().collect();
+        let mut ops: Vec<String> = cfg.ops.clone();
+        if let Ok(t) = std::fs::read_to_string(OPS_FILE) {
+            for l in t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+                if !ops.iter().any(|o| o.eq_ignore_ascii_case(l)) {
+                    ops.push(l.to_string());
+                }
+            }
+        }
         Self {
+            ops,
             shared,
             world,
             players: Vec::new(),
@@ -82,6 +96,21 @@ impl Game {
             clock_ids,
             running,
             plugins: None,
+        }
+    }
+
+    pub fn is_op(&self, name: &str) -> bool {
+        self.ops.iter().any(|o| o.eq_ignore_ascii_case(name))
+    }
+
+    pub fn save_ops(&self) {
+        let mut t = String::from("# operators, one nickname per line\n");
+        for o in &self.ops {
+            t.push_str(o);
+            t.push('\n');
+        }
+        if let Err(e) = std::fs::write(OPS_FILE, t) {
+            tracing::warn!("cannot write {OPS_FILE}: {e}");
         }
     }
 
@@ -179,6 +208,7 @@ impl Game {
 
         // 7. block changes this tick: one frame per section
         let t7 = Instant::now();
+        neighbors::settle(self);
         let changes = self.world.drain_changes();
         if t7.elapsed().as_millis() > 20 {
             tracing::info!("block changes + relight took {:?}", t7.elapsed());
@@ -188,6 +218,16 @@ impl Game {
                 if let Some(p) = self.players.get_mut(v).and_then(|p| p.as_mut()) {
                     p.out.push(frame.clone());
                 }
+            }
+        }
+        // block_changed_ack goes after this tick's block updates (vanilla sends
+        // it from the connection tick, after the level tick): an ack that
+        // arrives first makes the client roll back to the old block.
+        for p in self.players.iter_mut().flatten() {
+            if p.ack_seq >= 0 {
+                let a = out::block_ack(p.ack_seq);
+                p.send(a);
+                p.ack_seq = -1;
             }
         }
 
@@ -378,7 +418,10 @@ impl Game {
         let inv = p.inventory_packet();
         p.send(inv);
         p.send(out::set_health(p.health, p.food, p.saturation));
-        p.send(commands::commands_packet());
+        p.op = self.is_op(&p.name);
+        let op = p.op;
+        p.send(out::entity_event(eid, if op { 28 } else { 24 }));
+        p.send(commands::commands_packet(op));
 
         // tab list: everyone to the newcomer, newcomer to everyone
         let mut entries = Vec::new();
@@ -528,6 +571,20 @@ impl Game {
 
     pub fn find_player(&self, name: &str) -> Option<usize> {
         self.players.iter().flatten().find(|p| p.name.eq_ignore_ascii_case(name)).map(|p| p.slot)
+    }
+
+    /// Send a frame to every viewer of chunk `c` except `skip`.
+    pub fn send_chunk_viewers_except(&mut self, c: ChunkPos, f: &Bytes, skip: Option<usize>) {
+        if let Some(s) = self.world.chunks.get(&c) {
+            for &v in &s.viewers {
+                if Some(v) == skip {
+                    continue;
+                }
+                if let Some(Some(p)) = self.players.get_mut(v) {
+                    p.out.push(f.clone());
+                }
+            }
+        }
     }
 
     /// Send a frame to every player that has chunk `c` loaded.

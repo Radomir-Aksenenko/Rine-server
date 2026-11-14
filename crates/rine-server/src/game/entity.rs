@@ -160,55 +160,121 @@ pub fn rand_f64(seed: u64) -> f64 {
     (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// Is the block at (x,y,z) solid for entity collision?
-fn solid_at(g_world: &super::world::World, x: i32, y: i32, z: i32) -> bool {
-    let st = g_world.get_block(x, y, z);
+/// Collision boxes (world coords) of all blocks touching `r`.
+fn boxes_in(w: &super::world::World, r: [f64; 6], out: &mut Vec<[f64; 6]>) {
     let b = &rine_data::get().blocks;
-    !b.has(st, rine_data::blocks::flag::NO_COLLISION) && !b.is_air(st)
+    out.clear();
+    for x in (r[0] - 1e-7).floor() as i32..=(r[3] + 1e-7).floor() as i32 {
+        // one extra layer below: fences and walls are 1.5 blocks tall
+        for y in (r[1] - 1.0).floor() as i32..=(r[4] + 1e-7).floor() as i32 {
+            for z in (r[2] - 1e-7).floor() as i32..=(r[5] + 1e-7).floor() as i32 {
+                let st = w.get_block(x, y, z);
+                if b.is_air(st) {
+                    continue;
+                }
+                for bx in &b.shapes[b.state(st).shape as usize] {
+                    let (fx, fy, fz) = (x as f64, y as f64, z as f64);
+                    out.push([fx + bx[0] as f64, fy + bx[1] as f64, fz + bx[2] as f64, fx + bx[3] as f64, fy + bx[4] as f64, fz + bx[5] as f64]);
+                }
+            }
+        }
+    }
 }
 
-/// Simple AABB-vs-voxel movement: axis by axis, full-block collision.
-fn move_ent(w: &super::world::World, e: &mut Ent) {
-    let (hw, h) = e.kind.size();
-    let hw = hw / 2.0;
-    for axis in [1usize, 0, 2] {
-        let d = e.vel[axis];
-        if d == 0.0 {
+/// Clip movement `d` along `axis` (0..3) of box `bb` against `boxes`
+/// (vanilla `Shapes.collide`: boxes must overlap on the other two axes).
+fn clip(boxes: &[[f64; 6]], bb: &[f64; 6], axis: usize, mut d: f64) -> f64 {
+    const EPS: f64 = 1e-7;
+    let (a1, a2) = match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    };
+    for bx in boxes {
+        if bx[a1 + 3] <= bb[a1] + EPS || bx[a1] >= bb[a1 + 3] - EPS || bx[a2 + 3] <= bb[a2] + EPS || bx[a2] >= bb[a2 + 3] - EPS {
             continue;
         }
-        let mut np = e.pos;
-        np[axis] += d;
-        let min = [np[0] - hw, np[1], np[2] - hw];
-        let max = [np[0] + hw, np[1] + h, np[2] + hw];
-        let mut hit = false;
-        'outer: for x in min[0].floor() as i32..=(max[0] - 1e-7).floor() as i32 {
-            for y in min[1].floor() as i32..=(max[1] - 1e-7).floor() as i32 {
-                for z in min[2].floor() as i32..=(max[2] - 1e-7).floor() as i32 {
-                    if solid_at(w, x, y, z) {
-                        hit = true;
-                        break 'outer;
-                    }
-                }
+        if d > 0.0 && bx[axis] >= bb[axis + 3] - EPS {
+            d = d.min(bx[axis] - bb[axis + 3]);
+        } else if d < 0.0 && bx[axis + 3] <= bb[axis] + EPS {
+            d = d.max(bx[axis + 3] - bb[axis]);
+        }
+    }
+    d
+}
+
+fn bbox(e: &Ent) -> [f64; 6] {
+    let (w, h) = e.kind.size();
+    let hw = w / 2.0;
+    [e.pos[0] - hw, e.pos[1], e.pos[2] - hw, e.pos[0] + hw, e.pos[1] + h, e.pos[2] + hw]
+}
+
+fn inside(boxes: &[[f64; 6]], bb: &[f64; 6]) -> bool {
+    const EPS: f64 = 1e-7;
+    boxes.iter().any(|bx| (0..3).all(|i| bx[i] < bb[i + 3] - EPS && bx[i + 3] > bb[i] + EPS))
+}
+
+/// Swept AABB movement against real block collision shapes. Y first, then
+/// the larger of X/Z, as vanilla `Entity.collide`. An entity stuck inside a
+/// block is nudged toward the nearest open neighbor (`moveTowardsClosestSpace`).
+fn move_ent(w: &super::world::World, e: &mut Ent) {
+    let mut bb = bbox(e);
+    let v = e.vel;
+    let mut boxes = Vec::new();
+    boxes_in(w, bb, &mut boxes);
+    if inside(&boxes, &bb) {
+        let (cx, cy, cz) = (e.pos[0].floor() as i32, (bb[1] + bb[4]) * 0.5, e.pos[2].floor() as i32);
+        let cy = cy.floor() as i32;
+        let free = |x: i32, y: i32, z: i32| {
+            let st = w.get_block(x, y, z);
+            let b = &rine_data::get().blocks;
+            b.shapes[b.state(st).shape as usize].is_empty()
+        };
+        let (fx, fz) = (e.pos[0] - cx as f64, e.pos[2] - cz as f64);
+        // candidates: (distance to that face, direction)
+        let mut best: Option<(f64, [f64; 3])> = None;
+        for (dist, dir, (dx, dy, dz)) in [
+            (fx, [-1.0, 0.0, 0.0], (-1, 0, 0)),
+            (1.0 - fx, [1.0, 0.0, 0.0], (1, 0, 0)),
+            (fz, [0.0, 0.0, -1.0], (0, 0, -1)),
+            (1.0 - fz, [0.0, 0.0, 1.0], (0, 0, 1)),
+            (1.0 - ((bb[1] + bb[4]) * 0.5 - cy as f64), [0.0, 1.0, 0.0], (0, 1, 0)),
+        ] {
+            if free(cx + dx, cy + dy, cz + dz) && best.map_or(true, |(d, _)| dist < d) {
+                best = Some((dist, dir));
             }
         }
-        if hit {
-            if axis == 1 {
-                if d < 0.0 {
-                    e.on_ground = true;
-                    e.pos[1] = (e.pos[1] + d).floor() + 1.0;
-                    if e.pos[1] > np[1] + 1.0 {
-                        e.pos[1] = np[1].ceil();
-                    }
-                }
-                e.vel[1] = 0.0;
-            } else {
-                e.vel[axis] = 0.0;
+        let dir = best.map(|b| b.1).unwrap_or([0.0, 1.0, 0.0]);
+        let push = 0.1 + 0.1 * rand_f64(e.eid as u64 ^ (e.age as u64) << 16);
+        for i in 0..3 {
+            if dir[i] != 0.0 {
+                e.vel[i] = dir[i] * push;
             }
-        } else {
-            e.pos[axis] = np[axis];
-            if axis == 1 {
-                e.on_ground = false;
-            }
+        }
+        e.pos = [e.pos[0] + e.vel[0], e.pos[1] + e.vel[1], e.pos[2] + e.vel[2]];
+        e.on_ground = false;
+        return;
+    }
+    let reach = [bb[0] + v[0].min(0.0), bb[1] + v[1].min(0.0), bb[2] + v[2].min(0.0), bb[3] + v[0].max(0.0), bb[4] + v[1].max(0.0), bb[5] + v[2].max(0.0)];
+    boxes_in(w, reach, &mut boxes);
+    let dy = clip(&boxes, &bb, 1, v[1]);
+    bb[1] += dy;
+    bb[4] += dy;
+    let order = if v[0].abs() < v[2].abs() { [2usize, 0] } else { [0, 2] };
+    let mut d = [0.0, dy, 0.0];
+    for axis in order {
+        let m = clip(&boxes, &bb, axis, v[axis]);
+        bb[axis] += m;
+        bb[axis + 3] += m;
+        d[axis] = m;
+    }
+    e.pos[0] += d[0];
+    e.pos[1] += d[1];
+    e.pos[2] += d[2];
+    e.on_ground = v[1] < 0.0 && d[1] != v[1];
+    for i in 0..3 {
+        if d[i] != v[i] {
+            e.vel[i] = 0.0;
         }
     }
 }

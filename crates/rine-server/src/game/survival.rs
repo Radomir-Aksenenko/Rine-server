@@ -317,7 +317,7 @@ fn set_living_flags(g: &mut Game, slot: usize, flags: u8) {
 pub fn use_item(g: &mut Game, slot: usize, hand: i32, seq: i32) {
     let now = g.tick;
     let Some(p) = g.player(slot) else { return };
-    p.send(out::block_ack(seq));
+    p.ack(seq);
     if p.dead || p.gamemode == 3 {
         return;
     }

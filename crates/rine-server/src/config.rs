@@ -15,6 +15,8 @@ pub struct Config {
     pub gamemode: String,
     pub spawn_protection: bool,
     pub plugins_dir: String,
+    /// Operator nicknames (case-insensitive): permission level 4.
+    pub ops: Vec<String>,
 }
 
 impl Default for Config {
@@ -32,6 +34,7 @@ impl Default for Config {
             gamemode: "survival".into(),
             spawn_protection: false,
             plugins_dir: "plugins".into(),
+            ops: Vec::new(),
         }
     }
 }

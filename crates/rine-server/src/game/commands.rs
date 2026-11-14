@@ -17,7 +17,29 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
             p.msg(&t);
         }
     };
+    let op = g.player(slot).map(|p| p.op).unwrap_or(false);
+    if !op && OP_ONLY.contains(&cmd.as_str()) {
+        return reply(g, Text::plain("Нет прав на эту команду").color("red"));
+    }
     match cmd.as_str() {
+        "op" | "deop" => {
+            let Some(target) = args.first().copied() else {
+                return reply(g, Text::plain(format!("Использование: /{cmd} <игрок>")).color("red"));
+            };
+            let give = cmd == "op";
+            {
+                let ops = &mut g.ops;
+                ops.retain(|n| !n.eq_ignore_ascii_case(target));
+                if give {
+                    ops.push(target.to_string());
+                }
+            }
+            g.save_ops();
+            if let Some(ts) = g.find_player(target) {
+                set_op(g, ts, give);
+            }
+            reply(g, Text::plain(format!("{target}: {}", if give { "теперь оператор" } else { "больше не оператор" })).color("green"));
+        }
         "help" => reply(
             g,
             Text::plain("Команды: /gamemode <s|c|a|sp>, /tp <x y z|игрок>, /give <предмет> [кол-во], /time <day|night|число>, /tps, /spawn, /tnt <кол-во>, /list, /seed").color("gray"),
@@ -147,6 +169,19 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
     }
 }
 
+/// Commands only operators may run.
+pub const OP_ONLY: [&str; 10] = ["gamemode", "gm", "tp", "teleport", "give", "time", "tnt", "stop", "op", "deop"];
+
+/// Apply operator status: entity_event 24+level makes the client offer
+/// commands (and F3+F4 etc.), then resend the command tree for that level.
+pub fn set_op(g: &mut Game, slot: usize, op: bool) {
+    let Some(p) = g.player(slot) else { return };
+    p.op = op;
+    let eid = p.eid;
+    p.send(out::entity_event(eid, if op { 28 } else { 24 }));
+    p.send(commands_packet(op));
+}
+
 pub fn set_gamemode(g: &mut Game, slot: usize, gm: u8) {
     let Some(p) = g.player(slot) else { return };
     p.gamemode = gm;
@@ -162,10 +197,11 @@ pub fn set_gamemode(g: &mut Game, slot: usize, gm: u8) {
 }
 
 /// Brigadier command tree for client-side completion (docs/spec/03 4.18).
-pub fn commands_packet() -> bytes::BytesMut {
+pub fn commands_packet(op: bool) -> bytes::BytesMut {
     use rine_protocol::Writer;
     // nodes: 0 root; literals with a greedy string argument where useful
-    let lits = ["help", "gamemode", "gm", "tp", "teleport", "spawn", "give", "time", "tps", "list", "seed", "tnt", "stop"];
+    let all = ["help", "gamemode", "gm", "tp", "teleport", "spawn", "give", "time", "tps", "list", "seed", "tnt", "stop", "op", "deop"];
+    let lits: Vec<&str> = all.iter().copied().filter(|c| op || !OP_ONLY.contains(c)).collect();
     rine_protocol::frame::packet(rine_protocol::ids::play::C_COMMANDS, |b| {
         // root + per literal (literal node + greedy arg node)
         let n = 1 + lits.len() * 2;

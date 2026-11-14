@@ -14,28 +14,29 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir
         0 => {
             // START_DESTROY_BLOCK
             if !within_reach(p.eye(), pos, 6.0) {
-                p.send(out::block_ack(seq));
+                p.ack(seq);
                 return;
             }
             if p.gamemode == 1 {
                 break_block(g, slot, pos, false);
             } else if p.gamemode == 0 {
+                let tool = p.inv.hotbar(p.held).item;
                 let st = g.world.get_block(pos.x, pos.y, pos.z);
-                let hard = rine_data::get().blocks.state(st).hardness;
+                let progress = super::loot::destroy_progress(st, tool);
                 let p = g.player(slot).unwrap();
-                if hard == 0.0 {
+                if progress >= 1.0 {
                     break_block(g, slot, pos, true);
                 } else {
                     p.digging = Some((pos, tick));
                 }
             }
             if let Some(p) = g.player(slot) {
-                p.send(out::block_ack(seq));
+                p.ack(seq);
             }
         }
         1 | 2 => {
             p.digging = None;
-            p.send(out::block_ack(seq));
+            p.ack(seq);
         }
         3 => {
             // STOP_DESTROY_BLOCK: client finished digging. Accept if the dig
@@ -51,7 +52,7 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir
                 p.send(out::block_update(pos, st));
             }
             if let Some(p) = g.player(slot) {
-                p.send(out::block_ack(seq));
+                p.ack(seq);
             }
         }
         4 | 5 => {
@@ -120,9 +121,10 @@ pub fn break_block(g: &mut Game, slot: usize, pos: BlockPos, drops: bool) {
     // break particles + sound for everyone nearby (level event 2001)
     let f = out::frame(out::level_event(2001, pos, st as i32));
     let cp = rine_world::ChunkPos::new(pos.x >> 4, pos.z >> 4);
-    // the breaker already predicted the particles, vanilla still sends it to all
-    g.send_chunk_viewers(cp, &f);
-    let _ = eid;
+    // vanilla: levelEvent(player, 2001, ...) skips the breaker, whose client
+    // already played the particles and sound when it predicted the break
+    let skip = if eid != 0 { Some(slot) } else { None };
+    g.send_chunk_viewers_except(cp, &f, skip);
     if drops {
         let tool = g.player(slot).map(|p| p.inv.hotbar(p.held)).unwrap_or(Stack::EMPTY);
         for d in super::loot::block_drops(st, tool.item) {
@@ -170,7 +172,7 @@ pub fn other_half(st: u16, pos: BlockPos) -> Option<BlockPos> {
 pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8, cursor: (f32, f32, f32), seq: i32) {
     let Some(p) = g.player(slot) else { return };
     if p.gamemode == 3 || !within_reach(p.eye(), pos, 6.0) {
-        p.send(out::block_ack(seq));
+        p.ack(seq);
         return;
     }
     let inv_slot = if hand == 1 { 45 } else { 36 + p.held as usize };
@@ -183,13 +185,13 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     if !sneaking || stack.is_empty() {
         if super::containers::open_block(g, slot, pos, clicked) {
             if let Some(p) = g.player(slot) {
-                p.send(out::block_ack(seq));
+                p.ack(seq);
             }
             return;
         }
         if super::place::interact_block(g, slot, pos, clicked, stack) {
             if let Some(p) = g.player(slot) {
-                p.send(out::block_ack(seq));
+                p.ack(seq);
             }
             return;
         }
@@ -198,7 +200,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     let place_state = super::items::places(stack.item);
     if stack.is_empty() || place_state == 0 {
         if let Some(p) = g.player(slot) {
-            p.send(out::block_ack(seq));
+            p.ack(seq);
         }
         return;
     }
@@ -242,7 +244,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         super::track::equipment_changed(g, slot);
     }
     if let Some(p) = g.player(slot) {
-        p.send(out::block_ack(seq));
+        p.ack(seq);
     }
 }
 
@@ -259,14 +261,14 @@ fn resync(g: &mut Game, slot: usize, pos: BlockPos, seq: i32) {
     p.send(out::block_update(pos, st));
     let inv = p.inventory_packet();
     p.send(inv);
-    p.send(out::block_ack(seq));
+    p.ack(seq);
 }
 
 pub fn use_item(g: &mut Game, slot: usize, _hand: i32, seq: i32, _yaw: f32, _pitch: f32) {
     // eating is client-driven; food is applied on RELEASE/finish in a later
     // milestone. Acknowledge so the client doesn't roll back.
     if let Some(p) = g.player(slot) {
-        p.send(out::block_ack(seq));
+        p.ack(seq);
     }
 }
 
@@ -373,7 +375,19 @@ pub fn attack(g: &mut Game, slot: usize, target: i32) {
     }
 }
 
-pub fn damage(g: &mut Game, slot: usize, amount: f32, _cause: &str) {
+/// Index of a damage type in the synced `damage_type` registry (the order
+/// sent during configuration). Short causes map to vanilla type names.
+fn damage_type_id(cause: &str) -> i32 {
+    let name = match cause {
+        "player" => "player_attack",
+        "void" => "out_of_world",
+        c => c,
+    };
+    let reg = rine_data::get().registries.synced("minecraft:damage_type");
+    reg.id(&format!("minecraft:{name}")).or_else(|| reg.id("minecraft:generic")).unwrap_or(0) as i32
+}
+
+pub fn damage(g: &mut Game, slot: usize, amount: f32, cause: &str) {
     let Some(p) = g.player(slot) else { return };
     if p.dead || p.gamemode == 1 || p.gamemode == 3 {
         return;
@@ -384,10 +398,16 @@ pub fn damage(g: &mut Game, slot: usize, amount: f32, _cause: &str) {
     let Some(p) = g.player(slot) else { return };
     let (h, f, s, eid) = (p.health, p.food, p.saturation, p.eid);
     p.send(out::set_health(h, f, s));
-    let hurt = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_HURT_ANIMATION, |b| {
+    // damage_event: the client plays the hurt animation and the hurt sound
+    // for this damage type itself (LivingEntity.handleDamageEvent)
+    let ty = damage_type_id(cause);
+    let hurt = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_DAMAGE_EVENT, |b| {
         use rine_protocol::Writer;
         b.w_varint(eid);
-        b.w_f32(0.0);
+        b.w_varint(ty);
+        b.w_varint(0); // no cause entity
+        b.w_varint(0); // no direct entity
+        b.w_bool(false); // no source position
     }));
     p.out.push(hurt.clone());
     super::track::send_to_trackers(g, eid, &hurt);

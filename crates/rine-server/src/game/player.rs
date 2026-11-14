@@ -141,6 +141,10 @@ pub struct Player {
     pub fall_start: f64,
     pub dead: bool,
     pub digging: Option<(BlockPos, u64)>,
+    /// Highest block-change sequence to acknowledge at the end of the tick (-1 = none).
+    pub ack_seq: i32,
+    /// Operator (permission level 4).
+    pub op: bool,
     pub kick: Option<String>,
     pub joined_tick: u64,
 }
@@ -194,6 +198,8 @@ impl Player {
             fall_start: spawn[1],
             dead: false,
             digging: None,
+            ack_seq: -1,
+            op: false,
             kick: None,
             joined_tick: 0,
         }
@@ -202,6 +208,11 @@ impl Player {
     #[inline]
     pub fn send(&mut self, p: BytesMut) {
         self.out.push(crate::out::frame(p));
+    }
+
+    /// Queue a block_changed_ack; sent after this tick's block updates.
+    pub fn ack(&mut self, seq: i32) {
+        self.ack_seq = self.ack_seq.max(seq);
     }
 
     #[inline]
