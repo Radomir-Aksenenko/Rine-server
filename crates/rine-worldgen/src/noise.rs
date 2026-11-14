@@ -692,3 +692,211 @@ impl BlendedNoise {
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Volume path. `Noise.addToVolume` in vanilla 26.3 is NOT the point path: PerlinNoise and
+// SmearedPerlinNoise use `addToVolumeVanilla`, which sums gradient terms in a different float
+// order (`dotXz` plus `g.y * relY`). Keep these bodies literal.
+// ---------------------------------------------------------------------------------------------
+
+use crate::density::volume::Vol;
+
+/// Gradient terms for the 8 cell corners of one (floorX, floorY, floorZ) column. Index order:
+/// 000, 100, 010, 110, 001, 101, 011, 111 (the Java variable suffixes).
+#[inline]
+fn corner_terms(
+    base: &GradientBase,
+    x0: i32,
+    x1: i32,
+    floor_y: i32,
+    floor_z: i32,
+    rel_x: f32,
+    rel_z: f32,
+) -> ([f32; 8], [f32; 8]) {
+    let grad = |v: i32| GRADIENT[(base.permute(v) & 15) as usize];
+    let xy00 = base.permute(x0.wrapping_add(floor_y));
+    let xy01 = base.permute(x0.wrapping_add(floor_y).wrapping_add(1));
+    let xy10 = base.permute(x1.wrapping_add(floor_y));
+    let xy11 = base.permute(x1.wrapping_add(floor_y).wrapping_add(1));
+    let fz = floor_z;
+    let rx1 = rel_x - 1.0;
+    let rz1 = rel_z - 1.0;
+    // (gx, gy, gz) -> dotXz(x, z) = gx*x + gz*z, and y = gy as float.
+    let dot_xz = |g: (i32, i32, i32), x: f32, z: f32| (g.0 as f32) * x + (g.2 as f32) * z;
+    let g000 = grad(xy00.wrapping_add(fz));
+    let g100 = grad(xy10.wrapping_add(fz));
+    let g010 = grad(xy01.wrapping_add(fz));
+    let g110 = grad(xy11.wrapping_add(fz));
+    let g001 = grad(xy00.wrapping_add(fz).wrapping_add(1));
+    let g101 = grad(xy10.wrapping_add(fz).wrapping_add(1));
+    let g011 = grad(xy01.wrapping_add(fz).wrapping_add(1));
+    let g111 = grad(xy11.wrapping_add(fz).wrapping_add(1));
+    let d = [
+        dot_xz(g000, rel_x, rel_z),
+        dot_xz(g100, rx1, rel_z),
+        dot_xz(g010, rel_x, rel_z),
+        dot_xz(g110, rx1, rel_z),
+        dot_xz(g001, rel_x, rz1),
+        dot_xz(g101, rx1, rz1),
+        dot_xz(g011, rel_x, rz1),
+        dot_xz(g111, rx1, rz1),
+    ];
+    let gy = [
+        g000.1 as f32,
+        g100.1 as f32,
+        g010.1 as f32,
+        g110.1 as f32,
+        g001.1 as f32,
+        g101.1 as f32,
+        g011.1 as f32,
+        g111.1 as f32,
+    ];
+    (d, gy)
+}
+
+/// Shared body of `addToVolumeVanilla`. `y_terms(indexY)` yields `(floorY, alphaY, fudgedRelY)`
+/// for the Y coordinate of a block row, given the block's `y` (already scaled).
+#[inline]
+fn add_volume_body(
+    base: &GradientBase,
+    out: &mut [f32],
+    vol: &Vol,
+    xz_scale: f64,
+    amplitude: f32,
+    y_terms: &dyn Fn(i32) -> (i32, f32, f32),
+) {
+    let mut index = 0usize;
+    for iz in 0..vol.sz {
+        let z = wrap(vol.block_z(iz) as f64 * xz_scale) + base.offset_z;
+        let floor_z = floor(z);
+        let rel_z = (z - floor_z as f64) as f32;
+        let alpha_z = smoothstep(rel_z);
+        for ix in 0..vol.sx {
+            let x = wrap(vol.block_x(ix) as f64 * xz_scale) + base.offset_x;
+            let floor_x = floor(x);
+            let rel_x = (x - floor_x as f64) as f32;
+            let x0 = base.permute(floor_x);
+            let x1 = base.permute(floor_x.wrapping_add(1));
+            let alpha_x = smoothstep(rel_x);
+            let mut last_floor_y = i32::MIN;
+            let mut d = [0f32; 8];
+            let mut gy = [0f32; 8];
+            for iy in 0..vol.sy {
+                let (floor_y, alpha_y, rel_y) = y_terms(iy);
+                if last_floor_y != floor_y {
+                    let (nd, ng) = corner_terms(base, x0, x1, floor_y, floor_z, rel_x, rel_z);
+                    d = nd;
+                    gy = ng;
+                    last_floor_y = floor_y;
+                }
+                let one = rel_y - 1.0;
+                let value = lerp3(
+                    alpha_x,
+                    alpha_y,
+                    alpha_z,
+                    d[0] + gy[0] * rel_y,
+                    d[1] + gy[1] * rel_y,
+                    d[2] + gy[2] * one,
+                    d[3] + gy[3] * one,
+                    d[4] + gy[4] * rel_y,
+                    d[5] + gy[5] * rel_y,
+                    d[6] + gy[6] * one,
+                    d[7] + gy[7] * one,
+                );
+                out[index] = out[index] + amplitude * value;
+                index += 1;
+            }
+        }
+    }
+}
+
+impl PerlinNoise {
+    /// `PerlinNoise.addToVolume` (vanilla body). Adds `amplitude * noise` into `out`.
+    pub fn add_to_volume(
+        &self,
+        out: &mut [f32],
+        vol: &Vol,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+    ) {
+        let base = &self.base;
+        add_volume_body(base, out, vol, xz_scale, amplitude, &|iy| {
+            let y = wrap(vol.block_y(iy) as f64 * y_scale) + base.offset_y;
+            let floor_y = floor(y);
+            let rel_y = (y - floor_y as f64) as f32;
+            (floor_y, smoothstep(rel_y), rel_y)
+        });
+    }
+}
+
+impl SmearedPerlinNoise {
+    /// `SmearedPerlinNoise.addToVolume` (vanilla body).
+    pub fn add_to_volume(
+        &self,
+        out: &mut [f32],
+        vol: &Vol,
+        xz_scale: f64,
+        y_scale: f64,
+        amplitude: f32,
+    ) {
+        let base = &self.base;
+        add_volume_body(base, out, vol, xz_scale, amplitude, &|iy| {
+            let original_y = vol.block_y(iy) as f64 * y_scale;
+            let y = wrap(original_y) + base.offset_y;
+            let floor_y = floor(y);
+            let rel_y = y - floor_y as f64;
+            let alpha_y = smoothstep(rel_y as f32);
+            let fudged = (rel_y - self.compute_fudge_y(original_y, rel_y)) as f32;
+            (floor_y, alpha_y, fudged)
+        });
+    }
+}
+
+impl Octave {
+    pub fn add_to_volume(&self, out: &mut [f32], vol: &Vol, xz: f64, y: f64, amp: f32) {
+        match self {
+            Octave::Perlin(p) => p.add_to_volume(out, vol, xz, y, amp),
+            Octave::Smeared(s) => s.add_to_volume(out, vol, xz, y, amp),
+        }
+    }
+}
+
+impl NoiseStack {
+    /// `NoiseStack.addToVolume`: each layer adds with `xz * frequency`, `y * frequency`,
+    /// `amplitude * layer.amplitude`.
+    pub fn add_to_volume(&self, out: &mut [f32], vol: &Vol, xz: f64, y: f64, amplitude: f32) {
+        for layer in &self.layers {
+            let f = layer.frequency;
+            layer
+                .noise
+                .add_to_volume(out, vol, xz * f, y * f, amplitude * layer.amplitude);
+        }
+    }
+}
+
+/// The three stacks and multipliers of `BlendedNoise.compileSampler` (overworld `old_blended_noise`).
+pub struct BlendedParts {
+    pub min_limit: NoiseStack,
+    pub max_limit: NoiseStack,
+    pub main: NoiseStack,
+    pub xz_multiplier: f64,
+    pub y_multiplier: f64,
+    pub main_xz_scale: f64,
+    pub main_y_scale: f64,
+}
+
+impl BlendedNoise {
+    /// Clones out the parts needed to compile `BlendedNoise` as Lerp(Clamp(main + 0.5), min, max).
+    pub fn parts(&self) -> BlendedParts {
+        BlendedParts {
+            min_limit: self.min_limit.clone(),
+            max_limit: self.max_limit.clone(),
+            main: self.main.clone(),
+            xz_multiplier: self.xz_multiplier,
+            y_multiplier: self.y_multiplier,
+            main_xz_scale: self.main_xz_scale,
+            main_y_scale: self.main_y_scale,
+        }
+    }
+}

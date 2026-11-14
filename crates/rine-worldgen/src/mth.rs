@@ -84,3 +84,62 @@ pub fn clamp_f32(value: f32, min: f32, max: f32) -> f32 {
 pub fn square(x: f64) -> f64 {
     x * x
 }
+
+/// `Math.min(float, float)`: NaN propagates, and `-0.0` is smaller than `0.0`.
+#[inline]
+pub fn java_min(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && b.to_bits() == (-0.0_f32).to_bits() {
+        return b;
+    }
+    if a <= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.max(float, float)`: NaN propagates, and `0.0` is larger than `-0.0`.
+#[inline]
+pub fn java_max(a: f32, b: f32) -> f32 {
+    if a.is_nan() {
+        return a;
+    }
+    if a == 0.0 && b == 0.0 && a.to_bits() == (-0.0_f32).to_bits() {
+        return b;
+    }
+    if a >= b {
+        a
+    } else {
+        b
+    }
+}
+
+/// `Math.signum(float)`.
+#[inline]
+pub fn java_signum(f: f32) -> f32 {
+    if f == 0.0 || f.is_nan() {
+        f
+    } else {
+        1.0_f32.copysign(f)
+    }
+}
+
+/// `Mth.binarySearch(from, to, predicate)`: first index in `[from, to)` where `condition` holds.
+#[inline]
+pub fn binary_search(mut from: i32, to: i32, condition: impl Fn(i32) -> bool) -> i32 {
+    let mut len = to - from;
+    while len > 0 {
+        let half = len / 2;
+        let middle = from + half;
+        if condition(middle) {
+            len = half;
+        } else {
+            from = middle + 1;
+            len -= half + 1;
+        }
+    }
+    from
+}

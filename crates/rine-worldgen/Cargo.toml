@@ -9,3 +9,5 @@ path = "src/lib.rs"
 
 [dependencies]
 md-5 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
