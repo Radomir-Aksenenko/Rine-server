@@ -238,6 +238,14 @@ pub fn swing(eid: i32, hand: i32) -> BytesMut {
     })
 }
 
+/// Clientbound animate: 1 = critical hit, 2 = magic critical hit (`ClientboundAnimatePacket`).
+pub fn animate(eid: i32, action: u8) -> BytesMut {
+    packet(C_ANIMATE, |b| {
+        b.w_varint(eid);
+        b.w_u8(action);
+    })
+}
+
 pub fn entity_event(eid: i32, ev: i8) -> BytesMut {
     packet(C_ENTITY_EVENT, |b| {
         b.w_i32(eid);

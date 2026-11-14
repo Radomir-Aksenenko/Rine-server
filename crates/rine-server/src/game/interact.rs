@@ -1,12 +1,11 @@
 //! Digging, placing, item use, inventory clicks, damage and respawn.
 
 use super::entity;
-use super::player::{Dig, Stack};
+use super::player::{Dig, Player, Stack};
 use super::Game;
 use crate::out;
 use rine_protocol::text::Text;
 use rine_protocol::{BlockPos, ProtoError, Reader};
-use rine_world::ChunkPos;
 
 pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, dir: u8, seq: i32) {
     let tick = g.tick;
@@ -116,12 +115,13 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, dir:
     }
 }
 
-/// Breaking stage for viewers of the block's chunk (vanilla
-/// `ServerLevel.destroyBlockProgress`). `-1` clears it.
+/// Breaking stage for everyone within 32 blocks except the miner (vanilla
+/// `ServerLevel.destroyBlockProgress` skips the breaker's id). `-1` clears it.
 fn send_stage(g: &mut Game, eid: i32, pos: BlockPos, stage: i32) {
     let progress = if stage < 0 { 255 } else { stage as u8 };
     let f = out::frame(out::block_destruction(eid, pos, progress));
-    g.send_chunk_viewers(ChunkPos::new(pos.x >> 4, pos.z >> 4), &f);
+    let miner = g.by_eid.get(&eid).copied();
+    super::track::send_near(g, [pos.x as f64, pos.y as f64, pos.z as f64], 32.0, miner, &f);
 }
 
 /// Cancel the player's dig (abort, or a dig replaced by another one). The
@@ -136,11 +136,11 @@ fn stop_dig(g: &mut Game, slot: usize, stage: i32) {
 }
 
 /// Per-tick breaking feedback while a survival dig is in progress, as vanilla
-/// `ServerPlayerGameMode.tick`: the breaking stage goes to every viewer, and
-/// every tick a level event with no source goes to every viewer including the
-/// miner. 2020 (every 4th tick) is the mining hit sound the client plays
-/// itself; 2021 only shows particles. The miner's client predicts the first
-/// hit and the final break, so only the 2001 break event skips the breaker.
+/// `ServerPlayerGameMode.tick`: the breaking stage goes to the other players
+/// nearby, and every tick a level event with no source goes to everyone within
+/// 64 blocks, the miner included. 2020 (every 4th tick) is the mining hit sound
+/// the client plays itself; 2021 only shows particles. The miner's client draws
+/// its own cracks and predicts the first hit and the final break.
 pub fn dig_tick(g: &mut Game) {
     let tick = g.tick;
     for slot in 0..g.players.len() {
@@ -148,27 +148,27 @@ pub fn dig_tick(g: &mut Game) {
         let Some(mut d) = p.digging else { continue };
         let eid = p.eid;
         let tool = p.inv.hotbar(p.held).item;
-        let cp = ChunkPos::new(d.pos.x >> 4, d.pos.z >> 4);
         let st = g.world.get_block(d.pos.x, d.pos.y, d.pos.z);
         if rine_data::get().blocks.is_air(st) {
             // the block went away (explosion, water, another player): end the dig
             if let Some(p) = g.player(slot) {
                 p.digging = None;
             }
-            let f = out::frame(out::block_destruction(eid, d.pos, 255));
-            g.send_chunk_viewers(cp, &f);
+            send_stage(g, eid, d.pos, -1);
             continue;
         }
         let spent = tick.saturating_sub(d.start);
         let per_tick = super::loot::destroy_progress(st, tool);
-        let stage = (((per_tick as f64) * (spent as f64 + 1.0) * 10.0) as i32).clamp(0, 9);
+        // vanilla: state = (int)(destroyProgress * 10), no clamp below 10
+        let stage = (((per_tick as f64) * (spent as f64 + 1.0) * 10.0) as i32).clamp(0, 10);
         if stage != d.stage {
             d.stage = stage;
             send_stage(g, eid, d.pos, stage);
         }
         let event = if spent % 4 == 0 { 2020 } else { 2021 };
         let f = out::frame(out::level_event(event, d.pos, d.dir as i32));
-        g.send_chunk_viewers(cp, &f);
+        let at = [d.pos.x as f64, d.pos.y as f64, d.pos.z as f64];
+        super::track::send_near(g, at, 64.0, None, &f);
         if let Some(p) = g.player(slot) {
             p.digging = Some(d);
         }
@@ -444,28 +444,115 @@ pub fn container_close(g: &mut Game, slot: usize) {
     }
 }
 
+/// Attack speed 4 gives the 5-tick strength cycle; weapon attribute modifiers
+/// (damage, speed) are not in rine-data, so every item uses bare-hand values.
+const ATTACK_DAMAGE: f32 = 1.0;
+const ATTACK_DELAY_TICKS: f32 = 5.0;
+/// `Player.isSweepAttack`: horizontal speed below 0.1 * 2.5, squared.
+const SWEEP_SPEED_SQ: f64 = 0.0625;
+/// `LivingEntity.DAMAGE_COOLDOWN_DURATION`.
+const INVULN_TICKS: i32 = 20;
+const KNOCKBACK_SOUND: &str = "minecraft:entity.player.attack.knockback";
+const CRIT_SOUND: &str = "minecraft:entity.player.attack.crit";
+const STRONG_SOUND: &str = "minecraft:entity.player.attack.strong";
+const WEAK_SOUND: &str = "minecraft:entity.player.attack.weak";
+const NODAMAGE_SOUND: &str = "minecraft:entity.player.attack.nodamage";
+const SWEEP_SOUND: &str = "minecraft:entity.player.attack.sweep";
+
+/// `Player.attack` for a player target (serverbound `attack`): strength scale,
+/// critical hit, sprint knockback, the attack sounds and the victim's hurt.
 pub fn attack(g: &mut Game, slot: usize, target: i32) {
-    let Some(attacker) = g.player(slot) else { return };
-    let (aeid, apos, ayaw) = (attacker.eid, attacker.pos, attacker.yaw);
-    if let Some(&ts) = g.by_eid.get(&target) {
-        if ts == slot {
-            return;
-        }
-        let t = g.players[ts].as_ref().unwrap();
-        let d2: f64 = (0..3).map(|i| (t.pos[i] - apos[i]).powi(2)).sum();
-        if d2 > 36.0 || t.gamemode == 1 || t.gamemode == 3 {
-            return;
-        }
-        super::survival::exhaust(g, slot, super::survival::EXHAUSTION_ATTACK);
-        damage(g, ts, 1.0, "player");
-        super::durability::on_attack(g, slot);
-        // knockback
-        let (kx, kz) = (-(ayaw.to_radians() as f64).sin() * 0.4, (ayaw.to_radians() as f64).cos() * 0.4);
-        let t = g.players[ts].as_mut().unwrap();
-        let teid = t.eid;
-        t.send(out::entity_motion(teid, kx, 0.36, kz));
-        let _ = aeid;
+    let Some(a) = g.player(slot) else { return };
+    if a.dead || a.gamemode == 3 {
+        return;
     }
+    let (aeid, apos, ayaw, eye) = (a.eid, a.pos, a.yaw, a.eye());
+    let (sprinting, on_ground, fall, ticks) = (a.sprinting, a.on_ground, a.fall_distance, a.attack_ticks);
+    let vel_sq = a.vel[0] * a.vel[0] + a.vel[2] * a.vel[2];
+    let held = a.inv.hotbar(a.held).item;
+    let sword = rine_data::get().items.get(held).is_some_and(|i| i.name.ends_with("_sword"));
+    let Some(&ts) = g.by_eid.get(&target) else { return };
+    if ts == slot {
+        return;
+    }
+    let Some(t) = g.players[ts].as_ref() else { return };
+    let d2: f64 = (0..3).map(|i| (t.pos[i] - apos[i]).powi(2)).sum();
+    if d2 > 36.0 || t.gamemode == 3 {
+        return;
+    }
+    let teid = t.eid;
+    // the strength scale is read before onAttack restarts the cooldown
+    let scale = ((ticks as f32 + 0.5) / ATTACK_DELAY_TICKS).clamp(0.0, 1.0);
+    let full = scale > 0.9;
+    let sprint_hit = sprinting && full;
+    let crit = full && !sprinting && fall > 0.0 && !on_ground && super::survival::crit_terrain_ok(g, apos, eye);
+    let mut dmg = ATTACK_DAMAGE * (0.2 + scale * scale * 0.8);
+    if crit {
+        dmg *= 1.5;
+    }
+    let sweep = full && !crit && !sprint_hit && on_ground && sword && vel_sq < SWEEP_SPEED_SQ;
+
+    if let Some(a) = g.player(slot) {
+        a.attack_ticks = 0;
+    }
+    if sprint_hit {
+        attack_sound(g, KNOCKBACK_SOUND, apos);
+    }
+    if !hurt(g, ts, dmg, "player", Some((aeid, apos))) {
+        attack_sound(g, NODAMAGE_SOUND, apos);
+        return;
+    }
+    if sprint_hit {
+        // causeExtraKnockback: +0.5 from the sprint, and the attacker's sprint stops
+        let yaw = ayaw.to_radians() as f64;
+        if let Some(v) = g.players[ts].as_mut() {
+            knock(v, 0.5, yaw.sin(), -yaw.cos());
+        }
+        if let Some(a) = g.player(slot) {
+            a.sprinting = false;
+        }
+        super::track::flags_changed(g, slot);
+    }
+    // the victim's client applies the velocity itself
+    if let Some(v) = g.players[ts].as_mut() {
+        let m = v.vel;
+        v.send(out::entity_motion(teid, m[0], m[1], m[2]));
+    }
+    if sweep {
+        attack_sound(g, SWEEP_SOUND, apos);
+    }
+    if crit {
+        attack_sound(g, CRIT_SOUND, apos);
+        // ServerPlayer.crit: the target's animation goes to the attacker's trackers and to the attacker
+        let f = out::frame(out::animate(teid, 1));
+        super::track::send_to_trackers(g, aeid, &f);
+        if let Some(a) = g.player(slot) {
+            a.out.push(f);
+        }
+    } else if !sweep {
+        attack_sound(g, if full { STRONG_SOUND } else { WEAK_SOUND }, apos);
+    }
+    super::durability::on_attack(g, slot);
+    super::survival::exhaust(g, slot, super::survival::EXHAUSTION_ATTACK);
+}
+
+/// `Level.playSound(null, ...)` at the attacker: heard by the attacker too (distance 0).
+fn attack_sound(g: &mut Game, name: &str, at: [f64; 3]) {
+    super::track::sound_near(g, name, super::survival::SOUND_NEUTRAL, at, 1.0, 1.0, None);
+}
+
+/// `LivingEntity.knockback`: halves the horizontal velocity and pushes it by
+/// `power` along the direction (xd, zd); a grounded entity's rise is capped at 0.4.
+pub fn knock(p: &mut Player, power: f64, xd: f64, zd: f64) {
+    let len = (xd * xd + zd * zd).sqrt();
+    let (ux, uz) = if len < 1e-5 { (1.0, 0.0) } else { (xd / len, zd / len) };
+    let on_ground = p.on_ground;
+    let v = &mut p.vel;
+    v[0] = v[0] / 2.0 - ux * power;
+    if on_ground {
+        v[1] = (v[1] / 2.0 + power).min(0.4);
+    }
+    v[2] = v[2] / 2.0 - uz * power;
 }
 
 /// Index of a damage type in the synced `damage_type` registry (the order
@@ -480,35 +567,75 @@ fn damage_type_id(cause: &str) -> i32 {
     reg.id(&format!("minecraft:{name}")).or_else(|| reg.id("minecraft:generic")).unwrap_or(0) as i32
 }
 
-pub fn damage(g: &mut Game, slot: usize, amount: f32, cause: &str) {
-    let Some(p) = g.player(slot) else { return };
-    if p.dead || p.gamemode == 1 || p.gamemode == 3 {
-        return;
+/// `LivingEntity.hurtServer` for a player: invulnerability window, the
+/// attacker's 0.4 knockback, health, the damage event and death. Returns
+/// whether damage was applied: a hit inside the window, a zero hit, and a hit on
+/// a creative or spectator player do not count.
+pub fn damage(g: &mut Game, slot: usize, amount: f32, cause: &str) -> bool {
+    hurt(g, slot, amount, cause, None)
+}
+
+fn hurt(g: &mut Game, slot: usize, amount: f32, cause: &str, attacker: Option<(i32, [f64; 3])>) -> bool {
+    let Some(p) = g.player(slot) else { return false };
+    if p.dead || p.health <= 0.0 || p.gamemode == 1 || p.gamemode == 3 {
+        return false;
     }
-    p.health = (p.health - amount).max(0.0);
-    let _ = p;
+    let amount = amount.max(0.0);
+    let mut dmg = amount;
+    // inside the window only a bigger hit lands, and only its excess; the void bypasses it
+    if p.hurt_cooldown > INVULN_TICKS / 2 && cause != "void" {
+        if amount <= p.last_hurt {
+            return false;
+        }
+        dmg = amount - p.last_hurt;
+        p.last_hurt = amount;
+    } else {
+        p.last_hurt = amount;
+        p.hurt_cooldown = INVULN_TICKS;
+    }
+    if dmg <= 0.0 {
+        return false;
+    }
+    p.health = (p.health - dmg).max(0.0);
+    if let Some((_, from)) = attacker {
+        // dealDefaultKnockback: away from the attacker's position
+        let (xd, zd) = (from[0] - p.pos[0], from[2] - p.pos[2]);
+        knock(p, 0.4, xd, zd);
+    }
     // armor takes wear unless the damage type bypasses armor (vanilla
     // `bypasses_armor` tag); only the melee and explosion causes are wired
     if matches!(cause, "player" | "explosion") {
-        super::durability::hurt_armor(g, slot, amount);
+        super::durability::hurt_armor(g, slot, dmg);
     }
     super::survival::exhaust(g, slot, super::survival::EXHAUSTION_DAMAGE);
-    let Some(p) = g.player(slot) else { return };
+    let Some(p) = g.player(slot) else { return true };
     let (h, f, s, eid) = (p.health, p.food, p.saturation, p.eid);
     p.send(out::set_health(h, f, s));
-    // damage_event: the client plays the hurt animation and the hurt sound
-    // for this damage type itself (LivingEntity.handleDamageEvent)
+    // damage_event: the client plays the hurt animation and the hurt sound for
+    // this damage type itself (LivingEntity.handleDamageEvent). The attacker ids
+    // are its entity id + 1 (cause and direct entity are both the attacker).
     let ty = damage_type_id(cause);
-    let hurt = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_DAMAGE_EVENT, |b| {
+    let (cause_id, direct_id) = attacker.map_or((0, 0), |(e, _)| (e + 1, e + 1));
+    let hurt_f = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_DAMAGE_EVENT, |b| {
         use rine_protocol::Writer;
         b.w_varint(eid);
         b.w_varint(ty);
-        b.w_varint(0); // no cause entity
-        b.w_varint(0); // no direct entity
+        b.w_varint(cause_id);
+        b.w_varint(direct_id);
         b.w_bool(false); // no source position
     }));
-    p.out.push(hurt.clone());
-    super::track::send_to_trackers(g, eid, &hurt);
+    p.out.push(hurt_f.clone());
+    super::track::send_to_trackers(g, eid, &hurt_f);
+    // the attacker gets it too unless it already tracks the victim
+    if let Some((ae, _)) = attacker {
+        if let Some(&si) = g.by_eid.get(&ae) {
+            if let Some(a) = g.players[si].as_mut() {
+                if !a.tracked.contains(&eid) {
+                    a.out.push(hurt_f.clone());
+                }
+            }
+        }
+    }
     if h <= 0.0 {
         let p = g.player(slot).unwrap();
         p.dead = true;
@@ -528,6 +655,7 @@ pub fn damage(g: &mut Game, slot: usize, amount: f32, cause: &str) {
             entity::spawn_item(g, [pos[0], pos[1] + 1.0, pos[2]], [a.sin() * 0.2, 0.3, a.cos() * 0.2], s, 40);
         }
     }
+    true
 }
 
 pub fn respawn(g: &mut Game, slot: usize) {

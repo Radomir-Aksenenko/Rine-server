@@ -118,7 +118,7 @@ pub fn apply(p: &mut Player, d: &PlayerData) {
     if d.health > 0.0 {
         p.pos = d.pos;
         p.sent_pos = d.pos;
-        p.fall_start = d.pos[1];
+        p.fall_distance = 0.0;
         p.yaw = d.yaw;
         p.pitch = d.pitch;
     }
