@@ -51,6 +51,10 @@ pub struct Shared {
     pub config: Config,
     pub online: AtomicUsize,
     pub new_players: crossbeam_channel::Sender<NewPlayer>,
+    /// Wakes the game loop when inbound play packets are queued, so they are
+    /// handled between ticks instead of at the next tick start. Capacity 1:
+    /// one pending wake is enough, the loop drains every queue on each wake.
+    pub wake: crossbeam_channel::Sender<()>,
     /// Precomputed configuration frames (registry data + tags), encoded once.
     pub config_frames: Vec<Bytes>,
 }
@@ -274,10 +278,15 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     let mut buf = buf;
     let res: anyhow::Result<()> = async {
         loop {
+            let mut queued = false;
             while let Some(p) = dec.next()? {
                 if in_tx.send(p).is_err() {
                     return Ok(());
                 }
+                queued = true;
+            }
+            if queued {
+                let _ = shared.wake.try_send(());
             }
             let n = rd.read(&mut buf).await?;
             if n == 0 {

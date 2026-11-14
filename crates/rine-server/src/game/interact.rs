@@ -1,13 +1,14 @@
 //! Digging, placing, item use, inventory clicks, damage and respawn.
 
 use super::entity;
-use super::player::Stack;
+use super::player::{Dig, Stack};
 use super::Game;
 use crate::out;
 use rine_protocol::text::Text;
 use rine_protocol::{BlockPos, ProtoError, Reader};
+use rine_world::ChunkPos;
 
-pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir: u8, seq: i32) {
+pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, dir: u8, seq: i32) {
     let tick = g.tick;
     let Some(p) = g.player(slot) else { return };
     match action {
@@ -23,26 +24,55 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir
                 let tool = p.inv.hotbar(p.held).item;
                 let st = g.world.get_block(pos.x, pos.y, pos.z);
                 let progress = super::loot::destroy_progress(st, tool);
-                let p = g.player(slot).unwrap();
                 if progress >= 1.0 {
                     break_block(g, slot, pos, true);
                 } else {
-                    p.digging = Some((pos, tick));
+                    // a new dig replaces an older one: clear the old stage
+                    stop_dig(g, slot, -1);
+                    // vanilla: destroyBlockProgress(state) right away
+                    let stage = ((progress * 10.0) as i32).clamp(0, 9);
+                    let eid = g.player(slot).map(|p| p.eid).unwrap_or(0);
+                    if let Some(p) = g.player(slot) {
+                        p.digging = Some(Dig { pos, start: tick, dir, stage });
+                    }
+                    send_stage(g, eid, pos, stage);
                 }
             }
             if let Some(p) = g.player(slot) {
                 p.ack(seq);
             }
         }
-        1 | 2 => {
-            p.digging = None;
+        1 => {
+            // CHANGE_DESTROY_DIRECTION: the crosshair moved to another face of
+            // the block being mined. The dig continues (vanilla only updates
+            // destroyDirection here).
+            if let Some(d) = p.digging.as_mut() {
+                if d.pos == pos {
+                    d.dir = dir;
+                }
+            }
             p.ack(seq);
+        }
+        2 => {
+            // ABORT_DESTROY_BLOCK
+            stop_dig(g, slot, -1);
+            if let Some(p) = g.player(slot) {
+                p.ack(seq);
+            }
         }
         3 => {
             // STOP_DESTROY_BLOCK: client finished digging. Accept if the dig
             // started on this block (client-side break time prediction).
-            let ok = matches!(p.digging, Some((dp, _)) if dp == pos) && p.gamemode == 0;
-            p.digging = None;
+            // vanilla only acts on the block being mined (destroyPos)
+            let dig = if matches!(p.digging, Some(d) if d.pos == pos) { p.digging.take() } else { None };
+            let ok = dig.is_some() && p.gamemode == 0;
+            if let Some(d) = dig {
+                // vanilla: destroyBlockProgress(-1) before destroyAndAck
+                let eid = p.eid;
+                if d.stage >= 0 {
+                    send_stage(g, eid, d.pos, -1);
+                }
+            }
             if ok {
                 break_block(g, slot, pos, true);
             } else {
@@ -83,6 +113,65 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir
             super::track::equipment_changed(g, slot);
         }
         _ => {}
+    }
+}
+
+/// Breaking stage for viewers of the block's chunk (vanilla
+/// `ServerLevel.destroyBlockProgress`). `-1` clears it.
+fn send_stage(g: &mut Game, eid: i32, pos: BlockPos, stage: i32) {
+    let progress = if stage < 0 { 255 } else { stage as u8 };
+    let f = out::frame(out::block_destruction(eid, pos, progress));
+    g.send_chunk_viewers(ChunkPos::new(pos.x >> 4, pos.z >> 4), &f);
+}
+
+/// Cancel the player's dig (abort, or a dig replaced by another one). The
+/// stage is cleared for viewers when `stage` is `-1`.
+fn stop_dig(g: &mut Game, slot: usize, stage: i32) {
+    let Some(p) = g.player(slot) else { return };
+    let Some(d) = p.digging.take() else { return };
+    let eid = p.eid;
+    if d.stage >= 0 || stage < 0 {
+        send_stage(g, eid, d.pos, stage);
+    }
+}
+
+/// Per-tick breaking feedback while a survival dig is in progress, as vanilla
+/// `ServerPlayerGameMode.tick`: the breaking stage goes to every viewer, and
+/// every tick a level event with no source goes to every viewer including the
+/// miner. 2020 (every 4th tick) is the mining hit sound the client plays
+/// itself; 2021 only shows particles. The miner's client predicts the first
+/// hit and the final break, so only the 2001 break event skips the breaker.
+pub fn dig_tick(g: &mut Game) {
+    let tick = g.tick;
+    for slot in 0..g.players.len() {
+        let Some(p) = g.players[slot].as_ref() else { continue };
+        let Some(mut d) = p.digging else { continue };
+        let eid = p.eid;
+        let tool = p.inv.hotbar(p.held).item;
+        let cp = ChunkPos::new(d.pos.x >> 4, d.pos.z >> 4);
+        let st = g.world.get_block(d.pos.x, d.pos.y, d.pos.z);
+        if rine_data::get().blocks.is_air(st) {
+            // the block went away (explosion, water, another player): end the dig
+            if let Some(p) = g.player(slot) {
+                p.digging = None;
+            }
+            let f = out::frame(out::block_destruction(eid, d.pos, 255));
+            g.send_chunk_viewers(cp, &f);
+            continue;
+        }
+        let spent = tick.saturating_sub(d.start);
+        let per_tick = super::loot::destroy_progress(st, tool);
+        let stage = (((per_tick as f64) * (spent as f64 + 1.0) * 10.0) as i32).clamp(0, 9);
+        if stage != d.stage {
+            d.stage = stage;
+            send_stage(g, eid, d.pos, stage);
+        }
+        let event = if spent % 4 == 0 { 2020 } else { 2021 };
+        let f = out::frame(out::level_event(event, d.pos, d.dir as i32));
+        g.send_chunk_viewers(cp, &f);
+        if let Some(p) = g.player(slot) {
+            p.digging = Some(d);
+        }
     }
 }
 

@@ -77,6 +77,9 @@ pub struct Entities {
     pub removed: Vec<i32>,
     /// Extra per-entity frames (metadata changes, pickups...).
     pub extra: Vec<(i32, Bytes)>,
+    /// Entities spawned since the tracker last ran; their spawn packets go out
+    /// right away (between ticks) instead of waiting for the periodic tracker pass.
+    pub fresh: Vec<i32>,
 }
 
 impl Entities {
@@ -85,6 +88,7 @@ impl Entities {
     }
     pub fn spawn(&mut self, e: Ent) {
         self.index.insert(e.eid, self.list.len());
+        self.fresh.push(e.eid);
         self.list.push(e);
     }
     fn compact(&mut self) {
