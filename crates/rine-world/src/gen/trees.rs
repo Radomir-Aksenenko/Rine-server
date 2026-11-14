@@ -151,3 +151,29 @@ fn grow(w: &mut Writer, rng: &mut Rng, kind: Kind, x: i32, y: i32, z: i32) {
         }
     }
 }
+
+/// Trees on the vanilla terrain, kept inside this chunk (trunks at least 3
+/// blocks from the edge) until vanilla feature placement is ported.
+pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[super::terrain::Column]) {
+    for k in 0..CANDIDATES * 2 {
+        let mut rng = Rng::new(hash(seed, cx as i64, cz as i64, k as i64, SALT_TREE));
+        let lx = rng.range(3, 13);
+        let lz = rng.range(3, 13);
+        let roll = rng.next_f32() * 1.6;
+        let pick = rng.next_f32();
+        let col = cols[(lz * 16 + lx) as usize];
+        let Some(kind) = choose(col.biome, roll, pick) else {
+            continue;
+        };
+        if col.surface < SEA_LEVEL {
+            continue;
+        }
+        let ground = grid.get(lx, col.surface, lz);
+        if ground != ids.grass && ground != ids.grass_snowy && ground != ids.dirt {
+            continue;
+        }
+        let (x, z) = (cx * 16 + lx, cz * 16 + lz);
+        let mut w = Writer { grid: &mut *grid, ids, ox: cx * 16, oz: cz * 16 };
+        grow(&mut w, &mut rng, kind, x, col.surface + 1, z);
+    }
+}

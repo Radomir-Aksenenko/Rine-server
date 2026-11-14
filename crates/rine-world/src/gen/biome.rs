@@ -164,3 +164,30 @@ pub fn classify(seed: u64, x: i32, z: i32, s: i32, cont: f32, mount: f32, river:
     }
     Savanna
 }
+
+/// Closest legacy feature biome for a vanilla biome id (trees, decoration and
+/// ore rules of the interim feature pass).
+pub fn from_vanilla(name: &str) -> Biome {
+    if let Some(b) = Biome::ALL.iter().copied().find(|b| b.name() == name) {
+        return b;
+    }
+    let n = name.strip_prefix("minecraft:").unwrap_or(name);
+    match n {
+        "flower_forest" | "cherry_grove" | "pale_garden" => Biome::Forest,
+        "old_growth_birch_forest" => Biome::BirchForest,
+        "old_growth_pine_taiga" | "old_growth_spruce_taiga" | "grove" => Biome::Taiga,
+        "sparse_jungle" | "bamboo_jungle" => Biome::Jungle,
+        "savanna_plateau" | "windswept_savanna" => Biome::Savanna,
+        "mangrove_swamp" => Biome::Swamp,
+        "ice_spikes" => Biome::SnowyPlains,
+        "meadow" => Biome::Plains,
+        "windswept_gravelly_hills" | "windswept_forest" => Biome::WindsweptHills,
+        "jagged_peaks" | "frozen_peaks" => Biome::SnowySlopes,
+        "stony_shore" => Biome::Beach,
+        "badlands" | "eroded_badlands" | "wooded_badlands" => Biome::Desert,
+        "lukewarm_ocean" | "warm_ocean" => Biome::Ocean,
+        "deep_lukewarm_ocean" | "deep_cold_ocean" | "deep_frozen_ocean" => Biome::DeepOcean,
+        "dripstone_caves" | "lush_caves" | "deep_dark" | "mushroom_fields" => Biome::Plains,
+        _ => Biome::Plains,
+    }
+}

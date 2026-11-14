@@ -11,3 +11,4 @@ rayon.workspace = true
 ahash.workspace = true
 lz4_flex.workspace = true
 parking_lot.workspace = true
+rine-worldgen = { path = "../rine-worldgen" }

@@ -90,3 +90,67 @@ fn water_next(corners: &Corners, seed: u64, x: i32, z: i32) -> bool {
         n.surface < SEA_LEVEL && !n.biome.is_frozen_water()
     })
 }
+
+/// Ground cover on the vanilla terrain: same rules as `place`, but checks the
+/// actual ground block and finds water from the chunk's own cells.
+pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[Column]) {
+    let (ox, oz) = (cx * 16, cz * 16);
+    for lz in 0..16i32 {
+        for lx in 0..16i32 {
+            let col = cols[(lz * 16 + lx) as usize];
+            let s = col.surface;
+            if s < SEA_LEVEL {
+                continue;
+            }
+            let y = s + 1;
+            if !Grid::in_bounds(lx, y + 1, lz) || grid.get(lx, y, lz) != ids.air {
+                continue;
+            }
+            let ground = grid.get(lx, s, lz);
+            let (wx, wz) = (ox + lx, oz + lz);
+            let r = unit(hash(seed, wx as i64, wz as i64, 0, SALT_DECOR));
+            let r2 = unit(hash(seed, wx as i64, wz as i64, 1, SALT_DECOR));
+            let water_next = [(1, 0), (-1, 0), (0, 1), (0, -1)].iter().any(|&(dx, dz)| {
+                let (nx, nz) = (lx + dx, lz + dz);
+                Grid::in_bounds(nx, s, nz) && grid.get(nx, s, nz) == ids.water
+            });
+            if (ground == ids.sand || ground == ids.grass || ground == ids.dirt) && water_next && r2 > 0.9 {
+                let h = 1 + (r * 3.0) as i32;
+                column(grid, ids.air, lx, y, lz, ids.sugar_cane, h);
+                continue;
+            }
+            if ground == ids.sand && col.biome == Biome::Desert {
+                if r < 0.01 {
+                    grid.set(lx, y, lz, ids.dead_bush);
+                } else if r < 0.016 {
+                    let h = 1 + (r2 * 3.0) as i32;
+                    column(grid, ids.air, lx, y, lz, ids.cactus, h);
+                }
+                continue;
+            }
+            if ground != ids.grass {
+                continue;
+            }
+            let (grass_p, tall_p, flower_p) = match col.biome {
+                Biome::Jungle => (0.35, 0.06, 0.0),
+                Biome::Plains | Biome::SunflowerPlains => (0.3, 0.05, 0.04),
+                Biome::Forest | Biome::BirchForest | Biome::DarkForest => (0.2, 0.03, 0.02),
+                Biome::Taiga | Biome::Savanna | Biome::Swamp => (0.15, 0.02, 0.0),
+                _ => (0.08, 0.01, 0.01),
+            };
+            if r < grass_p {
+                grid.set(lx, y, lz, ids.short_grass);
+            } else if r < grass_p + tall_p {
+                if grid.get(lx, y + 1, lz) == ids.air {
+                    grid.set(lx, y, lz, ids.tall_lower);
+                    grid.set(lx, y + 1, lz, ids.tall_upper);
+                }
+            } else if r < grass_p + tall_p + flower_p {
+                let i = ((r2 * 5.0) as usize).min(4);
+                grid.set(lx, y, lz, ids.flowers[i]);
+            } else if col.biome == Biome::Plains && r2 > 0.998 {
+                grid.set(lx, y, lz, ids.pumpkin);
+            }
+        }
+    }
+}

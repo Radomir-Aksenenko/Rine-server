@@ -53,6 +53,12 @@ pub struct Ids {
 }
 
 pub struct Generator {
+    /// Bit-exact vanilla terrain, biomes and surface (rine-worldgen).
+    vanilla: rine_worldgen::Overworld,
+    /// rine-worldgen palette string -> state id (same palette for every chunk).
+    palette: parking_lot::RwLock<Vec<u16>>,
+    /// rine-worldgen biome palette index -> synced biome registry id.
+    biome_map: parking_lot::RwLock<Vec<u8>>,
     seed: u64,
     noise: Noises,
     ids: Ids,
@@ -110,6 +116,9 @@ impl Generator {
         };
 
         Self {
+            vanilla: rine_worldgen::Overworld::new(seed),
+            palette: parking_lot::RwLock::new(Vec::new()),
+            biome_map: parking_lot::RwLock::new(Vec::new()),
             seed: seed as u64,
             noise: Noises::new(seed as u64),
             ids,
@@ -117,46 +126,69 @@ impl Generator {
         }
     }
 
+    /// Map palette names to state / biome ids, extending the caches as the
+    /// (global, append-only) rine-worldgen palettes grow.
+    fn map_palettes(&self, cb: &rine_worldgen::ChunkBlocks) -> (Vec<u16>, Vec<u8>) {
+        let data = rine_data::get();
+        {
+            let p = self.palette.read();
+            let bm = self.biome_map.read();
+            if p.len() >= cb.palette.len() && bm.len() >= cb.biome_palette.len() {
+                return (p.clone(), bm.clone());
+            }
+        }
+        let mut p = self.palette.write();
+        for name in &cb.palette[p.len().min(cb.palette.len())..] {
+            let id = data.blocks.parse_state(name).unwrap_or_else(|| {
+                let base = name.split('[').next().unwrap_or(name);
+                data.blocks.default_state(base)
+            });
+            p.push(id);
+        }
+        let reg = data.registries.synced("minecraft:worldgen/biome");
+        let mut bm = self.biome_map.write();
+        for name in &cb.biome_palette[bm.len().min(cb.biome_palette.len())..] {
+            bm.push(reg.id(name).unwrap_or(0) as u8);
+        }
+        (p.clone(), bm.clone())
+    }
+
     /// Pure function of (seed, pos). Thread-safe.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
-        let (ox, oz) = (pos.x * 16, pos.z * 16);
-        // Lattice covering the chunk plus one chunk of margin on every side.
-        let corners = Corners::new(&self.noise, ox - 16, oz - 16, 13, 13);
-
-        // Surfaces of the 18x18 extended area (chunk plus one column of margin).
-        let mut ext = [0i32; 18 * 18];
-        for lz in 0..18usize {
-            for lx in 0..18usize {
-                ext[lz * 18 + lx] = corners.column(self.seed, ox + lx as i32 - 1, oz + lz as i32 - 1).surface;
-            }
-        }
-        let mut cols = [Column { surface: 0, biome: Biome::Plains }; 256];
-        for lz in 0..16usize {
-            for lx in 0..16usize {
-                cols[lz * 16 + lx] = corners.column(self.seed, ox + lx as i32, oz + lz as i32);
-            }
-        }
-
+        let cb = self.vanilla.generate(pos.x, pos.z);
+        let (pal, bmap) = self.map_palettes(&cb);
+        debug_assert_eq!(cb.min_y, MIN_Y);
         let mut grid = Grid::new(self.ids.air);
-        for lz in 0..16usize {
-            for lx in 0..16usize {
-                let col = cols[lz * 16 + lx];
-                terrain::fill_column(
-                    &mut grid,
-                    &self.ids,
-                    self.seed,
-                    lx as i32,
-                    lz as i32,
-                    ox + lx as i32,
-                    oz + lz as i32,
-                    col,
-                );
+        // rine-worldgen: [((y - min_y) * 16 + z) * 16 + x]; Grid uses the same order
+        for (i, &v) in cb.blocks.iter().enumerate().take(grid.data.len()) {
+            grid.data[i] = pal[v as usize];
+        }
+        // columns: surface = highest motion-blocking non-fluid block, biome there
+        let b = &rine_data::get().blocks;
+        let qh = (cb.height / 4) as usize;
+        let mut cols = [Column { surface: MIN_Y, biome: Biome::Plains }; 256];
+        let mut surf_biome = [0u16; 256];
+        for lz in 0..16i32 {
+            for lx in 0..16i32 {
+                let mut y = MIN_Y + cb.height - 1;
+                while y > MIN_Y {
+                    let st = grid.get(lx, y, lz);
+                    if !b.is_air(st) && !b.has(st, rine_data::blocks::flag::NO_COLLISION) {
+                        break;
+                    }
+                    y -= 1;
+                }
+                let qy = (((y + 1 - MIN_Y) >> 2) as usize).min(qh - 1);
+                let bi = cb.biomes[(qy * 4 + (lz as usize >> 2)) * 4 + (lx as usize >> 2)];
+                let name = cb.biome_palette[bi as usize].as_str();
+                cols[(lz * 16 + lx) as usize] = Column { surface: y, biome: biome::from_vanilla(name) };
+                surf_biome[(lz * 16 + lx) as usize] = bi;
             }
         }
-        terrain::carve(&self.noise, &mut grid, &self.ids, ox, oz, &ext);
+        let _ = surf_biome;
         ores::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
-        trees::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &corners);
-        decor::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols, &corners);
+        trees::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
+        decor::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
 
         let mut chunk = Chunk::new(pos);
         for sy in 0..SECTIONS {
@@ -173,8 +205,9 @@ impl Generator {
             for qy in 0..4usize {
                 for qz in 0..4usize {
                     for qx in 0..4usize {
-                        let b = cols[(qz * 4 + 2) * 16 + qx * 4 + 2].biome;
-                        sec.biomes[(qy << 4) | (qz << 2) | qx] = self.biome_ids[b as usize];
+                        let gy = (sy * 4 + qy).min(qh - 1);
+                        let bi = cb.biomes[(gy * 4 + qz) * 4 + qx];
+                        sec.biomes[(qy << 4) | (qz << 2) | qx] = bmap[bi as usize];
                     }
                 }
             }
@@ -188,56 +221,40 @@ impl Generator {
         terrain::column_at(&self.noise, self.seed, x, z)
     }
 
-    /// A standing position (feet y) near (0, 0): solid ground below, air at feet and head,
-    /// on land above sea level.
+    /// A standing position (feet y) near (0, 0): solid dry ground with two
+    /// air blocks above, searched outward chunk by chunk on the real terrain.
     pub fn find_spawn(&self) -> (i32, i32, i32) {
         let b = &rine_data::get().blocks;
-        for r in 0..=1024i32 {
-            let mut pts: Vec<(i32, i32)> = Vec::new();
-            if r == 0 {
-                pts.push((0, 0));
-            } else {
-                for d in -r..=r {
-                    pts.push((d, -r));
-                    pts.push((d, r));
-                }
-                for d in (-r + 1)..r {
-                    pts.push((-r, d));
-                    pts.push((r, d));
-                }
-            }
-            for (x, z) in pts {
-                let c = self.column_at(x, z);
-                let spawn_ok = matches!(
-                    c.biome,
-                    Biome::Plains
-                        | Biome::SunflowerPlains
-                        | Biome::Forest
-                        | Biome::BirchForest
-                        | Biome::DarkForest
-                        | Biome::Taiga
-                        | Biome::Desert
-                        | Biome::Savanna
-                        | Biome::Jungle
-                        | Biome::Beach
-                );
-                if c.surface < SEA_LEVEL || !spawn_ok {
-                    continue;
-                }
-                let y = c.surface + 1;
-                let chunk = self.generate(ChunkPos::of_block(x, z));
-                let (lx, lz) = (x.rem_euclid(16), z.rem_euclid(16));
-                let below = chunk.get(lx, y - 1, lz);
-                let feet = chunk.get(lx, y, lz);
-                let head = chunk.get(lx, y + 1, lz);
-                let solid_below = !b.is_air(below) && !b.has(below, rine_data::blocks::flag::WATER | rine_data::blocks::flag::LAVA);
-                if solid_below && b.is_air(feet) && b.is_air(head) {
-                    return (x, y, z);
+        for r in 0..=16i32 {
+            for cz in -r..=r {
+                for cx in -r..=r {
+                    if cx.abs() != r && cz.abs() != r {
+                        continue;
+                    }
+                    let chunk = self.generate(ChunkPos::new(cx, cz));
+                    for lz in [8, 4, 12, 0, 15] {
+                        for lx in [8, 4, 12, 0, 15] {
+                            let mut y = crate::chunk::MAX_Y - 1;
+                            while y > SEA_LEVEL && b.is_air(chunk.get(lx, y, lz)) {
+                                y -= 1;
+                            }
+                            let below = chunk.get(lx, y, lz);
+                            if y <= SEA_LEVEL || b.is_air(below) || b.has(below, rine_data::blocks::flag::WATER | rine_data::blocks::flag::LAVA | rine_data::blocks::flag::NO_COLLISION) {
+                                continue;
+                            }
+                            let n = &b.block_of(below).name;
+                            if n.ends_with("leaves") || n.ends_with("_log") {
+                                continue;
+                            }
+                            if b.is_air(chunk.get(lx, y + 1, lz)) && b.is_air(chunk.get(lx, y + 2, lz)) {
+                                return (cx * 16 + lx, y + 1, cz * 16 + lz);
+                            }
+                        }
+                    }
                 }
             }
         }
-        let c = self.column_at(0, 0);
-        (0, c.surface.max(SEA_LEVEL) + 1, 0)
+        (0, 100, 0)
     }
 }
 
