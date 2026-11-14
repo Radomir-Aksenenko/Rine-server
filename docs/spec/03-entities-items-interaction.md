@@ -22,7 +22,7 @@ Packet IDs are not listed here (given as known). Each section gives the body onl
 - `idMapper` (`ByteBufCodecs.java:735-749`) = VarInt id.
 - `registry(key)` (lines 755-778) = VarInt registry id (no inline form).
 - `holder(key, directCodec)` (lines 785-814) = VarInt `h`. If `h == 0`, the value follows inline (direct codec). If `h > 0`, the registry entry is `h - 1`. Encoding a reference writes `id + 1`.
-- `holderSet` (lines 816-852) = VarInt `n`. `n == 0` means a tag: Identifier follows. Otherwise `n - 1` holders follow, each as a holder encoding.
+- `holderSet` (lines 816-852) = VarInt `n`. `n == 0` means a tag: Identifier follows. Otherwise `n - 1` elements follow. Each element is coded with `holderRegistry` (lines 781-783), so it is a **plain VarInt registry id** (no inline form, no `+1`).
 - `EnumSet` as a fixed bitset (`FriendlyByteBuf.java:115-124`): ceil(enumValueCount / 8) bytes. Bit `i` (declaration order, ordinal) is in byte `i / 8`, bit `i % 8`, LSB first (`BitSet.toByteArray` order, `FriendlyByteBuf.java:611-617`).
 - Fixed bitset (`ByteBufCodecs.fixedBitSet(n)`, line 348): ceil(n / 8) bytes, same bit order (`FriendlyByteBuf.java:605-617`).
 - Enums coded with `writeEnum` / `readEnum` (`FriendlyByteBuf.java:384-391`) = VarInt ordinal (declaration order, first = 0).
@@ -230,7 +230,7 @@ Encode of an empty patch = VarInt 0, VarInt 0 (`encode`, start of the method, `D
 - **Pose** (`net/minecraft/world/entity/Pose.java:12-33`): STANDING=0, FALL_FLYING=1, SLEEPING=2, SWIMMING=3, SPIN_ATTACK=4, CROUCHING=5, LONG_JUMPING=6, DYING=7, CROAKING=8, USING_TONGUE=9, SITTING=10, ROARING=11, SNIFFING=12, EMERGING=13, DIGGING=14, SLIDING=15, SHOOTING=16, INHALING=17. VarInt (idMapper).
 - **ContainerInput** (`net/minecraft/world/inventory/ContainerInput.java:9-19`): PICKUP=0, QUICK_MOVE=1, SWAP=2, CLONE=3, THROW=4, QUICK_CRAFT=5, PICKUP_ALL=6. VarInt (idMapper).
 - **Rotations** (`net/minecraft/core/Rotations.java:16-26`): f32 x, f32 y, f32 z (3 x f32, 12 bytes).
-- **Component** (`ComponentSerialization.java:38-41`): `STREAM_CODEC`/`TRUSTED_STREAM_CODEC` = `ByteBufCodecs.fromCodecWithRegistries(...)`. The NBT body was not read in this pass. UNCONFIRMED: assumed network NBT (unnamed root). Optional form is bool + component.
+- **Component** (`ComponentSerialization.java:38-41`): `STREAM_CODEC`/`TRUSTED_STREAM_CODEC` = `ByteBufCodecs.fromCodecWithRegistries(...)` (`ByteBufCodecs.java:451-468`). Wire = one **network NBT tag** (unnamed root: type byte + payload, `FriendlyByteBuf.readNbt` -> `NbtIo.readAnyTag`, `FriendlyByteBuf.java:475-476`; a TAG_End root is rejected as a decode error). The codec encodes the component to NBT with registry ops and writes that tag. Optional form is bool + component.
 - **ParticleOptions** (`net/minecraft/core/particles/ParticleTypes.java:175`): `registry(PARTICLE_TYPE)` (VarInt type id), then per-type options (per-type payload; UNCONFIRMED except for simple particles, which have none).
 - **EntityReference** (`EntityDataSerializers.java:120-121`): UNCONFIRMED body (the `EntityReference.streamCodec()` was not read).
 - **ResolvableProfile**, **VillagerData**, variant holders (cat, cow, wolf, frog, pig, chicken, painting, etc.): UNCONFIRMED (not read). They are used only as entity data values (section 3).
@@ -498,7 +498,21 @@ VarInt entityId
 u8 action            // 0 WAKE_UP, 1 CRITICAL_HIT, 2 MAGIC_CRITICAL_HIT (lines 13-15)
 ```
 
-Other action values (e.g. swing) are not defined here. Swing animations use `ClientboundSwingAnimationPacket` (separate packet, not read in this pass).
+Only actions 0-2 exist here. Arm swings no longer use this packet (see 4.1a).
+
+### 4.1a ClientboundSwingAnimationPacket (`network/protocol/game/ClientboundSwingAnimationPacket.java:12-21`)
+
+Used to show other players swinging an arm. Replaces the old Animate swing action.
+
+```
+VarInt entityId
+VarInt hand                  // InteractionHand: MAIN_HAND 0, OFF_HAND 1 (InteractionHand.STREAM_CODEC, idMapper)
+SwingAnimation:
+  VarInt type                // SwingAnimationType.STREAM_CODEC = idMapper (VarInt id)
+  VarInt duration            // ByteBufCodecs.VAR_INT (SwingAnimation.java:20-22)
+```
+
+SwingAnimationType ids (`net/minecraft/world/item/SwingAnimationType.java:13-15`): NONE=0, WHACK=1, STAB=2.
 
 ### 4.2 ClientboundEntityEventPacket (`ClientboundEntityEventPacket.java:12-32`)
 
@@ -708,6 +722,19 @@ node stub (by type = flags & 0x03):
 
 Flags (lines 39-43): `MASK_TYPE = 0x03` (0 root, 1 literal, 2 argument), `FLAG_EXECUTABLE = 0x04`, `FLAG_REDIRECT = 0x08`, `FLAG_CUSTOM_SUGGESTIONS = 0x10`, `FLAG_RESTRICTED = 0x20`.
 
+##### 4.18.0 Suggestion types (custom suggestion id, flag 0x10)
+
+When flag 0x10 is set, an `Identifier` follows the argument stub (section 4.18). Registered suggestion ids (`net/minecraft/commands/synchronization/SuggestionProviders.java:18-34`, all in the `minecraft` namespace):
+
+| Identifier | Meaning |
+|---|---|
+| `minecraft:ask_server` | default when no provider is named (`getProvider` fallback, line 52); the server answers the suggestion request |
+| `minecraft:available_sounds` | sound event ids (line 20) |
+| `minecraft:summonable_entities` | entity types that can summon (line 23) |
+| `minecraft:post_effects` | post effect ids (line 32) |
+
+The writer sets flag 0x10 and the Identifier only when the node has a suggestion id (`inspector.suggestionId(arg) != null`, `ClientboundCommandsPacket.java:169-174`). Which argument gets which provider is decided by the command tree, not by this file.
+
 #### 4.18.1 Argument type registry ids and property payloads
 
 Registry (`net/minecraft/commands/synchronization/ArgumentTypeInfos.java`, bootstrap from line 79). Id = registration index. Registrations are sequential (`BuiltInRegistries.java:215`, `registerSimple`), so id = position in this list, starting at 0. The `minecraft:` namespace is the default for unprefixed names.
@@ -846,7 +873,7 @@ map<i16 slot, HashedStack> changedSlots    // VarInt count (max 128), then count
 HashedStack carriedItem      // bool; if true: VarInt holder id, VarInt count, HashedPatchMap (section 1.12)
 ```
 
-`SLOTS_STREAM_CODEC` (lines 24-26) = `ByteBufCodecs.map(..., SHORT key, HashedStack.STREAM_CODEC value, 128)`. The map body is UNCONFIRMED (key/value order follows the standard helper).
+`SLOTS_STREAM_CODEC` (lines 24-26) = `ByteBufCodecs.map(..., SHORT key, HashedStack.STREAM_CODEC value, 128)`. Map body (`ByteBufCodecs.java:643-668`): `writeCount` (VarInt count, max 128), then for each entry key then value, in map iteration order.
 
 ### 5.8 ServerboundContainerClosePacket (`ServerboundContainerClosePacket.java:18-23`)
 
@@ -856,7 +883,7 @@ VarInt containerId
 
 ### 5.9 Swing: no serverbound swing packet in this version
 
-`ServerboundSwingPacket` does not exist in `GamePacketTypes.java`. The serverbound arm-swing packet is **`ServerboundPunchPacket`** (`GamePacketTypes.java:183`, `createServerbound("punch")`). Its payload is empty (see 5.18). Only `ClientboundSwingAnimationPacket` (`ClientboundSwingAnimationPacket.java`) exists as clientbound. Wire layout of that clientbound packet was not read in this pass (UNCONFIRMED).
+`ServerboundSwingPacket` does not exist in `GamePacketTypes.java`. The serverbound arm-swing packet is **`ServerboundPunchPacket`** (`GamePacketTypes.java:183`, `createServerbound("punch")`). Its payload is empty (see 5.18). The clientbound counterpart is `ClientboundSwingAnimationPacket` (section 4.1a).
 
 ### 5.10 ServerboundChatPacket (`ServerboundChatPacket.java:15-27`)
 
@@ -929,7 +956,13 @@ Handler `ServerGamePacketListenerImpl.handleAttack` (line 2894): looks up `getEn
 
 ### 5.18 ServerboundPunchPacket (`ServerboundPunchPacket.java:8-10`)
 
-Empty payload. `STREAM_CODEC = StreamCodec.unit(INSTANCE)`. It is the arm-swing/"punch" packet (left click that does not target an entity). Handler `handlePunch` (line 2729): resets last action time, runs a Bukkit ray trace (range = max block and entity interaction ranges) to fire the interact event for "rogue arm swings". Whether it broadcasts an animation to other clients was not confirmed in this pass (UNCONFIRMED).
+Empty payload (`STREAM_CODEC = StreamCodec.unit(INSTANCE)`). It is the client's left-click arm swing that does not attack an entity. What the server does (`ServerGamePacketListenerImpl.handlePunch`, lines 2729-2760):
+1. Ignores the packet if the player is immobile. Resets the last-action timer.
+2. Ray-traces from the eye position with range `max(blockInteractionRange, entityInteractionRange)` (line 2734-2741) to find what was hit. If nothing was hit, it fires a Bukkit LEFT_CLICK_AIR interact event. If a block or entity was hit in some modes, it fires the matching interact event (lines 2742-2751). These are Bukkit event calls only, with no wire effect.
+3. Fires `PlayerArmSwingEvent` (Paper). If cancelled, returns with no animation.
+4. Calls `player.swing(MAIN_HAND, swingAnimation, false)` with the animation from the held item, then resets the attack-strength ticker (lines 2757-2759).
+
+Step 4 is the broadcast path to other clients (`ClientboundSwingAnimationPacket`, section 4.1a). The body of `Player.swing` was not read, so the exact packet it sends is inferred from the class name, not confirmed.
 
 ### 5.19 ServerboundPlayerLoadedPacket (`ServerboundPlayerLoadedPacket.java:8`)
 
@@ -968,8 +1001,6 @@ bool includeData
 
 ## 7. UNCONFIRMED items (not verified in this pass)
 
-- Component (NBT) body in `ComponentSerialization`/`ByteBufCodecs.fromCodecWithRegistries` (1.13). Assumed network NBT.
-- `ByteBufCodecs.map` key/value ordering (used by ContainerClick changedSlots and HashedPatchMap added components).
 - Per-type DataComponent value codecs (inside ItemStack patches, 1.11).
 - Entity data serializers 13, 18, 21-35, 35-38, 39-41, 43 bodies (EntityReference, VillagerData, variant holders, sniffer/armadillo/copper/weathering enums, VECTOR3F, QUATERNIONF, ResolvableProfile, DyeColor). Only their registration ids are confirmed.
 - PublicKey and signature byte-array bodies in ProfilePublicKey.Data (INITIALIZE_CHAT).
@@ -977,7 +1008,6 @@ bool includeData
 - Brigadier StringType ordinal (SINGLE_WORD/QUOTABLE_PHRASE/GREEDY_PHRASE) follows the brigadier library enum order.
 - Argument type ids 21-59 and 61: derived from line order in ArgumentTypeInfos.bootstrap; only the listed ones were spot-checked.
 - Global ids (block state, item, entity type, sound event, particle type, registry numeric ids): depend on runtime registries, not fixed by source.
-- ClientboundSwingAnimationPacket body.
-- Whether ServerboundPunchPacket broadcasts an animation.
+- `Player.swing` body (which packet is sent to trackers for ServerboundPunch).
 - ClientboundAddEntity ordering of the `data` VarInt semantic per entity type (only the wire layout is confirmed).
 - Packet ID numbers (out of scope, given as known).

@@ -1,4 +1,4 @@
-//! Network front-end. Each TCP connection is an async task that runs
+﻿//! Network front-end. Each TCP connection is an async task that runs
 //! handshake/status/login/configuration entirely off the game thread. Once
 //! the client reaches play, a `NewPlayer` is handed to the game loop with a
 //! raw inbound queue and an outbound sender drained by a writer task.
@@ -43,6 +43,8 @@ pub struct NewPlayer {
     /// Decoded play payloads (`id + body`). Disconnected when the socket dies.
     pub inbound: crossbeam_channel::Receiver<BytesMut>,
     pub outbound: mpsc::UnboundedSender<Out>,
+    /// Cleared by the reader task when the socket closes.
+    pub alive: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct Shared {
@@ -145,7 +147,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
         _ => anyhow::bail!("bad intent"),
     }
     if proto != PROTOCOL_VERSION {
-        let msg = Text::plain(format!("Нужен клиент Minecraft {VERSION_NAME}")).color("red");
+        let msg = Text::plain(format!("РќСѓР¶РµРЅ РєР»РёРµРЅС‚ Minecraft {VERSION_NAME}")).color("red");
         let p = packet(login::C_DISCONNECT, |b| b.w_str(&msg.to_json()));
         c.send(p).await?;
         return Ok(());
@@ -163,7 +165,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     }
     let uuid = offline_uuid(&name);
     if shared.online.load(Ordering::Relaxed) >= shared.config.max_players as usize {
-        let msg = Text::plain("Сервер заполнен").color("red");
+        let msg = Text::plain("РЎРµСЂРІРµСЂ Р·Р°РїРѕР»РЅРµРЅ").color("red");
         c.send(packet(login::C_DISCONNECT, |b| b.w_str(&msg.to_json()))).await?;
         return Ok(());
     }
@@ -236,7 +238,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
                     }
                 }
                 if !has_core {
-                    let msg = Text::plain("Клиент не знает ванильный пакет данных 26.3").color("red");
+                    let msg = Text::plain("РљР»РёРµРЅС‚ РЅРµ Р·РЅР°РµС‚ РІР°РЅРёР»СЊРЅС‹Р№ РїР°РєРµС‚ РґР°РЅРЅС‹С… 26.3").color("red");
                     c.send(packet(cfg::C_DISCONNECT, |b| msg.to_nbt().write_network(b))).await?;
                     return Ok(());
                 }
@@ -262,7 +264,8 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     let (out_tx, out_rx) = mpsc::unbounded_channel::<Out>();
     shared.online.fetch_add(1, Ordering::Relaxed);
     let Conn { mut rd, wr, mut dec, buf, .. } = c;
-    let np = NewPlayer { name: name.clone(), uuid, properties: Vec::new(), info, addr, inbound: in_rx, outbound: out_tx };
+    let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let np = NewPlayer { name: name.clone(), uuid, properties: Vec::new(), info, addr, inbound: in_rx, outbound: out_tx, alive: alive.clone() };
     if shared.new_players.send(np).is_err() {
         anyhow::bail!("game loop gone");
     }
@@ -285,6 +288,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     }
     .await;
     drop(in_tx);
+    alive.store(false, Ordering::Relaxed);
     shared.online.fetch_sub(1, Ordering::Relaxed);
     let _ = writer.await;
     res
@@ -294,7 +298,7 @@ async fn writer_task(mut wr: OwnedWriteHalf, mut rx: mpsc::UnboundedReceiver<Out
     let mut scratch = BytesMut::with_capacity(64 * 1024);
     while let Some(first) = rx.recv().await {
         let mut close = false;
-        let mut push = |o: Out, scratch: &mut BytesMut| match o {
+        let push = |o: Out, scratch: &mut BytesMut| match o {
             Out::Batch(v) => {
                 for f in v {
                     scratch.extend_from_slice(&f);

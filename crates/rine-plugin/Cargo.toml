@@ -1,0 +1,11 @@
+[package]
+name = "rine-plugin"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+jni = { version = "0.22", features = ["invocation"] }
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

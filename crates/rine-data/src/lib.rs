@@ -4,6 +4,7 @@
 
 pub mod registry;
 pub mod blocks;
+pub mod items;
 
 use std::sync::OnceLock;
 
@@ -12,6 +13,7 @@ pub use registry::Registries;
 pub struct Data {
     pub registries: Registries,
     pub blocks: blocks::Blocks,
+    pub items: items::Items,
 }
 
 static DATA: OnceLock<Data> = OnceLock::new();
@@ -20,11 +22,18 @@ pub fn init() -> &'static Data {
     DATA.get_or_init(|| {
         let registries = Registries::load();
         let blocks = blocks::Blocks::load(&registries);
-        Data { registries, blocks }
+        let items = items::Items::load(&blocks);
+        Data { registries, blocks, items }
     })
 }
 
 #[inline]
 pub fn get() -> &'static Data {
     DATA.get().expect("rine_data::init() not called")
+}
+
+/// Raw JSON assets for systems that interpret them at runtime.
+pub mod raw {
+    pub const BLOCK_LOOT: &str = include_str!("../assets/block_loot.json");
+    pub const RECIPES: &str = include_str!("../assets/recipes.json");
 }

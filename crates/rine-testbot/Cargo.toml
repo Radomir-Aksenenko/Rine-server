@@ -4,4 +4,8 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-
+rine-protocol = { path = "../rine-protocol" }
+tokio.workspace = true
+bytes.workspace = true
+uuid.workspace = true
+anyhow.workspace = true
