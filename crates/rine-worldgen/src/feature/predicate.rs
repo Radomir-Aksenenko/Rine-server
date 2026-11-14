@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::region::Region;
 use super::state::{Fluid, Palette};
+use super::vegetation;
 
 #[derive(Clone, Debug)]
 pub enum BlockPredicate {
@@ -23,10 +24,13 @@ pub enum BlockPredicate {
     AllOf(Vec<BlockPredicate>),
     AnyOf(Vec<BlockPredicate>),
     Not(Box<BlockPredicate>),
-    /// `would_survive`: `state.canSurvive(level, origin)` for a sapling-like state. A standing state needs the
-    /// block below in `support` (`VegetationBlock.canSurvive`). A hanging mangrove propagule needs the block
-    /// above in `hanging` and nothing else (`MangrovePropaguleBlock.canSurvive`).
-    WouldSurvive { support: u16, hanging: Option<u16> },
+    /// `would_survive` for a sapling or mangrove propagule: `state.canSurvive(level, origin + offset)`. A standing
+    /// state needs the block below in `support` (`VegetationBlock.canSurvive`). A hanging mangrove propagule needs
+    /// the block above in `hanging` and nothing else (`MangrovePropaguleBlock.canSurvive`).
+    WouldSurvive { offset: [i32; 3], support: u16, hanging: Option<u16> },
+    /// `would_survive` for a block of `vegetation.rs`: `state.canSurvive(level, origin + offset)` with the
+    /// survival class of that block. `state` is a palette id.
+    VegetationSurvives { offset: [i32; 3], state: u16 },
 }
 
 fn offset_of(v: &Value) -> Result<[i32; 3], String> {
@@ -117,17 +121,28 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
                     .map(|i| i as u16)
                     .map_err(|_| format!("tag {n} not bundled"))
             };
+            let offset = offset_of(v)?;
             if name == "minecraft:mangrove_propagule" {
                 if props.is_some_and(|p| p.split(',').any(|kv| kv == "hanging=true")) {
                     Ok(BlockPredicate::WouldSurvive {
+                        offset,
                         support: 0,
                         hanging: Some(tag("minecraft:supports_hanging_mangrove_propagule")?),
                     })
                 } else {
-                    Ok(BlockPredicate::WouldSurvive { support: tag("minecraft:supports_mangrove_propagule")?, hanging: None })
+                    Ok(BlockPredicate::WouldSurvive { offset, support: tag("minecraft:supports_mangrove_propagule")?, hanging: None })
                 }
             } else if name.ends_with("_sapling") {
-                Ok(BlockPredicate::WouldSurvive { support: tag("minecraft:supports_vegetation")?, hanging: None })
+                Ok(BlockPredicate::WouldSurvive { offset, support: tag("minecraft:supports_vegetation")?, hanging: None })
+            } else if vegetation::kind_of_name(name).is_some() {
+                let state = match props {
+                    None => pal.default_state(name),
+                    Some(p) => {
+                        let kv: Vec<(&str, &str)> = p.split(',').filter_map(|kv| kv.split_once('=')).collect();
+                        pal.state_from_parts(name, &kv)
+                    }
+                };
+                Ok(BlockPredicate::VegetationSurvives { offset, state })
             } else {
                 Err(format!("would_survive for {name} is not ported"))
             }
@@ -157,10 +172,16 @@ impl BlockPredicate {
             BlockPredicate::AllOf(list) => list.iter().all(|p| p.test(region, x, y, z)),
             BlockPredicate::AnyOf(list) => list.iter().any(|p| p.test(region, x, y, z)),
             BlockPredicate::Not(p) => !p.test(region, x, y, z),
-            BlockPredicate::WouldSurvive { support, hanging } => match hanging {
-                Some(tag) => region.tags.has(region.get_block(x, y + 1, z), *tag),
-                None => region.tags.has(region.get_block(x, y - 1, z), *support),
-            },
+            BlockPredicate::WouldSurvive { offset, support, hanging } => {
+                let (px, py, pz) = (x + offset[0], y + offset[1], z + offset[2]);
+                match hanging {
+                    Some(tag) => region.tags.has(region.get_block(px, py + 1, pz), *tag),
+                    None => region.tags.has(region.get_block(px, py - 1, pz), *support),
+                }
+            }
+            BlockPredicate::VegetationSurvives { offset, state } => {
+                vegetation::can_survive(region, *state, x + offset[0], y + offset[1], z + offset[2])
+            }
         }
     }
 }

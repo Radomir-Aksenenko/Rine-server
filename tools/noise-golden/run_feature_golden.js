@@ -30,7 +30,7 @@ fs.writeFileSync(
         'level-seed=1592598566',
         'generate-structures=false',
         'level-name=golden_world',
-        'server-port=25566',
+        `server-port=${process.env.RINE_GOLDEN_PORT || 25566}`,
         'online-mode=false',
         'enable-rcon=false',
         'enable-query=false',

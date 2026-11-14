@@ -27,7 +27,20 @@ const blockPredicateOk = (p) => {
     if (!p || !PORTED.predicates.includes(p.type)) return false;
     if (p.type === "minecraft:all_of" || p.type === "minecraft:any_of") return p.predicates.every(blockPredicateOk);
     if (p.type === "minecraft:not") return blockPredicateOk(p.predicate);
+    // would_survive: only the vegetation blocks of vegetation.rs (sapling and propagule paths are not in the list).
+    if (p.type === "minecraft:would_survive") return PORTED.simple_blocks.includes(p.state.split("[")[0]);
     return true;
+};
+// simple_block provider: every block it can answer with is in PORTED.simple_blocks, rule_based predicates are ported.
+const simpleBlockOk = (sp) => {
+    if (typeof sp === "string") return PORTED.simple_blocks.includes(sp);
+    if (sp.type === undefined) return PORTED.simple_blocks.includes(sp.id);
+    if (sp.type === "minecraft:weighted") return sp.entries.every((e) => simpleBlockOk(e.data));
+    if (sp.type === "minecraft:randomized_int") return simpleBlockOk(sp.source);
+    if (sp.type === "minecraft:rule_based") {
+        return sp.rules.every((r) => blockPredicateOk(r.if_true) && simpleBlockOk(r.then)) && (sp.fallback === undefined || simpleBlockOk(sp.fallback));
+    }
+    return false;
 };
 const placementOk = (list, top) =>
     (list || []).every(
@@ -57,6 +70,7 @@ const featureOk = (ref) => {
         if (!cfg.layers.every((l) => stateProviderOk(l.provider)) || !blockPredicateOk(cfg.allowed_placement)) return false;
     }
     if (cfg.type === "minecraft:disk" && (!blockPredicateOk(cfg.target) || !stateProviderOk(cfg.state_provider))) return false;
+    if (cfg.type === "minecraft:simple_block" && !simpleBlockOk(cfg.to_place)) return false;
     const sub = (r) => subOk(r);
     switch (cfg.type) {
         case "minecraft:random_boolean_selector":
