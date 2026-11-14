@@ -491,3 +491,56 @@ pub(crate) fn build<'a>(
         }
     }
 }
+
+/// `MaterialSystem.topMaterial` (vanilla 26.3): the surface rule evaluated at one block `(bx, by, bz)` of
+/// chunk `(cx, cz)`, used by the carver step to turn the dirt under a carved grass opening into the
+/// top material. Gradients read the live WORLD_SURFACE_WG heights in `heights`, and the rule context is
+/// fresh (one-block volume), like the `MaterialRuleContext` built by the call.
+pub(crate) fn top_material<'a>(
+    o: &'a Overworld,
+    s: Samplers<'a>,
+    biomes: &BiomeMap<'a>,
+    cx: i32,
+    cz: i32,
+    blocks: &mut Vec<Blk>,
+    heights: &mut [i32; 256],
+    bx: i32,
+    by: i32,
+    bz: i32,
+    under_fluid: bool,
+) -> Option<Blk> {
+    let min_y = o.min_y();
+    let max_y = min_y + o.height() - 1;
+    let mut e = Eval {
+        o,
+        s,
+        biomes,
+        cx,
+        cz,
+        min_y,
+        max_y,
+        blocks,
+        heights,
+        narrow: Vol::new(1, 1, 1, bx, by, bz),
+        prelim_vol: Vol::new(16, 1, 16, cx * 16, 0, cz * 16),
+        prelim: None,
+        ore: HashMap::new(),
+        block_x: 0,
+        block_z: 0,
+        grad_x: 0,
+        grad_z: 0,
+        surface_depth: 0,
+        min_surface: None,
+        block_y: 0,
+        stone_above: 0,
+        stone_below: 0,
+        water_height: i32::MIN,
+    };
+    let lx = bx - cx * 16;
+    let lz = bz - cz * 16;
+    let gx = e.height((lx + 1).min(15), lz) - e.height((lx - 1).max(0), lz);
+    let gz = e.height(lx, (lz + 1).min(15)) - e.height(lx, (lz - 1).max(0));
+    e.update_xz(bx, bz, gx, gz);
+    e.update_y(1, 1, if under_fluid { by + 1 } else { i32::MIN }, by);
+    e.eval_rule(o.root_rule, bx, by, bz)
+}
