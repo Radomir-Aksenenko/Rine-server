@@ -17,7 +17,41 @@ pub struct Grid {
     pub cells: AHashMap<ChunkPos, Vec<i32>>,
 }
 
+/// Spawn packets for entities created since the last tracker pass, sent at
+/// once to every player that can see them. Runs between ticks too, so a
+/// dropped item appears when the drop packet is handled instead of up to ten
+/// ticks later (the periodic pass only recomputes visibility every 10 ticks).
+pub fn spawn_fresh(g: &mut Game) {
+    if g.entities.fresh.is_empty() {
+        return;
+    }
+    let fresh = std::mem::take(&mut g.entities.fresh);
+    let Game { entities, players, .. } = g;
+    for eid in fresh {
+        let Some(&i) = entities.index.get(&eid) else { continue };
+        let Some(e) = entities.list.get(i) else { continue };
+        if e.removed || e.eid != eid {
+            continue;
+        }
+        let c = e.chunk();
+        let range = e.kind.track_range();
+        for p in players.iter_mut().flatten() {
+            if p.tracked.contains(&eid) {
+                continue;
+            }
+            let pc = p.chunk();
+            let (dx, dz) = (c.x - pc.x, c.z - pc.z);
+            if dx.abs() > p.view || dz.abs() > p.view || dx.abs() > range || dz.abs() > range || !p.loaded.contains(&c) {
+                continue;
+            }
+            entity::spawn_frames(e, &mut p.out);
+            p.tracked.insert(eid);
+        }
+    }
+}
+
 pub fn tick(g: &mut Game) {
+    spawn_fresh(g);
     // ---- 1. movement frames for players
     let mut moves: AHashMap<i32, Vec<Bytes>> = AHashMap::new();
     for p in g.players.iter_mut().flatten() {

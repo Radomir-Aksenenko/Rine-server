@@ -8,6 +8,19 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
+/// A block being mined in survival (vanilla `destroyPos`, `destroyProgressStart`,
+/// `destroyDirection` and `lastSentState`).
+#[derive(Clone, Copy, Debug)]
+pub struct Dig {
+    pub pos: BlockPos,
+    /// Server tick when the dig started.
+    pub start: u64,
+    /// Face the client is mining (Direction ordinal), sent as level event data.
+    pub dir: u8,
+    /// Breaking stage last sent to viewers (-1 = none sent yet).
+    pub stage: i32,
+}
+
 /// Item stack without components (components come later).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stack {
@@ -140,7 +153,7 @@ pub struct Player {
     pub saturation: f32,
     pub fall_start: f64,
     pub dead: bool,
-    pub digging: Option<(BlockPos, u64)>,
+    pub digging: Option<Dig>,
     /// Highest block-change sequence to acknowledge at the end of the tick (-1 = none).
     pub ack_seq: i32,
     /// Operator (permission level 4).

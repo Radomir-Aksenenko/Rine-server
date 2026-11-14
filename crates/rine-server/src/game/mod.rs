@@ -45,6 +45,8 @@ pub struct Game {
     pub day_time: i64,
     pub spawn: [f64; 3],
     pub new_rx: crossbeam_channel::Receiver<NewPlayer>,
+    /// Signalled by the net readers when inbound packets are queued.
+    pub wake_rx: crossbeam_channel::Receiver<()>,
     pub entities: entity::Entities,
     /// Explosions waiting to be processed (spread over ticks under load).
     pub pending_blasts: std::collections::VecDeque<[f64; 3]>,
@@ -60,7 +62,12 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new(shared: Arc<Shared>, new_rx: crossbeam_channel::Receiver<NewPlayer>, running: Arc<std::sync::atomic::AtomicBool>) -> Self {
+    pub fn new(
+        shared: Arc<Shared>,
+        new_rx: crossbeam_channel::Receiver<NewPlayer>,
+        wake_rx: crossbeam_channel::Receiver<()>,
+        running: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
         let cfg = &shared.config;
         let world = World::new(cfg.seed, &cfg.world_dir);
         let (sx, sy, sz) = world.generator.find_spawn();
@@ -86,6 +93,7 @@ impl Game {
             day_time: 1000,
             spawn: [sx as f64 + 0.5, sy as f64, sz as f64 + 0.5],
             new_rx,
+            wake_rx,
             entities: entity::Entities::default(),
             pending_blasts: std::collections::VecDeque::new(),
             mspt: 0.0,
@@ -148,11 +156,10 @@ impl Game {
             }
             next += TICK;
             let now = Instant::now();
-            if next > now {
-                std::thread::sleep(next - now);
-            } else if now - next > Duration::from_secs(2) {
+            if now - next > Duration::from_secs(2) {
                 next = now; // don't try to catch up after a long stall
             }
+            self.wait_until(next);
         }
         tracing::info!("saving world...");
         for p in self.players.iter_mut().flatten() {
@@ -197,6 +204,7 @@ impl Game {
 
         super::game::containers::tick(self);
         super::game::survival::tick(self);
+        interact::dig_tick(self);
 
         // 5. chunk streaming
         for slot in 0..self.players.len() {
@@ -206,30 +214,8 @@ impl Game {
         // 6. movement + entity tracking
         track::tick(self);
 
-        // 7. block changes this tick: one frame per section
-        let t7 = Instant::now();
-        neighbors::settle(self);
-        let changes = self.world.drain_changes();
-        if t7.elapsed().as_millis() > 20 {
-            tracing::info!("block changes + relight took {:?}", t7.elapsed());
-        }
-        for (frame, viewers) in changes {
-            for v in viewers {
-                if let Some(p) = self.players.get_mut(v).and_then(|p| p.as_mut()) {
-                    p.out.push(frame.clone());
-                }
-            }
-        }
-        // block_changed_ack goes after this tick's block updates (vanilla sends
-        // it from the connection tick, after the level tick): an ack that
-        // arrives first makes the client roll back to the old block.
-        for p in self.players.iter_mut().flatten() {
-            if p.ack_seq >= 0 {
-                let a = out::block_ack(p.ack_seq);
-                p.send(a);
-                p.ack_seq = -1;
-            }
-        }
+        // 7. block changes this tick + acks
+        self.settle_outputs();
 
         // 8. periodic
         if self.tick % 20 == 0 {
@@ -240,7 +226,74 @@ impl Game {
         }
 
         // 9. disconnects + flush
-        let bc = std::mem::take(&mut self.broadcast);
+        self.flush_players(true);
+    }
+
+    /// Wait until `deadline`, handling inbound packets as they arrive. The
+    /// wait is a blocking receive on the wake channel, so nothing spins; a
+    /// packet is handled within microseconds instead of at the next tick.
+    fn wait_until(&mut self, deadline: Instant) {
+        loop {
+            let now = Instant::now();
+            if now >= deadline || !self.running.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            match self.wake_rx.recv_timeout(deadline - now) {
+                Ok(()) => self.pump(),
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => return,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Between-tick work: handle queued inbound packets, then settle the
+    /// results right away (neighbor updates, block changes, acks, new entity
+    /// spawns) and flush. The tick end runs the same steps, so the order
+    /// (block updates before acks) is the same either way.
+    fn pump(&mut self) {
+        for slot in 0..self.players.len() {
+            handle::process_inbound(self, slot);
+        }
+        track::spawn_fresh(self);
+        self.settle_outputs();
+        self.flush_players(false);
+    }
+
+    /// Neighbor updates for this part of the tick, drain block changes to
+    /// their viewers, then send pending block acks after those updates.
+    fn settle_outputs(&mut self) {
+        let t = Instant::now();
+        neighbors::settle(self);
+        let changes = self.world.drain_changes();
+        if t.elapsed().as_millis() > 20 {
+            tracing::info!("block changes + relight took {:?}", t.elapsed());
+        }
+        for (frame, viewers) in changes {
+            for v in viewers {
+                if let Some(p) = self.players.get_mut(v).and_then(|p| p.as_mut()) {
+                    p.out.push(frame.clone());
+                }
+            }
+        }
+        // block_changed_ack goes after the block updates (vanilla sends it from
+        // the connection tick, after the level tick): an ack that arrives first
+        // makes the client roll back to the old block.
+        for p in self.players.iter_mut().flatten() {
+            if p.ack_seq >= 0 {
+                let a = out::block_ack(p.ack_seq);
+                p.send(a);
+                p.ack_seq = -1;
+            }
+        }
+    }
+
+    /// Send every player's queued frames (the tick end also adds the tick
+    /// broadcast), handle kicks, and remove players whose connection is gone.
+    fn flush_players(&mut self, with_broadcast: bool) {
+        let bc = if with_broadcast { std::mem::take(&mut self.broadcast) } else { Vec::new() };
         let mut gone = Vec::new();
         for p in self.players.iter_mut().flatten() {
             if !bc.is_empty() {

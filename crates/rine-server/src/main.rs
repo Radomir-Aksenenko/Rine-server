@@ -19,10 +19,12 @@ fn main() -> anyhow::Result<()> {
     tracing::info!("data loaded in {:?}", t0.elapsed());
 
     let (new_tx, new_rx) = crossbeam_channel::unbounded();
+    let (wake_tx, wake_rx) = crossbeam_channel::bounded::<()>(1);
     let shared = Arc::new(net::Shared {
         config: config.clone(),
         online: AtomicUsize::new(0),
         new_players: new_tx,
+        wake: wake_tx,
         config_frames: net::build_config_frames(config.compression_threshold),
     });
 
@@ -31,7 +33,7 @@ fn main() -> anyhow::Result<()> {
         let r = running.clone();
         let _ = ctrlc_hook(move || r.store(false, Ordering::Relaxed));
     }
-    let game = game::Game::new(shared.clone(), new_rx, running.clone());
+    let game = game::Game::new(shared.clone(), new_rx, wake_rx, running.clone());
     tracing::info!("spawn at {:?}", game.spawn);
     let game_thread = std::thread::Builder::new().name("game".into()).spawn(move || game.run())?;
 
