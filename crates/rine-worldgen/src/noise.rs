@@ -220,6 +220,13 @@ impl SimplexNoise {
         }
     }
 
+    /// `new SimplexNoise(random, true)`: the noise offset is discarded (scale 0.0).
+    pub fn new_discard_offset<R: Rng>(rng: &mut R) -> Self {
+        Self {
+            base: GradientBase::new(rng, 0.0),
+        }
+    }
+
     fn corner_noise_3d(index: i32, x: f64, y: f64, z: f64, base: f64) -> f64 {
         let mut t0 = base - x * x - y * y - z * z;
         if t0 < 0.0 {

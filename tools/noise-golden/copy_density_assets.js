@@ -27,8 +27,15 @@ for (const f of fs.readdirSync(path.join(SRC, 'density_function'))) {
 files.push(...walk(path.join(SRC, 'density_function', 'overworld')));
 files.push(...walk(path.join(SRC, 'noise')));
 files.push(path.join(SRC, 'noise_settings', 'overworld.json'));
+// Surface rules (overworld material rule tree, bedrock floor/roof) and the named conditions they reference.
+files.push(path.join(SRC, 'material_rule', 'overworld.json'), path.join(SRC, 'material_rule', 'bedrock_floor.json'), path.join(SRC, 'material_rule', 'bedrock_roof.json'));
+files.push(...walk(path.join(SRC, 'material_rule', 'overworld')));
+files.push(...walk(path.join(SRC, 'material_condition')));
 
-fs.rmSync(ASSETS, { recursive: true, force: true });
+// Only the generated subtrees are replaced; hand-maintained files under assets/ (worldgen/) stay.
+for (const sub of ['density_function', 'noise', 'noise_settings', 'material_rule', 'material_condition']) {
+    fs.rmSync(path.join(ASSETS, sub), { recursive: true, force: true });
+}
 const entries = [];
 for (const src of files.sort()) {
     const rel = path.relative(SRC, src).split(path.sep).join('/');
