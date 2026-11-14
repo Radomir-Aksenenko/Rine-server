@@ -1,4 +1,4 @@
-//! Non-player entities: dropped items, primed TNT, falling blocks.
+﻿//! Non-player entities: dropped items, primed TNT, falling blocks.
 //!
 //! Physics runs data-parallel (rayon) against an immutable world view;
 //! side effects (explosions, pickups, block placement) are collected and
@@ -311,9 +311,8 @@ pub fn tick(g: &mut Game) {
     }
 
     // ---- explosions (batched, parallel)
-    if !fx.explode.is_empty() {
-        super::explosion::explode_batch(g, fx.explode, 4.0);
-    }
+    g.pending_blasts.extend(fx.explode);
+    super::explosion::process_pending(g);
 
     // ---- movement packets: one encode per moved entity
     let moves: Vec<(i32, Bytes)> = g
@@ -329,13 +328,25 @@ pub fn tick(g: &mut Game) {
             if !moved && !vel_changed {
                 return None;
             }
+            // Vanilla update intervals (EntityType.updateInterval): the client
+            // simulates these entities itself between syncs. A sudden impulse
+            // (explosion knockback) is sent immediately.
+            let interval = match e.kind {
+                Kind::Tnt { .. } => 10,
+                Kind::Item { .. } | Kind::Falling { .. } => 20,
+            };
+            let dv = (0..3).map(|i| (e.vel[i] - e.sent_vel[i]).abs()).fold(0.0, f64::max);
+            let impulse = dv > 0.3;
+            if !impulse && (e.age + e.eid) % interval != 0 {
+                return None;
+            }
             let mut buf = bytes::BytesMut::new();
             let old = (e.sent_pos[0], e.sent_pos[1], e.sent_pos[2]);
             let new = (e.pos[0], e.pos[1], e.pos[2]);
-            let mv = if e.age % 60 == 0 { None } else { out::move_entity(e.eid, old, new, None, e.on_ground) };
+            let mv = if ((e.age + e.eid) / interval) % 6 == 0 { None } else { out::move_entity(e.eid, old, new, None, e.on_ground) };
             let mv = mv.unwrap_or_else(|| out::position_sync(e.eid, new.0, new.1, new.2, 0.0, 0.0, e.on_ground));
             buf.extend_from_slice(&out::frame(mv));
-            if vel_changed && matches!(e.kind, Kind::Tnt { .. } | Kind::Falling { .. }) && e.age % 4 == 0 {
+            if vel_changed && matches!(e.kind, Kind::Tnt { .. } | Kind::Falling { .. }) {
                 buf.extend_from_slice(&out::frame(out::entity_motion(e.eid, e.vel[0], e.vel[1], e.vel[2])));
                 e.sent_vel = e.vel;
             }

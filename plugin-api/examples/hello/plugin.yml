@@ -1,0 +1,6 @@
+name: Hello
+version: 1.0
+main: hello.HelloPlugin
+commands:
+  hello:
+    description: Says hello to the sender

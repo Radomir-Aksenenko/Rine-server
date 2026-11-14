@@ -1,4 +1,4 @@
-//! One headless bot: handshake, login, configuration, play.
+﻿//! One headless bot: handshake, login, configuration, play.
 
 use std::time::Duration;
 
@@ -39,10 +39,12 @@ impl State {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BotOpts {
     pub dump: bool,
     pub walk: bool,
+    /// Command (without slash) sent by the first bot once it reaches play.
+    pub cmd: Option<String>,
 }
 
 #[derive(Debug)]
@@ -289,6 +291,9 @@ impl Bot {
                 self.state = State::Play;
                 self.play_started = Some(std::time::Instant::now());
                 println!("[{}] reached play", self.name);
+                if let Some(c) = self.opts.cmd.clone() {
+                    self.send_pkt(wr, 7, |b| b.w_str(&c)).await?;
+                }
             }
             cid::C_DISCONNECT => {
                 let text = read_text_component(&mut r)?.unwrap_or_else(|| "<non-text component>".into());

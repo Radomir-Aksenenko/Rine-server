@@ -1,4 +1,4 @@
-//! Headless Minecraft 26.3 (protocol 777) test client for verifying and load-testing the server.
+﻿//! Headless Minecraft 26.3 (protocol 777) test client for verifying and load-testing the server.
 //!
 //! Usage: rine-testbot <host:port> [--bots N] [--name Prefix] [--dump] [--seconds S] [--walk]
 
@@ -20,6 +20,7 @@ struct Cfg {
     dump: bool,
     seconds: f64,
     walk: bool,
+    cmd: Option<String>,
 }
 
 fn usage() {
@@ -35,6 +36,7 @@ fn parse_args() -> Result<Cfg> {
         dump: false,
         seconds: 10.0,
         walk: false,
+        cmd: None,
     };
     let mut have_addr = false;
     while let Some(a) = args.next() {
@@ -48,6 +50,7 @@ fn parse_args() -> Result<Cfg> {
             }
             "--dump" => cfg.dump = true,
             "--walk" => cfg.walk = true,
+            "--cmd" => cfg.cmd = Some(args.next().context("--cmd needs a value")?),
             "-h" | "--help" => {
                 usage();
                 std::process::exit(0);
@@ -75,11 +78,13 @@ fn parse_args() -> Result<Cfg> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cfg = Arc::new(parse_args()?);
-    let opts = BotOpts { dump: cfg.dump, walk: cfg.walk };
+    let opts = BotOpts { dump: cfg.dump, walk: cfg.walk, cmd: None };
 
     let mut handles = Vec::with_capacity(cfg.bots);
     for i in 0..cfg.bots {
         let name = format!("{}{}", cfg.prefix, i);
+        let mut opts = opts.clone();
+        if i == 0 { opts.cmd = cfg.cmd.clone(); }
         let addr = cfg.addr.clone();
         let seconds = cfg.seconds;
         handles.push(tokio::spawn(run_bot(addr, name, opts, seconds)));

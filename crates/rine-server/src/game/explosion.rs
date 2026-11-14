@@ -260,6 +260,76 @@ struct Hit {
     damage: f32,
 }
 
+/// Time budget for explosions in one tick. A giant chain that does not fit
+/// continues next tick instead of freezing the server: the world keeps
+/// ticking at 20 TPS and the blast front just advances over a few ticks.
+const BLAST_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
+const BLAST_CHUNK: usize = 256;
+
+pub fn process_pending(g: &mut Game) {
+    if g.pending_blasts.is_empty() {
+        return;
+    }
+    let start = std::time::Instant::now();
+    while !g.pending_blasts.is_empty() && start.elapsed() < BLAST_BUDGET {
+        let n = g.pending_blasts.len().min(BLAST_CHUNK);
+        let batch: Vec<[f64; 3]> = g.pending_blasts.drain(..n).collect();
+        explode_batch(g, batch, 4.0);
+    }
+}
+
+/// True if every block a blast of `power` at `c` could reach is air, judged
+/// by whole empty sections. Max ray length: power*1.3/0.225 steps of 0.3.
+fn surely_air(world: &super::world::World, c: [f64; 3], power: f32) -> bool {
+    let reach = (power as f64 * 1.3 / 0.225 * 0.3).ceil() as i32 + 1;
+    let (x0, x1) = ((c[0].floor() as i32 - reach) >> 4, (c[0].floor() as i32 + reach) >> 4);
+    let (z0, z1) = ((c[2].floor() as i32 - reach) >> 4, (c[2].floor() as i32 + reach) >> 4);
+    let ylo = (c[1].floor() as i32 - reach).max(rine_world::MIN_Y);
+    let yhi = (c[1].floor() as i32 + reach).min(rine_world::MAX_Y);
+    if ylo > yhi {
+        return true;
+    }
+    let (s0, s1) = (((ylo - rine_world::MIN_Y) >> 4) as usize, ((yhi - rine_world::MIN_Y) >> 4) as usize);
+    for cx in x0..=x1 {
+        for cz in z0..=z1 {
+            let Some(slot) = world.chunks.get(&rine_world::ChunkPos::new(cx, cz)) else { continue };
+            for sy in s0..=s1 {
+                if !slot.chunk.sections[sy].is_empty() {
+                    return surely_air_blocks(world, c, reach, ylo, yhi);
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Block-level check of the blast sphere (~1.4k reads, far cheaper than
+/// 1352 rays x ~23 steps).
+fn surely_air_blocks(world: &super::world::World, c: [f64; 3], reach: i32, ylo: i32, yhi: i32) -> bool {
+    let b = &rine_data::get().blocks;
+    let (bx, by, bz) = (c[0].floor() as i32, c[1].floor() as i32, c[2].floor() as i32);
+    let r2 = (reach * reach) as i32;
+    let mut rd = ChunkReader::new(world);
+    for dx in -reach..=reach {
+        for dz in -reach..=reach {
+            let h2 = dx * dx + dz * dz;
+            if h2 > r2 {
+                continue;
+            }
+            for y in ylo..=yhi {
+                let dy = y - by;
+                if h2 + dy * dy > r2 {
+                    continue;
+                }
+                if !b.is_air(rd.get(bx + dx, y, bz + dz)) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
     if centers.is_empty() || !(power > 0.0) {
         return;
@@ -269,6 +339,7 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
     let p = power as f64;
     let reach = 2.0 * p;
     let grid = Grid::build(&centers, reach);
+    let t0 = std::time::Instant::now();
 
     // ---- phase A: block rays, parallel, read-only world
     let blasts: Vec<Vec<(BlockPos, u16)>> = {
@@ -276,6 +347,9 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
         centers
             .par_iter()
             .map_init(Vec::new, |buf, c| {
+                if surely_air(world, *c, power) {
+                    return Vec::new();
+                }
                 let mut rd = ChunkReader::new(world);
                 blast_cells(*c, power, seed_for(*c, tick), |x, y, z| rd.get(x, y, z), props_of, buf);
                 buf.clone()
@@ -283,6 +357,7 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
             .collect()
     };
     let counts: Vec<i32> = blasts.iter().map(|v| v.len() as i32).collect();
+    let t_a = t0.elapsed();
 
     // ---- phase C: entity knockback, each entity sums impulses from nearby blasts
     g.entities.list.par_iter_mut().for_each(|e| {
@@ -357,6 +432,7 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
         }
     }
 
+    let t_cd = t0.elapsed();
     // ---- phase B: block removal, primed TNT, merged drops (game thread)
     let mut all: Vec<(BlockPos, u16)> = blasts.iter().flatten().copied().collect();
     all.sort_unstable_by_key(|(p, _)| (p.x, p.y, p.z));
@@ -398,6 +474,7 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
         }
     }
 
+    let t_b = t0.elapsed();
     // ---- phase E: network
     let particle_for = |n: i32| if power >= EMITTER_MIN_POWER && n > 0 { ids.emitter } else { ids.explosion };
     let shared: Vec<Bytes> = centers
@@ -429,6 +506,17 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
                 pl.out.push(shared[i].clone());
             }
         }
+    }
+    let total = t0.elapsed();
+    if total.as_millis() > 30 {
+        tracing::info!(
+            "explosions: {} blasts, rays {:?}, knockback {:?}, blocks {:?}, net {:?}",
+            centers.len(),
+            t_a,
+            t_cd - t_a,
+            t_b - t_cd,
+            total - t_b
+        );
     }
 }
 

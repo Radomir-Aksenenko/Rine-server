@@ -38,7 +38,10 @@ pub struct Game {
     pub spawn: [f64; 3],
     pub new_rx: crossbeam_channel::Receiver<NewPlayer>,
     pub entities: entity::Entities,
+    /// Explosions waiting to be processed (spread over ticks under load).
+    pub pending_blasts: std::collections::VecDeque<[f64; 3]>,
     pub mspt: f64,
+    pub peak_ms: f64,
     pub tps: f64,
     /// Frames to send to every player this tick.
     pub broadcast: Vec<Bytes>,
@@ -66,7 +69,9 @@ impl Game {
             spawn: [sx as f64 + 0.5, sy as f64, sz as f64 + 0.5],
             new_rx,
             entities: entity::Entities::default(),
+            pending_blasts: std::collections::VecDeque::new(),
             mspt: 0.0,
+            peak_ms: 0.0,
             tps: 20.0,
             broadcast: Vec::new(),
             dim_type_id,
@@ -96,6 +101,7 @@ impl Game {
             self.do_tick();
             let took = start.elapsed();
             self.mspt = self.mspt * 0.95 + took.as_secs_f64() * 1000.0 * 0.05;
+            self.peak_ms = self.peak_ms.max(took.as_secs_f64() * 1000.0);
             window.push_back(start);
             if window.len() > 100 {
                 window.pop_front();
@@ -156,7 +162,12 @@ impl Game {
         track::tick(self);
 
         // 7. block changes this tick: one frame per section
-        for (frame, viewers) in self.world.drain_changes() {
+        let t7 = Instant::now();
+        let changes = self.world.drain_changes();
+        if t7.elapsed().as_millis() > 20 {
+            tracing::info!("block changes + relight took {:?}", t7.elapsed());
+        }
+        for (frame, viewers) in changes {
             for v in viewers {
                 if let Some(p) = self.players.get_mut(v).and_then(|p| p.as_mut()) {
                     p.out.push(frame.clone());
@@ -212,6 +223,17 @@ impl Game {
             if p.last_ka_reply.elapsed() > Duration::from_secs(30) {
                 p.kick = Some("РўР°Р№Рј-Р°СѓС‚ СЃРѕРµРґРёРЅРµРЅРёСЏ".into());
             }
+        }
+        if self.tick % 100 == 0 && (!self.entities.list.is_empty() || self.players.iter().any(|p| p.is_some())) {
+            tracing::info!(
+                "tps {:.1} mspt {:.2} peak {:.1}ms players {} entities {} chunks {}",
+                self.tps,
+                self.mspt,
+                std::mem::take(&mut self.peak_ms),
+                self.players.iter().flatten().count(),
+                self.entities.list.len(),
+                self.world.chunks.len()
+            );
         }
         if self.tick % 100 == 0 {
             let lat: Vec<(uuid::Uuid, i32)> = self.players.iter().flatten().map(|p| (p.uuid, p.ping_ms)).collect();
