@@ -130,7 +130,7 @@ function flattenTag(name) {
     blockTags[key] = [...out].sort();
     return blockTags[key];
 }
-const tagRefs = new Set(['minecraft:blocks_motion_in_heightmap']);
+const tagRefs = new Set(['minecraft:blocks_motion_in_heightmap', 'minecraft:blocks_motion_in_heightmap_no_leaves']);
 const collectTags = (node) => {
     if (Array.isArray(node)) node.forEach(collectTags);
     else if (node && typeof node === 'object') {

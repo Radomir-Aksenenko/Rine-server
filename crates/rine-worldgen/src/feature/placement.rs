@@ -4,6 +4,7 @@
 
 use serde_json::Value;
 
+use super::heightmap::Kind;
 use super::predicate::BlockPredicate;
 use super::rng::WorldgenRng;
 use super::region::Region;
@@ -73,6 +74,8 @@ pub enum Modifier {
     BlockPredicate(BlockPredicate),
     /// `offset` (`OffsetPlacement`).
     Offset(IntProvider, IntProvider, IntProvider),
+    /// `heightmap` (`HeightmapPlacement`): the column's height, when above the build bottom.
+    Heightmap(Kind),
 }
 
 pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
@@ -194,6 +197,13 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
             let dz = sample_int(z, rng);
             out.push((ox + dx, oy + dy, oz + dz));
         }
+        Modifier::Heightmap(kind) => {
+            // HeightmapPlacement.modify: emit (x, height, z) when height > minY; draws no random numbers.
+            let height = region.height_of(*kind, ox, oz);
+            if height > region.min_y() {
+                out.push((ox, height, oz));
+            }
+        }
     }
 }
 
@@ -220,9 +230,10 @@ pub fn parse_int_provider(v: &Value) -> Result<IntProvider, String> {
     match ty {
         "minecraft:constant" => Ok(IntProvider::Constant(int("value")?)),
         "minecraft:uniform" => Ok(IntProvider::Uniform { min: int("min_inclusive")?, max: int("max_inclusive")? }),
+        // TrapezoidInt's codec uses "min"/"max" (UniformInt and BiasedToBottomInt use "min_inclusive"/"max_inclusive").
         "minecraft:trapezoid" => Ok(IntProvider::Trapezoid {
-            min: int("min_inclusive")?,
-            max: int("max_inclusive")?,
+            min: int("min")?,
+            max: int("max")?,
             plateau: int("plateau")?,
         }),
         "minecraft:biased_to_bottom" => Ok(IntProvider::BiasedToBottom { min: int("min_inclusive")?, max: int("max_inclusive")? }),
@@ -267,6 +278,7 @@ pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
             parse_int_provider(&v["y"])?,
             parse_int_provider(&v["z"])?,
         )),
+        "minecraft:heightmap" => Ok(Modifier::Heightmap(Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?)),
         other => Err(format!("unsupported placement modifier {other}")),
     }
 }
