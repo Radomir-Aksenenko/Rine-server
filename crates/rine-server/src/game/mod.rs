@@ -14,6 +14,8 @@ pub mod explosion;
 pub mod loot;
 pub mod place;
 pub mod plugins;
+pub mod containers;
+pub mod survival;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;
@@ -163,6 +165,9 @@ impl Game {
 
         // 4. entities (items, TNT, falling blocks) + explosions
         entity::tick(self);
+
+        super::game::containers::tick(self);
+        super::game::survival::tick(self);
 
         // 5. chunk streaming
         for slot in 0..self.players.len() {

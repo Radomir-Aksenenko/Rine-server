@@ -84,6 +84,7 @@ pub fn read_text_component(r: &mut Reader) -> Result<Option<String>> {
         8 => Ok(Some(read_nbt_string(r)?)),
         10 => {
             let mut text = None;
+            let mut translate = None;
             loop {
                 let ct = r.u8()?;
                 if ct == 0 {
@@ -92,11 +93,14 @@ pub fn read_text_component(r: &mut Reader) -> Result<Option<String>> {
                 let name = read_nbt_string(r)?;
                 if name == "text" && ct == 8 {
                     text = Some(read_nbt_string(r)?);
+                } else if name == "translate" && ct == 8 {
+                    translate = Some(read_nbt_string(r)?);
                 } else {
                     skip_nbt(r, ct)?;
                 }
             }
-            Ok(text)
+            // Translatable components have no literal text; show the key instead.
+            Ok(text.or_else(|| translate.map(|k| format!("<translate {k}>"))))
         }
         other => {
             skip_nbt(r, other)?;

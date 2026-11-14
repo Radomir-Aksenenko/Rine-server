@@ -1,24 +1,28 @@
 //! One headless bot: handshake, login, configuration, play.
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use anyhow::{ensure, Context, Result};
 use bytes::BytesMut;
 use rine_protocol::frame::packet;
 use rine_protocol::ids::{config as cid, login as lid, play as pid};
-use rine_protocol::{encode_frame, BlockPos, FrameDecoder, Reader, Writer};
+use rine_protocol::{encode_frame, FrameDecoder, Reader, Writer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpStream;
 use tokio::time::{Instant as TokioInstant, MissedTickBehavior};
 use uuid::Uuid;
 
-use crate::chunk::parse_level_chunk;
+use crate::names::play_name;
 use crate::nbt::{read_text_component, skip_nbt};
+use crate::validate::{self, Ctx, Outcome, Stats};
 
 /// Walk speed in blocks per second for --walk.
 const WALK_SPEED: f64 = 4.3;
 const MOVE_INTERVAL: Duration = Duration::from_millis(50);
+/// Gap between consecutive --cmd sends.
+const CMD_GAP: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum State {
@@ -43,8 +47,10 @@ impl State {
 pub struct BotOpts {
     pub dump: bool,
     pub walk: bool,
-    /// Command (without slash) sent by the first bot once it reaches play.
-    pub cmd: Option<String>,
+    /// Commands (without slash) sent by this bot once it reaches play.
+    /// The first is sent `cmd_delay` after play starts, then one every 2 s.
+    pub cmds: Vec<String>,
+    pub cmd_delay: Duration,
 }
 
 #[derive(Debug)]
@@ -62,6 +68,7 @@ pub struct Report {
     pub first_chunk_non_air: Option<u32>,
     pub play_secs: f64,
     pub note: Option<String>,
+    pub stats: Stats,
 }
 
 impl Report {
@@ -104,7 +111,6 @@ struct Bot {
     tag_registries: u32,
     tags: u64,
     chunks: u64,
-    parse_errors: u64,
     keepalives: u64,
     bytes_rx: u64,
     first_chunk_non_air: Option<u32>,
@@ -117,10 +123,17 @@ struct Bot {
     teleported: bool,
     play_started: Option<std::time::Instant>,
     note: Option<String>,
+    ctx: Ctx,
+    player_loaded_sent: bool,
+    move_ticks: u32,
+    /// Commands still to send, and when the next one is due.
+    cmds: VecDeque<String>,
+    next_cmd_at: Option<TokioInstant>,
 }
 
 impl Bot {
     fn new(name: String, opts: BotOpts) -> Self {
+        let cmds = opts.cmds.iter().cloned().collect();
         Self {
             name,
             opts,
@@ -131,7 +144,6 @@ impl Bot {
             tag_registries: 0,
             tags: 0,
             chunks: 0,
-            parse_errors: 0,
             keepalives: 0,
             bytes_rx: 0,
             first_chunk_non_air: None,
@@ -144,6 +156,11 @@ impl Bot {
             teleported: false,
             play_started: None,
             note: None,
+            ctx: Ctx::default(),
+            player_loaded_sent: false,
+            move_ticks: 0,
+            cmds,
+            next_cmd_at: None,
         }
     }
 
@@ -289,10 +306,11 @@ impl Bot {
             cid::C_FINISH => {
                 self.send_pkt(wr, cid::S_FINISH, |_| {}).await?;
                 self.state = State::Play;
-                self.play_started = Some(std::time::Instant::now());
+                let now = std::time::Instant::now();
+                self.play_started = Some(now);
                 println!("[{}] reached play", self.name);
-                if let Some(c) = self.opts.cmd.clone() {
-                    self.send_pkt(wr, 7, |b| b.w_str(&c)).await?;
+                if !self.cmds.is_empty() {
+                    self.next_cmd_at = Some(TokioInstant::now() + self.opts.cmd_delay);
                 }
             }
             cid::C_DISCONNECT => {
@@ -306,73 +324,99 @@ impl Bot {
         Ok(true)
     }
 
-    async fn on_play(&mut self, wr: &mut OwnedWriteHalf, id: i32, body: &[u8]) -> Result<bool> {
-        let mut r = Reader::new(body);
-        match id {
-            pid::C_LOGIN => print_login(&self.name, &mut r)?,
-            pid::C_PLAYER_POSITION => {
-                let tp_id = r.varint()?;
-                let (x, y, z) = (r.f64()?, r.f64()?, r.f64()?);
-                // delta movement (3 x f64), not used by the bot
-                r.bytes(24)?;
-                let yaw = r.f32()?;
-                let pitch = r.f32()?;
-                let flags = r.i32()?;
-                self.apply_position(x, y, z, yaw, pitch, flags);
-                let (px, py, pz, pyaw, ppitch) = (self.x, self.y, self.z, self.yaw, self.pitch);
-                self.send_pkt(wr, pid::S_ACCEPT_TELEPORTATION, |b| {
-                    b.w_varint(tp_id);
-                    b.w_f64(px);
-                    b.w_f64(py);
-                    b.w_f64(pz);
-                    b.w_f32(pyaw);
-                    b.w_f32(ppitch);
-                })
-                .await?;
-                self.teleported = true;
-                if self.opts.dump {
-                    println!("[{}] teleport id={tp_id} to ({px:.2},{py:.2},{pz:.2}) flags={flags:#x}", self.name);
+    /// Runs the strict validator on one play packet. Never aborts the session.
+    fn check(&mut self, id: i32, body: &[u8]) {
+        if id == pid::C_LEVEL_CHUNK_WITH_LIGHT {
+            self.chunks += 1;
+        }
+        match validate::validate(id, body, &mut self.ctx) {
+            Ok(Outcome::Ok) => {
+                if id == pid::C_LEVEL_CHUNK_WITH_LIGHT && !self.first_chunk_logged {
+                    if let Some(sum) = self.ctx.last_chunk.take() {
+                        self.first_chunk_logged = true;
+                        self.first_chunk_non_air = Some(sum.non_air);
+                        let col = match sum.column_top {
+                            Some((y, state)) => format!("column(0,0) top state={state} at y={y}"),
+                            None => "column(0,0) all air".to_string(),
+                        };
+                        println!(
+                            "[{}] first chunk ({},{}): sections={} non_air={} block_entities={} {col}",
+                            self.name, sum.x, sum.z, sum.sections, sum.non_air, sum.block_entities
+                        );
+                    }
+                }
+                self.ctx.last_chunk = None;
+            }
+            Ok(Outcome::Unsupported(_)) | Ok(Outcome::Unvalidated) => {}
+            Err(e) => {
+                if e.first {
+                    println!(
+                        "[{}] PARSE ERROR play {} (id {id}) at body offset {}: {}",
+                        self.name,
+                        play_name(id),
+                        e.offset,
+                        e.msg
+                    );
                 }
             }
+        }
+        for w in self.ctx.warnings.drain(..) {
+            println!("[{}] warn: {w}", self.name);
+        }
+    }
+
+    async fn on_play(&mut self, wr: &mut OwnedWriteHalf, id: i32, body: &[u8]) -> Result<bool> {
+        self.check(id, body);
+        let mut r = Reader::new(body);
+        match id {
+            pid::C_LOGIN => {
+                if let Err(e) = print_login(&self.name, &mut r) {
+                    println!("[{}] login: could not print fields: {e:#}", self.name);
+                }
+            }
+            pid::C_PLAYER_POSITION => match read_position(body) {
+                Some((tp_id, x, y, z, yaw, pitch, flags)) => {
+                    self.apply_position(x, y, z, yaw, pitch, flags);
+                    let (px, py, pz, pyaw, ppitch) = (self.x, self.y, self.z, self.yaw, self.pitch);
+                    self.send_pkt(wr, pid::S_ACCEPT_TELEPORTATION, |b| {
+                        b.w_varint(tp_id);
+                        b.w_f64(px);
+                        b.w_f64(py);
+                        b.w_f64(pz);
+                        b.w_f32(pyaw);
+                        b.w_f32(ppitch);
+                    })
+                    .await?;
+                    self.teleported = true;
+                    // Vanilla clients report the level as loaded; without this the
+                    // server kicks the bot for invalid movement shortly after join.
+                    if !self.player_loaded_sent {
+                        self.player_loaded_sent = true;
+                        self.send_pkt(wr, pid::S_PLAYER_LOADED, |_| {}).await?;
+                    }
+                    if self.opts.dump {
+                        println!("[{}] teleport id={tp_id} to ({px:.2},{py:.2},{pz:.2}) flags={flags:#x}", self.name);
+                    }
+                }
+                None => println!("[{}] teleport packet too short to read, no accept sent", self.name),
+            },
             pid::C_KEEP_ALIVE => {
-                let v = r.i64()?;
-                self.send_pkt(wr, pid::S_KEEP_ALIVE, |b| b.w_i64(v)).await?;
-                self.keepalives += 1;
+                if let Ok(v) = r.i64() {
+                    self.send_pkt(wr, pid::S_KEEP_ALIVE, |b| b.w_i64(v)).await?;
+                    self.keepalives += 1;
+                }
             }
             pid::C_CHUNK_BATCH_FINISHED => {
                 self.send_pkt(wr, pid::S_CHUNK_BATCH_RECEIVED, |b| b.w_f32(20.0)).await?;
             }
-            pid::C_LEVEL_CHUNK_WITH_LIGHT => {
-                self.chunks += 1;
-                match parse_level_chunk(body) {
-                    Ok(sum) => {
-                        if !self.first_chunk_logged {
-                            self.first_chunk_logged = true;
-                            self.first_chunk_non_air = Some(sum.non_air);
-                            let col = match sum.column_top {
-                                Some((y, state)) => format!("column(0,0) top state={state} at y={y}"),
-                                None => "column(0,0) all air".to_string(),
-                            };
-                            println!(
-                                "[{}] first chunk ({},{}): sections={} non_air={} block_entities={} {col}",
-                                self.name, sum.x, sum.z, sum.sections, sum.non_air, sum.block_entities
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        self.parse_errors += 1;
-                        println!("[{}] PARSE ERROR {e:#}", self.name);
-                    }
-                }
-            }
             pid::C_SYSTEM_CHAT => {
-                let text = read_text_component(&mut r)?;
-                let overlay = r.bool()?;
+                let text = read_text_component(&mut r).ok().flatten();
+                let overlay = r.bool().unwrap_or(false);
                 let shown = text.unwrap_or_else(|| "<non-text component>".into());
                 println!("[{}] chat{}: {shown}", self.name, if overlay { " (actionbar)" } else { "" });
             }
             pid::C_DISCONNECT => {
-                let text = read_text_component(&mut r)?.unwrap_or_else(|| "<non-text component>".into());
+                let text = read_text_component(&mut r).ok().flatten().unwrap_or_else(|| "<non-text component>".into());
                 println!("[{}] play disconnect: {text}", self.name);
                 self.note_once(format!("play disconnect: {text}"));
                 return Ok(false);
@@ -413,10 +457,33 @@ impl Bot {
         }
     }
 
-    /// Periodic serverbound move_player_pos_rot (every 50 ms once teleported).
+    /// Sends the next queued --cmd and schedules the one after it.
+    async fn fire_cmd(&mut self, wr: &mut OwnedWriteHalf) -> Result<()> {
+        let Some(c) = self.cmds.pop_front() else {
+            self.next_cmd_at = None;
+            return Ok(());
+        };
+        println!("[{}] sending command: /{c}", self.name);
+        self.send_pkt(wr, pid::S_CHAT_COMMAND, |b| b.w_str(&c)).await?;
+        self.next_cmd_at = (!self.cmds.is_empty()).then(|| TokioInstant::now() + CMD_GAP);
+        Ok(())
+    }
+
+    /// Periodic serverbound tick end and movement (every 50 ms once teleported).
+    ///
+    /// Standing still, only every 20th tick carries a position (vanilla heartbeat);
+    /// the other ticks send status-only packets. Vanilla kicks with
+    /// invalid_player_movement when two position packets land in one server tick.
     async fn tick_move(&mut self, wr: &mut OwnedWriteHalf) -> Result<()> {
+        self.move_ticks += 1;
+        // Vanilla clients end every tick; the server resets its per-tick
+        // "one position" guard only on this packet.
+        self.send_pkt(wr, pid::S_CLIENT_TICK_END, |_| {}).await?;
         if self.opts.walk {
             self.x += WALK_SPEED * MOVE_INTERVAL.as_secs_f64();
+        } else if self.move_ticks % 20 != 0 {
+            let on_ground = 1u8;
+            return self.send_pkt(wr, pid::S_MOVE_PLAYER_STATUS_ONLY, |b| b.w_u8(on_ground)).await;
         }
         let (x, y, z, yaw, pitch) = (self.x, self.y, self.z, self.yaw, self.pitch);
         self.send_pkt(wr, pid::S_MOVE_PLAYER_POS_ROT, |b| {
@@ -439,17 +506,32 @@ impl Bot {
             tag_registries: self.tag_registries,
             tags: self.tags,
             chunks: self.chunks,
-            parse_errors: self.parse_errors,
+            parse_errors: self.ctx.stats.error_count,
             keepalives: self.keepalives,
             bytes: self.bytes_rx,
             first_chunk_non_air: self.first_chunk_non_air,
             play_secs: self.play_started.map_or(0.0, |t| t.elapsed().as_secs_f64()),
             note: self.note.clone(),
+            stats: self.ctx.stats.clone(),
         }
     }
 }
 
-/// Prints the play login packet (spec 02 section 1).
+/// Reads a player_position body: teleport id, position, delta, rotation, flags.
+fn read_position(body: &[u8]) -> Option<(i32, f64, f64, f64, f32, f32, i32)> {
+    let mut r = Reader::new(body);
+    let tp = r.varint().ok()?;
+    let (x, y, z) = (r.f64().ok()?, r.f64().ok()?, r.f64().ok()?);
+    // delta movement (3 x f64), not used by the bot
+    r.bytes(24).ok()?;
+    let yaw = r.f32().ok()?;
+    let pitch = r.f32().ok()?;
+    let flags = r.i32().ok()?;
+    Some((tp, x, y, z, yaw, pitch, flags))
+}
+
+/// Prints the play login packet (spec 02 section 1). Validation has already
+/// checked the layout; this only formats the fields.
 fn print_login(name: &str, r: &mut Reader) -> Result<()> {
     let entity_id = r.i32()?;
     let hardcore = r.bool()?;
@@ -474,7 +556,7 @@ fn print_login(name: &str, r: &mut Reader) -> Result<()> {
     let is_flat = r.bool()?;
     let last_death = if r.bool()? {
         let d = r.string(32767)?;
-        let p = BlockPos::unpack(r.i64()?);
+        let p = rine_protocol::BlockPos::unpack(r.i64()?);
         format!("{d} {},{},{}", p.x, p.y, p.z)
     } else {
         "none".to_string()
@@ -492,9 +574,6 @@ fn print_login(name: &str, r: &mut Reader) -> Result<()> {
          last_death={last_death} portal_cooldown={portal_cooldown} sea_level={sea_level} \
          online_mode={online_mode} secure_chat={enforces_secure_chat}"
     );
-    if r.remaining() != 0 {
-        println!("[{name}] login: WARNING {} trailing bytes, spec mismatch?", r.remaining());
-    }
     Ok(())
 }
 
@@ -533,6 +612,12 @@ async fn session(bot: &mut Bot, addr: &str, seconds: f64) -> Result<()> {
 
     let mut buf = BytesMut::with_capacity(16 * 1024);
     loop {
+        // Deadline for the next queued command; far away when none is pending.
+        let cmd_at = bot
+            .next_cmd_at
+            .unwrap_or_else(|| TokioInstant::now() + Duration::from_secs(86_400));
+        let cmd_sleep = tokio::time::sleep_until(cmd_at);
+        tokio::pin!(cmd_sleep);
         tokio::select! {
             res = rd.read_buf(&mut buf) => {
                 let n = res?;
@@ -557,6 +642,9 @@ async fn session(bot: &mut Bot, addr: &str, seconds: f64) -> Result<()> {
             }
             _ = ticker.tick(), if bot.state == State::Play && bot.teleported => {
                 bot.tick_move(&mut wr).await?;
+            }
+            _ = &mut cmd_sleep, if bot.next_cmd_at.is_some() => {
+                bot.fire_cmd(&mut wr).await?;
             }
             _ = &mut sleep => break,
         }

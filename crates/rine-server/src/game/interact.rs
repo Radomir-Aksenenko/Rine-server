@@ -72,6 +72,7 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, _dir
             entity::drop_from_player(g, slot, Stack::new(s.item, n), true);
             super::track::equipment_changed(g, slot);
         }
+        6 => super::survival::release_use_item(g, slot),
         7 => {
             // swap with offhand
             let held = 36 + p.held as usize;
@@ -109,6 +110,8 @@ pub fn break_block(g: &mut Game, slot: usize, pos: BlockPos, drops: bool) {
     // two-block structures (doors, tall plants, beds) break together
     let other = super::interact::other_half(st, pos);
     g.world.set_block(pos, 0);
+    super::survival::exhaust(g, slot, super::survival::EXHAUSTION_MINE);
+    super::containers::block_removed(g, pos, st);
     if let Some(o) = other {
         if b.block_of(g.world.get_block(o.x, o.y, o.z)).id == b.block_of(st).id {
             g.world.set_block(o, 0);
@@ -178,6 +181,12 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
 
     // interacting with blocks (doors, trapdoors, fence gates, TNT + flint)
     if !sneaking || stack.is_empty() {
+        if super::containers::open_block(g, slot, pos, clicked) {
+            if let Some(p) = g.player(slot) {
+                p.send(out::block_ack(seq));
+            }
+            return;
+        }
         if super::place::interact_block(g, slot, pos, clicked, stack) {
             if let Some(p) = g.player(slot) {
                 p.send(out::block_ack(seq));
@@ -353,6 +362,7 @@ pub fn attack(g: &mut Game, slot: usize, target: i32) {
         if d2 > 36.0 || t.gamemode == 1 || t.gamemode == 3 {
             return;
         }
+        super::survival::exhaust(g, slot, super::survival::EXHAUSTION_ATTACK);
         damage(g, ts, 1.0, "player");
         // knockback
         let (kx, kz) = (-(ayaw.to_radians() as f64).sin() * 0.4, (ayaw.to_radians() as f64).cos() * 0.4);
@@ -369,6 +379,9 @@ pub fn damage(g: &mut Game, slot: usize, amount: f32, _cause: &str) {
         return;
     }
     p.health = (p.health - amount).max(0.0);
+    let _ = p;
+    super::survival::exhaust(g, slot, super::survival::EXHAUSTION_DAMAGE);
+    let Some(p) = g.player(slot) else { return };
     let (h, f, s, eid) = (p.health, p.food, p.saturation, p.eid);
     p.send(out::set_health(h, f, s));
     let hurt = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_HURT_ANIMATION, |b| {

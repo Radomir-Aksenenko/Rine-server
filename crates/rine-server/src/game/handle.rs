@@ -103,7 +103,8 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             let hand = r.varint()?;
             let seq = r.varint()?;
             let (yaw, pitch) = (r.f32()?, r.f32()?);
-            super::interact::use_item(g, slot, hand, seq, yaw, pitch);
+            let _ = (yaw, pitch);
+            super::survival::use_item(g, slot, hand, seq);
         }
         S_SET_CARRIED_ITEM => {
             let s = r.i16()?;
@@ -134,11 +135,11 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             }
         }
         S_CONTAINER_CLICK => {
-            super::interact::container_click(g, slot, &mut r)?;
+            super::containers::click(g, slot, &mut r)?;
         }
         S_CONTAINER_CLOSE => {
-            let _w = r.varint()?;
-            super::interact::container_close(g, slot);
+            let w = r.varint()?;
+            super::containers::close(g, slot, w);
         }
         S_PUNCH => {
             let p = g.player(slot).unwrap();

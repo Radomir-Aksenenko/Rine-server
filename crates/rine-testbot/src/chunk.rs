@@ -22,13 +22,31 @@ pub struct ChunkSummary {
     pub column_top: Option<(i32, u32)>,
 }
 
+/// Chunk parse failure: the source error plus the body offset where the
+/// outer reader stopped. Section-level errors report the offset after the
+/// section buffer; their message names the section.
+#[derive(Debug)]
+pub struct ChunkError {
+    pub offset: usize,
+    pub source: anyhow::Error,
+}
+
+impl std::fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.source)
+    }
+}
+
 /// Parses a full level_chunk_with_light packet body (id already stripped).
 /// Errors carry the chunk coordinates when they are known.
-pub fn parse_level_chunk(body: &[u8]) -> Result<ChunkSummary> {
+pub fn parse_level_chunk(body: &[u8]) -> std::result::Result<ChunkSummary, ChunkError> {
     let mut r = Reader::new(body);
-    let x = r.i32()?;
-    let z = r.i32()?;
-    parse_inner(&mut r, x, z).with_context(|| format!("chunk ({x},{z})"))
+    let x = r.i32().map_err(|e| ChunkError { offset: 0, source: e.into() })?;
+    let z = r.i32().map_err(|e| ChunkError { offset: 4, source: e.into() })?;
+    match parse_inner(&mut r, x, z).with_context(|| format!("chunk ({x},{z})")) {
+        Ok(s) => Ok(s),
+        Err(source) => Err(ChunkError { offset: r.pos, source }),
+    }
 }
 
 fn parse_inner(r: &mut Reader, x: i32, z: i32) -> Result<ChunkSummary> {
@@ -45,12 +63,13 @@ fn parse_inner(r: &mut Reader, x: i32, z: i32) -> Result<ChunkSummary> {
     // 5.1 buffer: VarInt byte length + sections, must be consumed exactly
     let buf_len = r.varint()?;
     ensure!(buf_len >= 0, "negative buffer length {buf_len}");
+    let buf_start = r.pos;
     let buf = r.bytes(buf_len as usize)?;
     let mut sr = Reader::new(buf);
     let mut non_air = 0u32;
     let mut column_top = None;
     for s in 0..OVERWORLD_SECTIONS {
-        let sec = parse_section(&mut sr).with_context(|| format!("section {s}"))?;
+        let sec = parse_section(&mut sr).with_context(|| format!("section {s} (section buffer at body offset {buf_start}, local {})", sr.pos))?;
         non_air += sec.non_air;
         for (ly, &state) in sec.column.iter().enumerate() {
             if state != 0 {
