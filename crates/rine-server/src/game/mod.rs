@@ -162,6 +162,12 @@ impl Game {
             p.send(pk);
             p.flush();
         }
+        // return crafting grids and cursors to the inventories before saving
+        for slot in 0..self.players.len() {
+            if self.players[slot].is_some() {
+                containers::player_left(&mut self, slot);
+            }
+        }
         playerdata::save_all(&self, true);
         playerdata::flush();
         self.world.save_all();

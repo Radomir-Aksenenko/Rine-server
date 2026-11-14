@@ -114,11 +114,14 @@ impl PlayerData {
 /// packets afterwards, so the client sees the restored inventory and position.
 /// Health 0 (died offline) comes back as full health.
 pub fn apply(p: &mut Player, d: &PlayerData) {
-    p.pos = d.pos;
-    p.sent_pos = d.pos;
-    p.fall_start = d.pos[1];
-    p.yaw = d.yaw;
-    p.pitch = d.pitch;
+    // a player who logged out dead comes back at the spawn point (kept from Player::new)
+    if d.health > 0.0 {
+        p.pos = d.pos;
+        p.sent_pos = d.pos;
+        p.fall_start = d.pos[1];
+        p.yaw = d.yaw;
+        p.pitch = d.pitch;
+    }
     p.gamemode = d.gamemode;
     p.health = if d.health > 0.0 { d.health.min(20.0) } else { 20.0 };
     p.food = d.food.clamp(0, 20);
