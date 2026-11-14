@@ -360,11 +360,23 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
     let t_a = t0.elapsed();
 
     // ---- phase C: entity knockback, each entity sums impulses from nearby blasts
+    // Entities outside the batch's bounding box (+ reach) skip the grid lookup.
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for c in &centers {
+        for a in 0..3 {
+            lo[a] = lo[a].min(c[a] - reach);
+            hi[a] = hi[a].max(c[a] + reach);
+        }
+    }
     g.entities.list.par_iter_mut().for_each(|e| {
         if e.removed {
             return;
         }
         let m = e.mid();
+        if (0..3).any(|a| m[a] < lo[a] || m[a] > hi[a]) {
+            return;
+        }
         let mut acc = [0.0f64; 3];
         grid.visit(m, |i| {
             let c = centers[i];
@@ -489,6 +501,10 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
         .collect();
     for (h, list) in hits.iter().zip(lists.iter()) {
         let Some(pl) = g.player(h.slot) else { continue };
+        // visual only: a client that is far behind on the socket gets none of it
+        if pl.backlog.load(std::sync::atomic::Ordering::Relaxed) > super::track::BACKLOG_SOFT {
+            continue;
+        }
         let mut skip = None;
         let knock_len = (h.knock[0] * h.knock[0] + h.knock[1] * h.knock[1] + h.knock[2] * h.knock[2]).sqrt();
         if knock_len > 0.0 {

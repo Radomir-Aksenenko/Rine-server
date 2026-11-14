@@ -158,6 +158,12 @@ pub struct Player {
 
     /// Entity ids (players and others) this client currently sees.
     pub tracked: AHashSet<i32>,
+    /// Chunk the visibility pass last ran for (None: never ran).
+    pub vis_chunk: Option<ChunkPos>,
+    /// Entity spawns sent to this client in the current tick (see track::SPAWN_PER_TICK).
+    pub spawned_tick: u32,
+    /// Bytes queued to the socket and not yet written (shared with the writer task).
+    pub backlog: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 
     pub inv: Inventory,
     pub held: u8,
@@ -225,6 +231,9 @@ impl Player {
             quota: 0.0,
             stream_dirty: true,
             tracked: AHashSet::new(),
+            vis_chunk: None,
+            spawned_tick: 0,
+            backlog: np.backlog,
             inv: Inventory::default(),
             held: 0,
             health: 20.0,
@@ -262,6 +271,8 @@ impl Player {
     pub fn flush(&mut self) {
         if !self.out.is_empty() {
             let v = std::mem::replace(&mut self.out, Vec::with_capacity(64));
+            let n: usize = v.iter().map(|b| b.len()).sum();
+            self.backlog.fetch_add(n, std::sync::atomic::Ordering::Relaxed);
             let _ = self.outbound.send(Out::Batch(v));
         }
     }
