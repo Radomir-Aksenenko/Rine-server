@@ -20,6 +20,7 @@ pub mod survival;
 pub mod actions;
 pub mod durability;
 pub mod playerdata;
+pub mod fluids;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;
@@ -225,7 +226,8 @@ impl Game {
         // 6. movement + entity tracking
         track::tick(self);
 
-        // 7. block changes this tick + acks
+        // 7. scheduled fluid ticks, then block changes this tick + acks
+        fluids::tick(self);
         self.settle_outputs();
 
         // 8. periodic

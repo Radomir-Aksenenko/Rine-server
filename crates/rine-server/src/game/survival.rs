@@ -316,6 +316,12 @@ fn set_living_flags(g: &mut Game, slot: usize, flags: u8) {
 /// Serverbound use_item (right click in air).
 pub fn use_item(g: &mut Game, slot: usize, hand: i32, seq: i32) {
     let now = g.tick;
+    if super::fluids::use_bucket(g, slot, hand) {
+        if let Some(p) = g.player(slot) {
+            p.ack(seq);
+        }
+        return;
+    }
     let Some(p) = g.player(slot) else { return };
     p.ack(seq);
     if p.dead || p.gamemode == 3 {
