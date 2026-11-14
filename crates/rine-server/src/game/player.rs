@@ -8,31 +8,38 @@ use std::time::Instant;
 use tokio::sync::mpsc::UnboundedSender;
 use uuid::Uuid;
 
-/// Item stack without components (components come later).
+/// Item stack. Only the damage component is modelled (`minecraft:damage`);
+/// everything else on an item is the prototype default.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stack {
     pub item: u32,
     pub count: i32,
+    /// `minecraft:damage`: wear taken so far (0 = undamaged).
+    pub damage: u16,
 }
 
 impl Stack {
-    pub const EMPTY: Stack = Stack { item: 0, count: 0 };
+    pub const EMPTY: Stack = Stack { item: 0, count: 0, damage: 0 };
     pub fn new(item: u32, count: i32) -> Self {
+        Self::damaged(item, count, 0)
+    }
+    pub fn damaged(item: u32, count: i32, damage: u16) -> Self {
         if item == 0 || count <= 0 {
             Self::EMPTY
         } else {
-            Self { item, count }
+            Self { item, count, damage }
         }
+    }
+    /// Same item and damage, another count. Keeps the wear of this stack.
+    pub fn with_count(&self, count: i32) -> Self {
+        Self::damaged(self.item, count, self.damage)
     }
     pub fn is_empty(&self) -> bool {
         self.item == 0 || self.count <= 0
     }
-    pub fn tuple(&self) -> (u32, i32) {
-        if self.is_empty() {
-            (0, 0)
-        } else {
-            (self.item, self.count)
-        }
+    /// Whether two stacks may merge (same item, same wear).
+    pub fn same_kind(&self, other: &Stack) -> bool {
+        self.item == other.item && self.damage == other.damage
     }
 }
 
@@ -54,13 +61,19 @@ impl Inventory {
     pub fn hotbar(&self, held: u8) -> Stack {
         self.slots[36 + held as usize]
     }
-    /// Add items, filling existing stacks first (hotbar, then main). Returns leftover.
-    pub fn add(&mut self, item: u32, mut count: i32) -> i32 {
-        let max = max_stack(item);
+    /// Add a stack, filling existing matching stacks first (hotbar, then main).
+    /// Returns the leftover count. The wear of `stack` is kept on every
+    /// stack it creates.
+    pub fn add(&mut self, stack: Stack) -> i32 {
+        if stack.is_empty() {
+            return 0;
+        }
+        let max = max_stack(stack.item);
+        let mut count = stack.count;
         let order: Vec<usize> = (36..45).chain(9..36).collect();
         for &i in &order {
             let s = &mut self.slots[i];
-            if s.item == item && s.count < max {
+            if s.same_kind(&stack) && s.count < max {
                 let n = (max - s.count).min(count);
                 s.count += n;
                 count -= n;
@@ -72,7 +85,7 @@ impl Inventory {
         for &i in &order {
             if self.slots[i].is_empty() {
                 let n = max.min(count);
-                self.slots[i] = Stack::new(item, n);
+                self.slots[i] = stack.with_count(n);
                 count -= n;
                 if count == 0 {
                     return 0;
@@ -262,12 +275,30 @@ impl Player {
 
     pub fn inventory_packet(&mut self) -> BytesMut {
         self.inv.state_id = self.inv.state_id.wrapping_add(1) & 0x7FFF;
-        let items: Vec<(u32, i32)> = self.inv.slots.iter().map(|s| s.tuple()).collect();
-        crate::out::container_content(0, self.inv.state_id, &items, self.inv.cursor.tuple())
+        crate::out::container_content(0, self.inv.state_id, &self.inv.slots, &self.inv.cursor)
     }
 
     pub fn eye(&self) -> [f64; 3] {
         let h = if self.sneaking { 1.27 } else { 1.62 };
         [self.pos[0], self.pos[1] + h, self.pos[2]]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_keeps_wear_and_never_merges_different_wear() {
+        rine_data::init();
+        let pick = crate::game::items::id("minecraft:iron_pickaxe").unwrap();
+        let stone = crate::game::items::id("minecraft:stone").unwrap();
+        let mut inv = Inventory::default();
+        assert_eq!(inv.add(Stack::damaged(pick, 1, 30)), 0);
+        assert_eq!(inv.slots[36].damage, 30);
+        assert_eq!(inv.add(Stack::damaged(stone, 3, 0)), 0);
+        assert_eq!(inv.add(Stack::damaged(stone, 2, 1)), 0);
+        assert_eq!((inv.slots[37].count, inv.slots[37].damage), (3, 0));
+        assert_eq!((inv.slots[38].count, inv.slots[38].damage), (2, 1));
     }
 }

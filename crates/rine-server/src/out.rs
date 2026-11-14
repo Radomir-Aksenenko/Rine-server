@@ -7,6 +7,7 @@ use rine_protocol::ids::play::*;
 use rine_protocol::nbt::Tag;
 use rine_protocol::text::Text;
 use rine_protocol::{BlockPos, Writer};
+use crate::game::player::Stack;
 use std::sync::atomic::{AtomicI32, Ordering};
 use uuid::Uuid;
 
@@ -289,10 +290,10 @@ impl Meta {
         self.0.w_varint(v as i32);
         self
     }
-    pub fn item(mut self, idx: u8, item: u32, count: i32) -> Self {
+    pub fn item(mut self, idx: u8, stack: &Stack) -> Self {
         self.0.w_u8(idx);
         self.0.w_varint(7);
-        write_item(&mut self.0, item, count);
+        write_stack(&mut self.0, stack);
         self
     }
     pub fn humanoid_arm(mut self, idx: u8, v: i32) -> Self {
@@ -307,16 +308,34 @@ impl Meta {
     }
 }
 
-/// ItemStack (OPTIONAL_STREAM_CODEC) with an empty component patch.
-pub fn write_item(b: &mut BytesMut, item: u32, count: i32) {
-    if count <= 0 || item == 0 {
+/// Registry id of `minecraft:damage` in `minecraft:data_component_type`.
+pub fn damage_component_id() -> u32 {
+    static ID: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *ID.get_or_init(|| rine_data::get().registries.id("minecraft:data_component_type", "minecraft:damage").expect("minecraft:damage component"))
+}
+
+/// ItemStack (OPTIONAL_STREAM_CODEC). Count, item id, then the component
+/// patch: a damaged stack adds one `minecraft:damage` value (VAR_INT).
+pub fn write_stack(b: &mut BytesMut, s: &Stack) {
+    write_stack_with(b, s, damage_component_id());
+}
+
+fn write_stack_with(b: &mut BytesMut, s: &Stack, damage_id: u32) {
+    if s.is_empty() {
         b.w_varint(0);
         return;
     }
-    b.w_varint(count);
-    b.w_varint(item as i32);
-    b.w_varint(0);
-    b.w_varint(0);
+    b.w_varint(s.count);
+    b.w_varint(s.item as i32);
+    if s.damage > 0 {
+        b.w_varint(1); // added components
+        b.w_varint(0); // removed components
+        b.w_varint(damage_id as i32);
+        b.w_varint(s.damage as i32);
+    } else {
+        b.w_varint(0);
+        b.w_varint(0);
+    }
 }
 
 pub fn set_health(health: f32, food: i32, sat: f32) -> BytesMut {
@@ -424,24 +443,24 @@ pub fn set_held_slot(slot: i32) -> BytesMut {
     packet(C_SET_HELD_SLOT, |b| b.w_varint(slot))
 }
 
-pub fn container_content(window: i32, state_id: i32, items: &[(u32, i32)], cursor: (u32, i32)) -> BytesMut {
+pub fn container_content(window: i32, state_id: i32, items: &[Stack], cursor: &Stack) -> BytesMut {
     packet(C_CONTAINER_SET_CONTENT, |b| {
         b.w_varint(window);
         b.w_varint(state_id);
         b.w_varint(items.len() as i32);
-        for &(i, c) in items {
-            write_item(b, i, c);
+        for s in items {
+            write_stack(b, s);
         }
-        write_item(b, cursor.0, cursor.1);
+        write_stack(b, cursor);
     })
 }
 
-pub fn container_slot(window: i32, state_id: i32, slot: i16, item: (u32, i32)) -> BytesMut {
+pub fn container_slot(window: i32, state_id: i32, slot: i16, item: &Stack) -> BytesMut {
     packet(C_CONTAINER_SET_SLOT, |b| {
         b.w_varint(window);
         b.w_varint(state_id);
         b.w_i16(slot);
-        write_item(b, item.0, item.1);
+        write_stack(b, item);
     })
 }
 
@@ -491,4 +510,30 @@ pub fn explode(x: f64, y: f64, z: f64, radius: f32, blocks: i32, knock: Option<(
 
 pub fn nbt_text(s: &str) -> Tag {
     Tag::String(s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stack_encoding_matches_item_stack_patch_layout() {
+        let mut b = BytesMut::new();
+        write_stack_with(&mut b, &Stack::damaged(7, 1, 5), 3);
+        assert_eq!(&b[..], &[1, 7, 1, 0, 3, 5]);
+
+        let mut b = BytesMut::new();
+        write_stack_with(&mut b, &Stack::new(7, 3), 3);
+        assert_eq!(&b[..], &[3, 7, 0, 0]);
+
+        let mut b = BytesMut::new();
+        write_stack_with(&mut b, &Stack::EMPTY, 3);
+        assert_eq!(&b[..], &[0]);
+    }
+
+    #[test]
+    fn damage_component_is_registry_entry_three() {
+        rine_data::init();
+        assert_eq!(damage_component_id(), 3);
+    }
 }

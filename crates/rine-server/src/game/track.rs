@@ -5,6 +5,7 @@
 //! Visibility is recomputed when a viewer changes chunk, and every 10 ticks.
 
 use super::entity;
+use super::player::Stack;
 use super::Game;
 use crate::out;
 use ahash::{AHashMap, AHashSet};
@@ -213,17 +214,17 @@ fn meta_for(p: &super::player::Player) -> bytes::BytesMut {
 fn equipment_packet(p: &super::player::Player) -> bytes::BytesMut {
     use rine_protocol::Writer;
     // set_equipment: VarInt eid, then entries (u8 slot | 0x80 if more follow, ItemStack)
-    let main = p.inv.hotbar(p.held).tuple();
-    let off = p.inv.slots[45].tuple();
-    let armor = [p.inv.slots[8].tuple(), p.inv.slots[7].tuple(), p.inv.slots[6].tuple(), p.inv.slots[5].tuple()];
+    let main = p.inv.hotbar(p.held);
+    let off = p.inv.slots[45];
+    let armor = [p.inv.slots[8], p.inv.slots[7], p.inv.slots[6], p.inv.slots[5]];
     rine_protocol::frame::packet(rine_protocol::ids::play::C_SET_EQUIPMENT, |b| {
         b.w_varint(p.eid);
         // slots: 0 mainhand, 1 offhand, 2 feet, 3 legs, 4 chest, 5 head
-        let entries: [(u8, (u32, i32)); 6] = [(0, main), (1, off), (2, armor[0]), (3, armor[1]), (4, armor[2]), (5, armor[3])];
+        let entries: [(u8, Stack); 6] = [(0, main), (1, off), (2, armor[0]), (3, armor[1]), (4, armor[2]), (5, armor[3])];
         for (i, (slot, it)) in entries.iter().enumerate() {
             let more = if i + 1 < entries.len() { 0x80 } else { 0 };
             b.w_u8(*slot | more);
-            out::write_item(b, it.0, it.1);
+            out::write_stack(b, it);
         }
     })
 }

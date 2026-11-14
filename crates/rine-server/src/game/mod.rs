@@ -17,6 +17,8 @@ pub mod place;
 pub mod plugins;
 pub mod containers;
 pub mod survival;
+pub mod durability;
+pub mod playerdata;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;
@@ -160,6 +162,8 @@ impl Game {
             p.send(pk);
             p.flush();
         }
+        playerdata::save_all(&self, true);
+        playerdata::flush();
         self.world.save_all();
         tracing::info!("world saved");
         if let Some(h) = self.plugins.take() {
@@ -291,6 +295,9 @@ impl Game {
                 self.world.chunks.len()
             );
         }
+        if self.tick % (20 * 60 * 5) == 0 {
+            playerdata::save_all(self, false);
+        }
         if self.tick % 100 == 0 {
             let lat: Vec<(uuid::Uuid, i32)> = self.players.iter().flatten().map(|p| (p.uuid, p.ping_ms)).collect();
             if !lat.is_empty() {
@@ -322,7 +329,12 @@ impl Game {
             "spectator" => 3,
             _ => 0,
         };
+        let saved = playerdata::read(&cfg.world_dir, np.uuid);
+        let gm = saved.as_ref().map_or(gm, |d| d.gamemode);
         let mut p = Player::new(np, slot, eid, self.spawn, gm, cfg.view_distance as i32);
+        if let Some(d) = &saved {
+            playerdata::apply(&mut p, d);
+        }
         p.joined_tick = self.tick;
         tracing::info!("{} joined ({}), eid {}", p.name, p.uuid, eid);
 
@@ -361,9 +373,10 @@ impl Game {
         }));
         let ab = p.abilities_packet();
         p.send(ab);
-        p.send(out::set_held_slot(0));
+        p.send(out::set_held_slot(p.held as i32));
         let (x, y, z) = (self.spawn[0], self.spawn[1], self.spawn[2]);
-        p.teleport(x, y, z, 0.0, 0.0);
+        let [px, py, pz] = p.pos;
+        p.teleport(px, py, pz, p.yaw, p.pitch);
         // border
         p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_INITIALIZE_BORDER, |b| {
             use rine_protocol::Writer;
@@ -407,11 +420,11 @@ impl Game {
         let c = p.chunk();
         p.center = c;
         p.send(out::chunk_center(c.x, c.z));
-        if gm == 0 {
+        if gm == 0 && saved.is_none() {
             let starter = [("minecraft:stone_pickaxe", 1), ("minecraft:torch", 32), ("minecraft:bread", 8)];
             for (n, c) in starter {
                 if let Some(id) = items::id(n) {
-                    p.inv.add(id, c);
+                    p.inv.add(player::Stack::new(id, c));
                 }
             }
         }
@@ -441,13 +454,20 @@ impl Game {
         let welcome = Text::plain("Добро пожаловать на ").color("gray").push(Text::plain("Rine").color("gold").bold()).push(Text::plain(". /help для списка команд").color("gray"));
         p.msg(&welcome);
         plugins::post(self, rine_plugin::Event::Join { name: p.name.clone(), uuid: p.uuid.to_string() });
+        if let Some(d) = &saved {
+            survival::set_exhaustion(slot, eid, d.exhaustion);
+        }
         self.by_eid.insert(eid, slot);
         self.players[slot] = Some(p);
         self.stream(slot);
     }
 
     pub fn leave(&mut self, slot: usize) {
+        if self.players.get(slot).is_some_and(|p| p.is_some()) {
+            containers::player_left(self, slot);
+        }
         let Some(p) = self.players.get_mut(slot).and_then(|p| p.take()) else { return };
+        playerdata::save_player(&self.shared.config.world_dir, &p, survival::exhaustion_of(slot, p.eid), false);
         tracing::info!("{} left", p.name);
         plugins::post(self, rine_plugin::Event::Quit { name: p.name.clone() });
         self.by_eid.remove(&p.eid);

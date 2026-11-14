@@ -352,6 +352,18 @@ pub fn release_use_item(g: &mut Game, slot: usize) {
     }
 }
 
+/// Exhaustion of the player in `slot` (0 when no state exists for `eid`).
+pub fn exhaustion_of(slot: usize, eid: i32) -> f32 {
+    STATE.with(|m| m.borrow().get(&slot).filter(|s| s.eid == eid).map_or(0.0, |s| s.exhaustion))
+}
+
+/// Restores saved exhaustion for a player who just joined.
+pub fn set_exhaustion(slot: usize, eid: i32, value: f32) {
+    let mut st = take_state(slot, eid);
+    st.exhaustion = value.clamp(0.0, EXHAUSTION_CAP);
+    put_state(slot, st);
+}
+
 /// Adds exhaustion for an action taken by `slot` (attack, mining, damage taken).
 /// Ignored for creative, spectator and dead players, as in vanilla.
 pub fn exhaust(g: &mut Game, slot: usize, amount: f32) {
@@ -498,8 +510,8 @@ fn complete_meal(g: &mut Game, slot: usize, st: &mut PlayerSurvival) {
             *sl = Stack::EMPTY;
         }
         let sid = p.inv.state_id;
-        let it = p.inv.slots[e.inv_slot].tuple();
-        p.send(out::container_slot(0, sid, e.inv_slot as i16, it));
+        let it = p.inv.slots[e.inv_slot];
+        p.send(out::container_slot(0, sid, e.inv_slot as i16, &it));
     }
     p.send(out::set_health(s.health, s.food, s.saturation));
     let f = out::frame(out::entity_event(eid, ENTITY_EVENT_USE_COMPLETE));
