@@ -56,6 +56,10 @@ pub struct Game {
     pub entities: entity::Entities,
     /// Explosions waiting to be processed (spread over ticks under load).
     pub pending_blasts: std::collections::VecDeque<[f64; 3]>,
+    /// Start of the current tick (explosions budget against it).
+    pub tick_started: Instant,
+    /// Measured cost of one blast, ms (moving average over batches).
+    pub blast_ms: f64,
     pub mspt: f64,
     pub peak_ms: f64,
     pub tps: f64,
@@ -102,6 +106,8 @@ impl Game {
             wake_rx,
             entities: entity::Entities::default(),
             pending_blasts: std::collections::VecDeque::new(),
+            tick_started: Instant::now(),
+            blast_ms: 0.0,
             mspt: 0.0,
             peak_ms: 0.0,
             tps: 20.0,
@@ -189,6 +195,14 @@ impl Game {
     }
 
     fn do_tick(&mut self) {
+        let t0 = Instant::now();
+        self.tick_started = t0;
+        let mut lap = [0f64; 8];
+        let mut mark = |i: usize, t: &mut Instant| {
+            lap[i] += t.elapsed().as_secs_f64() * 1000.0;
+            *t = Instant::now();
+        };
+        let mut t = Instant::now();
         self.tick += 1;
         self.day_time += 1;
 
@@ -212,25 +226,32 @@ impl Game {
         for slot in 0..self.players.len() {
             handle::process_inbound(self, slot);
         }
+        mark(0, &mut t);
 
         // 4. entities (items, TNT, falling blocks) + explosions
         entity::tick(self);
+        mark(1, &mut t);
 
         super::game::containers::tick(self);
         super::game::survival::tick(self);
         interact::dig_tick(self);
+        mark(2, &mut t);
 
         // 5. chunk streaming
         for slot in 0..self.players.len() {
             self.stream(slot);
         }
+        mark(3, &mut t);
 
         // 6. movement + entity tracking
         track::tick(self);
+        mark(4, &mut t);
 
         // 7. scheduled fluid ticks, then block changes this tick + acks
         fluids::tick(self);
+        mark(5, &mut t);
         self.settle_outputs();
+        mark(6, &mut t);
 
         // 8. periodic
         if self.tick % 20 == 0 {
@@ -242,6 +263,11 @@ impl Game {
 
         // 9. disconnects + flush
         self.flush_players(true);
+        mark(7, &mut t);
+        let total = t0.elapsed().as_secs_f64() * 1000.0;
+        if total > 30.0 && std::env::var_os("RINE_PROFILE").is_some() {
+            eprintln!("PROFILE tick {} total {total:.1} inbound {:.1} entity {:.1} containers {:.1} stream {:.1} track {:.1} fluids {:.1} settle {:.1} flush {:.1}", self.tick, lap[0], lap[1], lap[2], lap[3], lap[4], lap[5], lap[6], lap[7]);
+        }
     }
 
     /// Wait until `deadline`, handling inbound packets as they arrive. The

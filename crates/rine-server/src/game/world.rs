@@ -17,6 +17,17 @@ pub struct ChunkSlot {
     pub viewers: Vec<usize>,
     /// Tick when the last viewer left (for unloading).
     pub idle_since: u64,
+    /// Unique per insertion into `chunks`, so a late lighting result for an
+    /// unloaded and reloaded chunk is never applied to the new instance.
+    pub uid: u64,
+}
+
+/// Lighting computed off the game thread for one chunk snapshot.
+struct LightDone {
+    pos: ChunkPos,
+    uid: u64,
+    version: u64,
+    sections: Vec<(Option<Box<[u8; 2048]>>, Option<Box<[u8; 2048]>>)>,
 }
 
 pub struct Loaded {
@@ -37,10 +48,17 @@ pub struct World {
     pub touched: Vec<BlockPos>,
     /// Positions changed since the last fluid pass (see `fluids::tick`).
     pub fluid_touched: Vec<BlockPos>,
+    /// Positions changed since the last entity tick (wakes resting TNT).
+    pub wake: Vec<BlockPos>,
     /// Scheduled fluid ticks.
     pub fluids: super::fluids::Sched,
     /// Chunks whose lighting must be recomputed (after block changes).
     pub relight: AHashSet<ChunkPos>,
+    /// Chunks with a lighting job running on the background pool.
+    light_jobs: AHashSet<ChunkPos>,
+    light_tx: Sender<LightDone>,
+    light_rx: Receiver<LightDone>,
+    next_uid: u64,
 }
 
 static BACKGROUND: std::sync::OnceLock<rayon::ThreadPool> = std::sync::OnceLock::new();
@@ -62,6 +80,7 @@ pub fn spawn_background(f: impl FnOnce() + Send + 'static) {
 impl World {
     pub fn new(seed: i64, dir: &str) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
+        let (light_tx, light_rx) = crossbeam_channel::unbounded();
         Self {
             chunks: AHashMap::with_capacity(16384),
             pending: AHashSet::new(),
@@ -72,8 +91,13 @@ impl World {
             changes: AHashMap::new(),
             touched: Vec::new(),
             fluid_touched: Vec::new(),
+            wake: Vec::new(),
             fluids: Default::default(),
             relight: AHashSet::new(),
+            light_jobs: AHashSet::new(),
+            light_tx,
+            light_rx,
+            next_uid: 0,
         }
     }
 
@@ -109,7 +133,9 @@ impl World {
             let pos = l.chunk.pos;
             self.pending.remove(&pos);
             let v = l.chunk.version;
-            self.chunks.insert(pos, ChunkSlot { chunk: l.chunk, frame: Some((v, l.frame)), viewers: Vec::new(), idle_since: tick });
+            self.next_uid += 1;
+            let uid = self.next_uid;
+            self.chunks.insert(pos, ChunkSlot { chunk: l.chunk, frame: Some((v, l.frame)), viewers: Vec::new(), idle_since: tick, uid });
             done.push(pos);
         }
         done
@@ -126,9 +152,8 @@ impl World {
         match &slot.frame {
             Some((cv, f)) if *cv == v => Some(f.clone()),
             _ => {
-                if self.relight.remove(&pos) {
-                    rine_world::light::light_chunk(&mut slot.chunk);
-                }
+                // A pending lighting job applies later and re-sends light to
+                // the viewers; encode the current light now.
                 let mut b = BytesMut::with_capacity(16 * 1024);
                 rine_world::encode::encode_chunk_packet(&slot.chunk, &mut b);
                 let f = out::frame(b);
@@ -166,6 +191,7 @@ impl World {
             self.changes.entry((cp.x, p.y >> 4, cp.z)).or_default().push((rel, state));
             self.touched.push(p);
             self.fluid_touched.push(p);
+            self.wake.push(p);
             let b = &rine_data::get().blocks;
             let (so, sn) = (b.state(old), b.state(state));
             if so.light_emit != sn.light_emit || so.light_block != sn.light_block {
@@ -200,19 +226,47 @@ impl World {
             };
             outv.push((out::frame(p), viewers));
         }
-        // Lighting: recompute changed chunks and send a full chunk-light
-        // refresh via a fresh chunk packet only when light really changed.
-        let relight: Vec<ChunkPos> = self.relight.drain().collect();
-        for cp in relight {
-            if let Some(slot) = self.chunks.get_mut(&cp) {
-                rine_world::light::light_chunk(&mut slot.chunk);
-                if slot.viewers.is_empty() {
-                    continue;
-                }
+        // Lighting runs on the background pool from a snapshot of each changed
+        // chunk. Blocks go out now; the light arrives a tick or more later, and
+        // is applied only if the chunk is still the same instance and version.
+        while let Ok(done) = self.light_rx.try_recv() {
+            self.light_jobs.remove(&done.pos);
+            let Some(slot) = self.chunks.get_mut(&done.pos) else { continue };
+            if slot.uid != done.uid {
+                continue;
+            }
+            if slot.chunk.version != done.version {
+                self.relight.insert(done.pos);
+                continue;
+            }
+            for (s, (sky, bl)) in slot.chunk.sections.iter_mut().zip(done.sections) {
+                s.sky = sky;
+                s.block_light = bl;
+            }
+            slot.frame = None;
+            if !slot.viewers.is_empty() {
                 let mut b = BytesMut::new();
                 b_light_update(&mut b, &slot.chunk);
                 outv.push((out::frame(b), slot.viewers.clone()));
             }
+        }
+        let relight: Vec<ChunkPos> = self.relight.drain().collect();
+        for cp in relight {
+            let Some(slot) = self.chunks.get(&cp) else { continue };
+            if self.light_jobs.contains(&cp) {
+                self.relight.insert(cp);
+                continue;
+            }
+            let mut tmp = Chunk::new(cp);
+            tmp.sections = slot.chunk.sections.clone();
+            let (uid, version) = (slot.uid, slot.chunk.version);
+            self.light_jobs.insert(cp);
+            let tx = self.light_tx.clone();
+            spawn_background(move || {
+                rine_world::light::light_chunk(&mut tmp);
+                let sections = tmp.sections.into_iter().map(|s| (s.sky, s.block_light)).collect();
+                let _ = tx.send(LightDone { pos: cp, uid, version, sections });
+            });
         }
         outv
     }
