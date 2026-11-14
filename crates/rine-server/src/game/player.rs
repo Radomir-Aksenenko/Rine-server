@@ -164,7 +164,16 @@ pub struct Player {
     pub health: f32,
     pub food: i32,
     pub saturation: f32,
-    pub fall_start: f64,
+    /// Vanilla `Entity.fallDistance`: downward travel since the last landing.
+    pub fall_distance: f64,
+    /// Velocity estimate (last move delta); vanilla `deltaMovement` for knockback.
+    pub vel: [f64; 3],
+    /// `LivingEntity.damageCooldownTime` (invulnerable ticks left after a hit).
+    pub hurt_cooldown: i32,
+    /// `LivingEntity.lastHurt`.
+    pub last_hurt: f32,
+    /// `Player.attackStrengthTicker`, ticks since the last attack.
+    pub attack_ticks: u32,
     pub dead: bool,
     pub digging: Option<Dig>,
     /// Highest block-change sequence to acknowledge at the end of the tick (-1 = none).
@@ -221,7 +230,11 @@ impl Player {
             health: 20.0,
             food: 20,
             saturation: 5.0,
-            fall_start: spawn[1],
+            fall_distance: 0.0,
+            vel: [0.0; 3],
+            hurt_cooldown: 0,
+            last_hurt: 0.0,
+            attack_ticks: 0,
             dead: false,
             digging: None,
             ack_seq: -1,
@@ -263,7 +276,7 @@ impl Player {
         self.pos = [x, y, z];
         self.yaw = yaw;
         self.pitch = pitch;
-        self.fall_start = y;
+        self.fall_distance = 0.0;
         let p = crate::out::player_position(self.tp_id, x, y, z, yaw, pitch);
         self.send(p);
         self.stream_dirty = true;

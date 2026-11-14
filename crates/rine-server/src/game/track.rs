@@ -272,6 +272,30 @@ pub fn send_to_trackers(g: &mut Game, eid: i32, f: &Bytes) {
     }
 }
 
+/// Frame to every player within `range` blocks of `at` (vanilla
+/// `PlayerList.broadcast`: squared distance below range², `except` skipped).
+pub fn send_near(g: &mut Game, at: [f64; 3], range: f64, except: Option<usize>, f: &Bytes) {
+    let r2 = range * range;
+    for p in g.players.iter_mut().flatten() {
+        if Some(p.slot) == except {
+            continue;
+        }
+        let d2: f64 = (0..3).map(|i| (p.pos[i] - at[i]).powi(2)).sum();
+        if d2 < r2 {
+            p.out.push(f.clone());
+        }
+    }
+}
+
+/// Vanilla `Level.playSound(null, ...)`: heard by everyone within 16 blocks
+/// (`16 * volume` for loud sounds), the source player included.
+pub fn sound_near(g: &mut Game, name: &str, category: i32, at: [f64; 3], volume: f32, pitch: f32, except: Option<usize>) {
+    let Some(id) = rine_data::get().registries.id("minecraft:sound_event", name) else { return };
+    let f = out::frame(out::sound(id, category, at[0], at[1], at[2], volume, pitch, g.tick as i64));
+    let range = if volume > 1.0 { 16.0 * volume as f64 } else { 16.0 };
+    send_near(g, at, range, except, &f);
+}
+
 pub fn equipment_changed(g: &mut Game, slot: usize) {
     let Some(p) = g.player(slot) else { return };
     let eid = p.eid;

@@ -58,6 +58,17 @@ const LIVING_FLAG_HAND_ACTIVE: u8 = 0x01;
 const LIVING_FLAG_OFF_HAND: u8 = 0x02;
 const ENTITY_EVENT_USE_COMPLETE: i8 = 9;
 
+/// Sound categories (`SoundSource` ordinals).
+pub const SOUND_NEUTRAL: i32 = 6;
+const SOUND_PLAYERS: i32 = 7;
+const EAT_SOUND: &str = "minecraft:entity.generic.eat";
+const BURP_SOUND: &str = "minecraft:entity.player.burp";
+const SMALL_FALL: &str = "minecraft:entity.player.small_fall";
+const BIG_FALL: &str = "minecraft:entity.player.big_fall";
+const HONEY_SLIDE: &str = "minecraft:block.honey_block.slide";
+/// `Attributes.SAFE_FALL_DISTANCE` default for players.
+const SAFE_FALL_DISTANCE: f64 = 3.0;
+
 /// Hunger state a player carries besides the fields on `Player`.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stats {
@@ -388,6 +399,11 @@ pub fn tick(g: &mut Game) {
     prune(&*g);
     for slot in 0..g.players.len() {
         let Some(eid) = g.players[slot].as_ref().map(|p| p.eid) else { continue };
+        // Player.tick (attack strength recovers) and ServerPlayer.tick (the hit window counts down)
+        if let Some(p) = g.players[slot].as_mut() {
+            p.attack_ticks = p.attack_ticks.saturating_add(1);
+            p.hurt_cooldown = (p.hurt_cooldown - 1).max(0);
+        }
         let mut st = take_state(slot, eid);
         tick_player(g, slot, &mut st);
         put_state(slot, st);
@@ -420,6 +436,17 @@ fn tick_player(g: &mut Game, slot: usize, st: &mut PlayerSurvival) {
         }
     }
     let probe = Probe::at(g, pos, eye);
+    // Entity.updateFluidInteraction and baseTick, LivingEntity.handleOnClimbable,
+    // HoneyBlock.entityInside and Player.tick: water, climbing, honey and flight
+    // reset the fall, lava halves it
+    let feet = block_name_at(g, pos[0].floor() as i32, pos[1].floor() as i32, pos[2].floor() as i32);
+    if let Some(p) = g.player(slot) {
+        if probe.feet_in_water || probe.eye_in_water || p.flying || climbable(&feet) || feet == "minecraft:honey_block" {
+            p.fall_distance = 0.0;
+        } else if probe.feet_in_lava {
+            p.fall_distance *= 0.5;
+        }
+    }
 
     if cancel_eat {
         st.eating = None;
@@ -520,12 +547,114 @@ fn complete_meal(g: &mut Game, slot: usize, st: &mut PlayerSurvival) {
         p.send(out::container_slot(0, sid, e.inv_slot as i16, &it));
     }
     p.send(out::set_health(s.health, s.food, s.saturation));
-    let f = out::frame(out::entity_event(eid, ENTITY_EVENT_USE_COMPLETE));
-    p.out.push(f.clone());
-    super::track::send_to_trackers(g, eid, &f);
+    // ServerPlayer.completeUsingItem: the use-complete event goes to the eater only
+    p.out.push(out::frame(out::entity_event(eid, ENTITY_EVENT_USE_COMPLETE)));
     if consumed {
         super::track::equipment_changed(g, slot);
     }
+    let Some(at) = g.player(slot).map(|p| p.pos) else { return };
+    let seed = g.tick ^ ((eid as u64) << 20);
+    let rnd = |k: u64| super::entity::rand_f64(seed.wrapping_add(k));
+    // Consumable.emitParticlesAndSounds: eat sound, volume 0.5 or 1.0, pitch 1 +- 0.2
+    let vol = if rnd(1) < 0.5 { 0.5 } else { 1.0 };
+    super::track::sound_near(g, EAT_SOUND, SOUND_NEUTRAL, at, vol, (1.0 + 0.2 * (rnd(2) - rnd(3))) as f32, None);
+    // FoodProperties.onConsume: the consumable sound again (pitch 1 +- 0.4), then the burp
+    super::track::sound_near(g, EAT_SOUND, SOUND_NEUTRAL, at, 1.0, (1.0 + 0.4 * (rnd(4) - rnd(5))) as f32, None);
+    super::track::sound_near(g, BURP_SOUND, SOUND_PLAYERS, at, 0.5, (0.9 + 0.1 * rnd(6)) as f32, None);
+}
+
+/// `LivingEntity.calculateFallDamage` (26.3): the fall beyond the safe distance,
+/// times the damage modifier, rounded down. The 1e-6 keeps exact integers exact.
+pub fn fall_damage(distance: f64, modifier: f32) -> i32 {
+    ((distance + 1e-6 - SAFE_FALL_DISTANCE) * modifier as f64).floor() as i32
+}
+
+/// `BlockTags.CLIMBABLE` (the ones that matter for falls).
+fn climbable(name: &str) -> bool {
+    matches!(
+        name,
+        "minecraft:ladder" | "minecraft:vine" | "minecraft:scaffolding" | "minecraft:weeping_vines" | "minecraft:weeping_vines_plant" | "minecraft:twisting_vines" | "minecraft:twisting_vines_plant"
+    )
+}
+
+/// Name of the block at integer coordinates; empty outside the world.
+fn block_name_at(g: &Game, x: i32, y: i32, z: i32) -> String {
+    if !(rine_world::MIN_Y..=rine_world::MAX_Y).contains(&y) {
+        return String::new();
+    }
+    rine_data::get().blocks.block_of(g.world.get_block(x, y, z)).name.clone()
+}
+
+/// `Player.canCriticalAttack` terrain part: not in water, not on a climbable block.
+pub fn crit_terrain_ok(g: &Game, pos: [f64; 3], eye: [f64; 3]) -> bool {
+    let probe = Probe::at(g, pos, eye);
+    let feet = block_name_at(g, pos[0].floor() as i32, pos[1].floor() as i32, pos[2].floor() as i32);
+    !(probe.feet_in_water || probe.eye_in_water || climbable(&feet))
+}
+
+/// `Entity.checkFallDamage` for one client move, as vanilla
+/// `ServerGamePacketListenerImpl.handleMovePlayer` → `doCheckFallDamage`: `dy` is
+/// the vertical move of this packet and `on_ground` the client's flag.
+pub fn check_fall(g: &mut Game, slot: usize, dy: f64, on_ground: bool) {
+    let Some(p) = g.player(slot) else { return };
+    let (pos, eye, sneaking) = (p.pos, p.eye(), p.sneaking);
+    let probe = Probe::at(g, pos, eye);
+    let Some(p) = g.player(slot) else { return };
+    if dy < 0.0 && !(probe.feet_in_water || probe.eye_in_water) {
+        p.fall_distance -= dy;
+    }
+    if !on_ground {
+        return;
+    }
+    let fall = std::mem::take(&mut p.fall_distance);
+    if fall > 0.0 {
+        land(g, slot, fall, pos, sneaking);
+    }
+}
+
+/// `Block.fallOn` for the block under the feet (vanilla `getOnPosLegacy`, y - 0.2).
+fn land(g: &mut Game, slot: usize, fall: f64, pos: [f64; 3], sneaking: bool) {
+    let name = block_name_at(g, pos[0].floor() as i32, (pos[1] - 0.2).floor() as i32, pos[2].floor() as i32);
+    match name.as_str() {
+        "minecraft:hay_block" => {
+            cause_fall(g, slot, fall, 0.2);
+        }
+        // SlimeBlock.fallOn: sneaking skips the call, otherwise no damage
+        "minecraft:slime_block" => {
+            if !sneaking {
+                cause_fall(g, slot, fall, 0.0);
+            }
+        }
+        "minecraft:honey_block" => {
+            super::track::sound_near(g, HONEY_SLIDE, SOUND_NEUTRAL, pos, 1.0, 1.0, None);
+            cause_fall(g, slot, fall, 0.2);
+        }
+        // PowderSnowBlock.fallOn: sounds only, the snow takes no damage
+        "minecraft:powder_snow" => {
+            if fall >= 4.0 {
+                let sound = if fall < 7.0 { SMALL_FALL } else { BIG_FALL };
+                super::track::sound_near(g, sound, SOUND_NEUTRAL, pos, 1.0, 1.0, None);
+            }
+        }
+        // Block.fallOn: beds halve the distance (fallDistanceReduction 0.5), modifier 1
+        n => {
+            let reduced = if n.ends_with("_bed") || n.contains("shelf_mushroom") { fall * 0.5 } else { fall };
+            cause_fall(g, slot, reduced, 1.0);
+        }
+    }
+}
+
+/// `LivingEntity.causeFallDamage`: the hit, then the fall sound once it landed.
+/// `playBlockFallSound` is not played: rine-data has no block sound types.
+fn cause_fall(g: &mut Game, slot: usize, distance: f64, modifier: f32) -> bool {
+    let dmg = fall_damage(distance, modifier);
+    if dmg <= 0 || !interact::damage(g, slot, dmg as f32, "fall") {
+        return false;
+    }
+    let Some(at) = g.player(slot).map(|p| p.pos) else { return true };
+    let sound = if dmg > 4 { BIG_FALL } else { SMALL_FALL };
+    super::track::sound_near(g, sound, SOUND_NEUTRAL, at, 1.0, 1.0, None);
+    true
 }
 
 #[cfg(test)]
@@ -704,5 +833,32 @@ mod tests {
         assert_eq!(times, vec![0, 10, 20]);
         assert!(!env_tick(&mut cd, false));
         assert!(env_tick(&mut cd, true));
+    }
+}
+
+#[cfg(test)]
+mod fall_tests {
+    use super::*;
+
+    #[test]
+    fn fall_damage_starts_past_three_blocks() {
+        assert!(fall_damage(2.0, 1.0) <= 0);
+        assert_eq!(fall_damage(3.0, 1.0), 0);
+        assert_eq!(fall_damage(4.0, 1.0), 1);
+        assert_eq!(fall_damage(5.5, 1.0), 2);
+        // hay bale: 20% of the excess; slime: nothing
+        assert_eq!(fall_damage(10.0, 0.2), 1);
+        assert_eq!(fall_damage(20.0, 0.0), 0);
+    }
+
+    #[test]
+    fn climbable_blocks_and_sound_names_resolve() {
+        rine_data::init();
+        assert!(climbable("minecraft:ladder"));
+        assert!(!climbable("minecraft:stone"));
+        let reg = &rine_data::get().registries;
+        for name in [EAT_SOUND, BURP_SOUND, SMALL_FALL, BIG_FALL, HONEY_SLIDE] {
+            assert!(reg.id("minecraft:sound_event", name).is_some(), "missing sound {name}");
+        }
     }
 }

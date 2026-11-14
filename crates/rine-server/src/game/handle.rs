@@ -258,21 +258,16 @@ fn on_move(g: &mut Game, slot: usize, pos: Option<(f64, f64, f64)>, rot: Option<
             p.teleport(px, py, pz, yaw, pitch);
             return;
         }
-        // fall damage bookkeeping (survival)
-        if !on_ground && y > p.fall_start {
-            p.fall_start = y;
-        }
-        let was_ground = p.on_ground;
+        p.vel = [dx, dy, dz];
         p.pos = [x, y, z];
-        if on_ground && !was_ground {
-            let fall = p.fall_start - y;
-            p.fall_start = y;
-            if fall > 3.0 && (p.gamemode == 0 || p.gamemode == 2) && !p.flying {
-                let dmg = (fall - 3.0).ceil() as f32;
-                super::interact::damage(g, slot, dmg, "fall");
+        p.on_ground = on_ground;
+        // vanilla doCheckFallDamage: the client's move and onGround drive the fall
+        super::survival::check_fall(g, slot, dy, on_ground);
+        // movedUpwards (handleMovePlayer): an upward move clears the fall
+        if dy > 0.0 {
+            if let Some(p) = g.player(slot) {
+                p.fall_distance = 0.0;
             }
-        } else if on_ground {
-            p.fall_start = y;
         }
     }
     let p = g.player(slot).unwrap();
