@@ -1,0 +1,7 @@
+﻿target/
+Paper-26.3/
+vanilla-data/
+*.log
+world/
+/run/
+

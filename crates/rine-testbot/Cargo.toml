@@ -1,0 +1,7 @@
+[package]
+name = "rine-testbot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+

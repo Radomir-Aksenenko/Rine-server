@@ -1,0 +1,10 @@
+[package]
+name = "rine-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bytes.workspace = true
+flate2.workspace = true
+uuid.workspace = true
+thiserror.workspace = true

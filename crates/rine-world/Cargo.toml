@@ -1,0 +1,13 @@
+[package]
+name = "rine-world"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rine-protocol.workspace = true
+rine-data.workspace = true
+bytes.workspace = true
+rayon.workspace = true
+ahash.workspace = true
+lz4_flex.workspace = true
+parking_lot.workspace = true
