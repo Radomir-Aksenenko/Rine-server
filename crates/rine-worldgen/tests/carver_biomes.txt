@@ -1,0 +1,67 @@
+minecraft:basalt_deltas nether_cave
+minecraft:deep_frozen_ocean cave,cave_extra_underground,canyon
+minecraft:eroded_badlands cave,cave_extra_underground,canyon
+minecraft:frozen_ocean cave,cave_extra_underground,canyon
+minecraft:savanna_plateau cave,cave_extra_underground,canyon
+minecraft:forest cave,cave_extra_underground,canyon
+minecraft:jungle cave,cave_extra_underground,canyon
+minecraft:warped_forest nether_cave
+minecraft:bamboo_jungle cave,cave_extra_underground,canyon
+minecraft:birch_forest cave,cave_extra_underground,canyon
+minecraft:grove cave,cave_extra_underground,canyon
+minecraft:ocean cave,cave_extra_underground,canyon
+minecraft:small_end_islands 
+minecraft:cold_ocean cave,cave_extra_underground,canyon
+minecraft:the_end 
+minecraft:windswept_savanna cave,cave_extra_underground,canyon
+minecraft:river cave,cave_extra_underground,canyon
+minecraft:jagged_peaks cave,cave_extra_underground,canyon
+minecraft:lush_caves cave,cave_extra_underground,canyon
+minecraft:the_void 
+minecraft:crimson_forest nether_cave
+minecraft:old_growth_birch_forest cave,cave_extra_underground,canyon
+minecraft:taiga cave,cave_extra_underground,canyon
+minecraft:wooded_badlands cave,cave_extra_underground,canyon
+minecraft:windswept_hills cave,cave_extra_underground,canyon
+minecraft:warm_ocean cave,cave_extra_underground,canyon
+minecraft:flower_forest cave,cave_extra_underground,canyon
+minecraft:snowy_beach cave,cave_extra_underground,canyon
+minecraft:snowy_taiga cave,cave_extra_underground,canyon
+minecraft:end_barrens 
+minecraft:badlands cave,cave_extra_underground,canyon
+minecraft:snowy_slopes cave,cave_extra_underground,canyon
+minecraft:mangrove_swamp cave,cave_extra_underground,canyon
+minecraft:windswept_forest cave,cave_extra_underground,canyon
+minecraft:stony_shore cave,cave_extra_underground,canyon
+minecraft:pale_garden cave,cave_extra_underground,canyon
+minecraft:lukewarm_ocean cave,cave_extra_underground,canyon
+minecraft:deep_ocean cave,cave_extra_underground,canyon
+minecraft:beach cave,cave_extra_underground,canyon
+minecraft:dripstone_caves cave,cave_extra_underground,canyon
+minecraft:end_midlands 
+minecraft:nether_wastes nether_cave
+minecraft:sulfur_caves cave,cave_extra_underground,canyon
+minecraft:swamp cave,cave_extra_underground,canyon
+minecraft:dappled_forest cave,cave_extra_underground,canyon
+minecraft:deep_cold_ocean cave,cave_extra_underground,canyon
+minecraft:frozen_river cave,cave_extra_underground,canyon
+minecraft:plains cave,cave_extra_underground,canyon
+minecraft:ice_spikes cave,cave_extra_underground,canyon
+minecraft:frozen_peaks cave,cave_extra_underground,canyon
+minecraft:sunflower_plains cave,cave_extra_underground,canyon
+minecraft:old_growth_pine_taiga cave,cave_extra_underground,canyon
+minecraft:windswept_gravelly_hills cave,cave_extra_underground,canyon
+minecraft:soul_sand_valley nether_cave
+minecraft:desert cave,cave_extra_underground,canyon
+minecraft:stony_peaks cave,cave_extra_underground,canyon
+minecraft:deep_lukewarm_ocean cave,cave_extra_underground,canyon
+minecraft:mushroom_fields cave,cave_extra_underground,canyon
+minecraft:sparse_jungle cave,cave_extra_underground,canyon
+minecraft:end_highlands 
+minecraft:old_growth_spruce_taiga cave,cave_extra_underground,canyon
+minecraft:cherry_grove cave,cave_extra_underground,canyon
+minecraft:dark_forest cave,cave_extra_underground,canyon
+minecraft:deep_dark cave,cave_extra_underground,canyon
+minecraft:snowy_plains cave,cave_extra_underground,canyon
+minecraft:savanna cave,cave_extra_underground,canyon
+minecraft:meadow cave,cave_extra_underground,canyon

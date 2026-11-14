@@ -14,10 +14,13 @@ mod rules;
 mod sha256;
 mod surface;
 
+pub(crate) use surface::top_material;
+
 use std::cell::RefCell;
 
 use serde_json::Value;
 
+use crate::carver::CarvingMask;
 use crate::density::build::{bundled, Builder};
 use crate::density::tree::{Ctx, Tree};
 use crate::density::volume::Vol;
@@ -96,6 +99,7 @@ pub(crate) struct Ids {
 
 /// The compiled overworld generator for one seed. `Sync`: chunks can be generated in parallel.
 pub struct Overworld {
+    seed: i64,
     tree: Tree,
     min_y: i32,
     height: i32,
@@ -354,6 +358,7 @@ impl Overworld {
         let aquifer_rng = root_random.from_hash_of("minecraft:aquifer").fork_positional();
 
         Overworld {
+            seed,
             tree: builder.into_tree(),
             min_y,
             height,
@@ -441,8 +446,29 @@ impl Overworld {
         &self.biomes
     }
 
+    pub(crate) fn seed(&self) -> i64 {
+        self.seed
+    }
+
+    /// Aquifer roots, global fluid levels and the aquifer random factory, as `NoiseChunk` builds them.
+    pub(crate) fn aquifer_parts(&self) -> (&AquiferRoots, &GlobalFluid, Positional) {
+        (&self.aquifer, &self.global_fluid, self.aquifer_rng)
+    }
+
     /// Generates chunk `(cx, cz)`.
     pub fn generate(&self, cx: i32, cz: i32) -> ChunkBlocks {
+        self.generate_stages(cx, cz, false).0
+    }
+
+    /// `generate` plus `applyCarvers` (see `crate::carver`). Returns the carved chunk and its carving mask.
+    pub fn generate_carved(&self, cx: i32, cz: i32) -> (ChunkBlocks, CarvingMask) {
+        let (chunk, mask) = self.generate_stages(cx, cz, true);
+        (chunk, mask.expect("carving mask"))
+    }
+
+    /// Shared body of `generate` and `generate_carved`. With `carve`, the carver step runs after the
+    /// surface step, on the same blocks and heights (`ChunkGenerator.applyCarvers`).
+    pub(crate) fn generate_stages(&self, cx: i32, cz: i32, carve: bool) -> (ChunkBlocks, Option<CarvingMask>) {
         let mut samplers = Samplers {
             tree: &self.tree,
             ctx: Ctx::cached(self.tree.cache_count),
@@ -482,6 +508,12 @@ impl Overworld {
         let biome_map = BiomeMap::new(self, cx, cz);
         surface::build(self, samplers, &biome_map, cx, cz, &mut blocks, &mut heights);
 
+        let mask = if carve {
+            Some(crate::carver::apply_carvers(self, cx, cz, &mut blocks, &mut heights, &biome_map))
+        } else {
+            None
+        };
+
         // Output.
         let mut biomes = vec![0u16; (self.height as usize / 4) * 16];
         let own = &biome_map.grids[4];
@@ -494,14 +526,15 @@ impl Overworld {
                 }
             }
         }
-        ChunkBlocks {
+        let chunk = ChunkBlocks {
             min_y: self.min_y,
             height: self.height,
             palette: self.interner.names().to_vec(),
             blocks: blocks.iter().map(|b| b.0).collect(),
             biome_palette: self.biomes.names.clone(),
             biomes,
-        }
+        };
+        (chunk, mask)
     }
 }
 
