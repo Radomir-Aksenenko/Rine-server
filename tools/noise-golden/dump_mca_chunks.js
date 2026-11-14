@@ -128,10 +128,14 @@ function readChunk(regionBuf, cx, cz) {
 function canonical(entry) {
     // 26.3 stores plain states as bare names; states with properties as {Name, Properties}.
     if (typeof entry === 'string') return entry;
-    const props = entry.Properties || {};
+    // Some 26.3 palette entries arrive as a compound whose only child is an unnamed string (`{"": name}`),
+    // others as `{id, properties}` instead of `{Name, Properties}`.
+    if (entry.Name === undefined && entry.id === undefined && typeof entry[''] === 'string') return entry[''];
+    const name = entry.Name ?? entry.id;
+    const props = entry.Properties ?? entry.properties ?? {};
     const keys = Object.keys(props).sort();
-    if (keys.length === 0) return entry.Name;
-    return entry.Name + '[' + keys.map((k) => k + '=' + props[k]).join(',') + ']';
+    if (keys.length === 0) return name;
+    return name + '[' + keys.map((k) => k + '=' + props[k]).join(',') + ']';
 }
 
 function sectionBlocks(section) {

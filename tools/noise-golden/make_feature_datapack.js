@@ -18,12 +18,31 @@ const out = process.argv[2];
 if (!out) throw new Error('usage: make_feature_datapack.js <outDir>');
 const bundle = JSON.parse(fs.readFileSync(BUNDLE, 'utf8'));
 
-const allowed = (placedName) => {
-    const p = bundle.placed[placedName];
-    if (!p || typeof p.feature !== 'string') return false;
-    const cfg = bundle.configured[p.feature];
-    return cfg !== undefined && cfg.type === 'minecraft:ore';
+// Shared allow rule (crates/rine-worldgen/assets/worldgen/ported_features.json): a top-level placed
+// feature is allowed when every placement is ported (biome only at top level) and every configured
+// feature in its subtree is ported. Nested placed features of selectors and sequences are checked the same way.
+const PORTED = JSON.parse(fs.readFileSync(path.join(REPO, "crates", "rine-worldgen", "assets", "worldgen", "ported_features.json"), "utf8"));
+const placementOk = (list, top) =>
+    (list || []).every((m) => PORTED.placements.includes(m.type) && (top || m.type !== "minecraft:biome"));
+const featureOk = (ref) => {
+    const cfg = typeof ref === "string" ? bundle.configured[ref] : ref;
+    if (!cfg || !PORTED.types.includes(cfg.type)) return false;
+    const sub = (r) => subOk(r);
+    switch (cfg.type) {
+        case "minecraft:random_boolean_selector":
+            return sub(cfg.feature_true) && sub(cfg.feature_false);
+        case "minecraft:simple_random_selector":
+        case "minecraft:sequence":
+            return cfg.features.every(sub);
+        case "minecraft:weighted_random_selector":
+            return cfg.features.every((e) => sub(e.data));
+        default:
+            return true;
+    }
 };
+const placedOk = (p, top) => !!p && placementOk(p.placement, top) && featureOk(p.feature);
+const subOk = (r) => (typeof r === "string" ? placedOk(bundle.placed[r], false) : placedOk(r, false));
+const allowed = (placedName) => placedOk(bundle.placed[placedName], true);
 
 const packDir = path.join(out, 'data', 'minecraft', 'worldgen', 'biome');
 fs.mkdirSync(packDir, { recursive: true });

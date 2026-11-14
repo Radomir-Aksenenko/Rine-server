@@ -4,34 +4,48 @@
 
 use std::collections::HashMap;
 
+use super::state::{Fluid, Palette};
 use crate::overworld::{BiomeMap, ChunkBlocks};
 
-/// Block tag membership per palette index. Tag ids are indices into the sorted tag name list.
+/// Sorted tag names of the bundle: tag ids are indices into this list.
+pub fn tag_names(block_tags: &HashMap<String, Vec<String>>) -> Vec<String> {
+    let mut names: Vec<String> = block_tags.keys().cloned().collect();
+    names.sort();
+    names
+}
+
+/// Block tag membership, block identity and fluid kind per palette index.
 pub struct Tags {
     names: Vec<String>,
     words: usize,
     bits: Vec<u64>,
     air: Vec<bool>,
+    block_of: Vec<u16>,
+    fluid_of: Vec<Fluid>,
 }
 
 impl Tags {
-    /// Builds membership for every palette entry. `block_tags` maps tag name to block ids.
-    pub fn new(palette: &[String], block_tags: &HashMap<String, Vec<String>>) -> Self {
-        let mut names: Vec<String> = block_tags.keys().cloned().collect();
-        names.sort();
+    /// Builds the tables for every palette entry. `block_tags` maps tag name to block ids.
+    pub fn new(palette: &Palette, block_tags: &HashMap<String, Vec<String>>) -> Self {
+        let names = tag_names(block_tags);
         let words = names.len().div_ceil(64).max(1);
-        let mut bits = vec![0u64; palette.len() * words];
-        let mut air = vec![false; palette.len()];
-        for (i, state) in palette.iter().enumerate() {
-            let name = state.split('[').next().unwrap_or(state);
-            air[i] = matches!(name, "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air");
-            for (t, tag) in names.iter().enumerate() {
-                if block_tags[tag].iter().any(|b| b == name) {
-                    bits[i * words + t / 64] |= 1 << (t % 64);
+        // Membership per block first (tags name blocks, not states), then copied to every state.
+        let mut block_bits = vec![0u64; palette.block_count() * words];
+        for (t, tag) in names.iter().enumerate() {
+            for b in &block_tags[tag] {
+                if let Some(bi) = palette.block_id(b) {
+                    block_bits[bi as usize * words + t / 64] |= 1 << (t % 64);
                 }
             }
         }
-        Tags { names, words, bits, air }
+        let block_of = palette.block_of().to_vec();
+        let mut bits = vec![0u64; block_of.len() * words];
+        let mut air = vec![false; block_of.len()];
+        for (i, &b) in block_of.iter().enumerate() {
+            bits[i * words..(i + 1) * words].copy_from_slice(&block_bits[b as usize * words..(b as usize + 1) * words]);
+            air[i] = matches!(palette.block_name(b), "minecraft:air" | "minecraft:cave_air" | "minecraft:void_air");
+        }
+        Tags { names, words, bits, air, block_of, fluid_of: palette.fluid_of().to_vec() }
     }
 
     /// Tag id for a tag name, if the bundle has it.
@@ -48,6 +62,24 @@ impl Tags {
     #[inline]
     pub fn is_air(&self, blk: u16) -> bool {
         self.air[blk as usize]
+    }
+
+    /// `BlockState.is(block)` for a block index (`Palette::block`).
+    #[inline]
+    pub fn is_block(&self, blk: u16, block: u16) -> bool {
+        self.block_of[blk as usize] == block
+    }
+
+    /// Block index of a palette state.
+    #[inline]
+    pub fn block_of(&self, blk: u16) -> u16 {
+        self.block_of[blk as usize]
+    }
+
+    /// `FluidState.getType()` of a palette state.
+    #[inline]
+    pub fn fluid(&self, blk: u16) -> Fluid {
+        self.fluid_of[blk as usize]
     }
 }
 
@@ -131,19 +163,39 @@ impl<'a> Region<'a> {
         Some((c, ((rel_y as usize) * 16 + (z & 15) as usize) * 16 + (x & 15) as usize))
     }
 
-    /// Block palette index at a position inside the region.
+    /// Block palette index at a position inside the region. Outside the build height vanilla returns
+    /// `VOID_AIR`; the palette id 0 (air) stands in for it, which every ported check treats the same.
     #[inline]
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> u16 {
-        let (c, i) = self.slot(x, y, z).expect("read outside the 3x3 region or build height");
-        self.blocks[c][i]
+        match self.slot(x, y, z) {
+            Some((c, i)) => self.blocks[c][i],
+            None => {
+                assert!(self.chunk_index(x, z).is_some(), "read outside the 3x3 region");
+                0
+            }
+        }
     }
 
-    /// `isAir()` of the block at a position (outside the build height counts as not air).
+    /// `WorldGenRegion.setBlock` for the FEATURES step: writes when the position is inside the region
+    /// and build height, otherwise the write is dropped and `false` is returned. This is the single
+    /// feature write path; heightmap updates belong here.
+    #[inline]
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, blk: u16) -> bool {
+        match self.slot(x, y, z) {
+            Some((c, i)) if self.ensure_can_write(x, y, z) => {
+                self.blocks[c][i] = blk;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `isAir()` of the block at a position. Outside the build height vanilla reads `VOID_AIR`, which is air.
     #[inline]
     pub fn is_air(&self, x: i32, y: i32, z: i32) -> bool {
         match self.slot(x, y, z) {
             Some((c, i)) => self.tags.is_air(self.blocks[c][i]),
-            None => false,
+            None => self.outside_build_height(y) && self.chunk_index(x, z).is_some(),
         }
     }
 

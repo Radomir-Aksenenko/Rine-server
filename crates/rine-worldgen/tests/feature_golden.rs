@@ -15,13 +15,49 @@ use rine_worldgen::overworld::{ChunkBlocks, Overworld};
 
 const SEED: i64 = 1592598566;
 
-/// Ore placed features are the only allowed ones (same rule as `make_feature_datapack.js`).
-fn ore_only(name: &str) -> bool {
+/// Shared allow rule (`assets/worldgen/ported_features.json`, also read by make_feature_datapack.js): a
+/// top-level placed feature is allowed when its placements are ported (biome only at top level) and every
+/// configured feature in its subtree is ported.
+fn ported_only(name: &str) -> bool {
     let bundle: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/features.json")).unwrap();
-    let placed = &bundle["placed"][name];
-    match placed["feature"].as_str() {
-        Some(f) => bundle["configured"][f]["type"] == "minecraft:ore",
-        None => false,
+    let ported: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/ported_features.json")).unwrap();
+    let types: Vec<&str> = ported["types"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    let placements: Vec<&str> = ported["placements"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+    ported_placed(&bundle, &types, &placements, name, true)
+}
+
+fn ported_placed(bundle: &serde_json::Value, types: &[&str], placements: &[&str], name: &str, top: bool) -> bool {
+    let p = &bundle["placed"][name];
+    !p.is_null() && ported_entry(bundle, types, placements, p, top)
+}
+
+/// A placed-feature object (named or inline): placements and the configured feature.
+fn ported_entry(bundle: &serde_json::Value, types: &[&str], placements: &[&str], p: &serde_json::Value, top: bool) -> bool {
+    let placements_ok = p["placement"].as_array().unwrap().iter().all(|m| {
+        let ty = m["type"].as_str().unwrap();
+        placements.contains(&ty) && (top || ty != "minecraft:biome")
+    });
+    placements_ok && ported_feature(bundle, types, placements, &p["feature"])
+}
+
+fn ported_feature(bundle: &serde_json::Value, types: &[&str], placements: &[&str], r: &serde_json::Value) -> bool {
+    let cfg = match r.as_str() {
+        Some(n) => &bundle["configured"][n],
+        None => r,
+    };
+    let Some(ty) = cfg["type"].as_str() else { return false };
+    if !types.contains(&ty) {
+        return false;
+    }
+    let sub = |x: &serde_json::Value| match x.as_str() {
+        Some(n) => ported_placed(bundle, types, placements, n, false),
+        None => ported_entry(bundle, types, placements, x, false),
+    };
+    match ty {
+        "minecraft:random_boolean_selector" => sub(&cfg["feature_true"]) && sub(&cfg["feature_false"]),
+        "minecraft:simple_random_selector" | "minecraft:sequence" => cfg["features"].as_array().unwrap().iter().all(sub),
+        "minecraft:weighted_random_selector" => cfg["features"].as_array().unwrap().iter().all(|e| sub(&e["data"])),
+        _ => true,
     }
 }
 
@@ -115,7 +151,7 @@ fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), A
 }
 
 #[test]
-fn ore_decoration_matches_vanilla_server() {
+fn feature_decoration_matches_vanilla_server() {
     let Ok(path) = std::env::var("RINE_FEATURE_GOLDEN") else {
         eprintln!("RINE_FEATURE_GOLDEN not set: skipping feature golden");
         return;
@@ -123,13 +159,25 @@ fn ore_decoration_matches_vanilla_server() {
     let golden = read_golden(&std::fs::read(path).expect("golden file"));
 
     let o = Overworld::new(SEED);
-    let dec = Decorator::new(&o, &ore_only).expect("decorator");
+    let dec = Decorator::new(&o, &ported_only).expect("decorator");
     let mut cache = HashMap::new();
 
     let mut pairs: HashMap<(String, String), usize> = HashMap::new();
+    let mut shown = 0usize;
+    // Coverage: blocks of the family signature states, golden vs produced (inner chunks only). A feature
+    // whose golden count is 0 is not exercised by this area, so a 0 mismatch proves nothing about it.
+    const COVERAGE: [&str; 4] = ["minecraft:blue_ice", "minecraft:water", "minecraft:lava", "minecraft:packed_ice"];
+    let mut coverage: HashMap<&str, (usize, usize)> = COVERAGE.iter().map(|&n| (n, (0, 0))).collect();
     let mut total_blocks = 0usize;
     let mut total_mismatch = 0usize;
-    let mut keys: Vec<(i32, i32)> = golden.chunks.keys().copied().collect();
+    // Only chunks with two chunks of golden area on every side: their 5x5 decoration neighbourhood is complete.
+    let all: Vec<(i32, i32)> = golden.chunks.keys().copied().collect();
+    let (min_x, max_x) = (all.iter().map(|k| k.0).min().unwrap(), all.iter().map(|k| k.0).max().unwrap());
+    let (min_z, max_z) = (all.iter().map(|k| k.1).min().unwrap(), all.iter().map(|k| k.1).max().unwrap());
+    let mut keys: Vec<(i32, i32)> = all
+        .into_iter()
+        .filter(|&(cx, cz)| cx >= min_x + 2 && cx <= max_x - 2 && cz >= min_z + 2 && cz <= max_z - 2)
+        .collect();
     keys.sort();
     for (cx, cz) in keys {
         let (gpal, gblocks) = &golden.chunks[&(cx, cz)];
@@ -138,6 +186,19 @@ fn ore_decoration_matches_vanilla_server() {
         for (i, &g) in gblocks.iter().enumerate() {
             let m = mine.blocks[i] as usize;
             let (a, b) = (canonical(&gpal[g as usize]), canonical(&mine.palette[m]));
+            if a != b && (a.contains("water") || a.contains("lava") || b.contains("water") || b.contains("lava")) && shown < 40 {
+                shown += 1;
+                let i = i as i32;
+                eprintln!("  fluid mismatch chunk ({cx},{cz}) x {} y {} z {}: golden {a} | mine {b}", cx * 16 + i % 16, -64 + i / 256, cz * 16 + (i / 16) % 16);
+            }
+            for (name, counts) in coverage.iter_mut() {
+                if a == *name {
+                    counts.0 += 1;
+                }
+                if b == *name {
+                    counts.1 += 1;
+                }
+            }
             if a != b {
                 if std::env::var("RINE_DUMP").ok().as_deref() == Some(&format!("{cx},{cz}")) && mismatch < 40 {
                     let i = i as i32;
@@ -152,10 +213,14 @@ fn ore_decoration_matches_vanilla_server() {
         eprintln!("chunk ({cx},{cz}): {mismatch} mismatched blocks");
     }
     eprintln!("total: {total_mismatch} / {total_blocks}");
+    for name in COVERAGE {
+        let (g, m) = coverage[name];
+        eprintln!("  coverage {name}: golden {g}, mine {m}");
+    }
     let mut top: Vec<_> = pairs.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1));
     for ((g, m), n) in top.iter().take(15) {
         eprintln!("  golden {g} | mine {m}: {n}");
     }
-    assert_eq!(total_mismatch, 0, "ore decoration differs from vanilla");
+    assert_eq!(total_mismatch, 0, "feature decoration differs from vanilla");
 }
