@@ -16,7 +16,7 @@ use super::entity;
 use super::player::{Player, Stack};
 use super::Game;
 use crate::out;
-use ahash::{AHashMap, AHashSet};
+use ahash::AHashMap;
 use bytes::Bytes;
 use rayon::prelude::*;
 use rine_world::ChunkPos;
@@ -64,7 +64,7 @@ pub fn spawn_fresh(g: &mut Game) {
     fresh.truncate(FRESH_SCAN);
     let Game { entities, players, .. } = g;
     for eid in fresh {
-        let Some(&i) = entities.index.get(&eid) else { continue };
+        let Some(i) = entities.slot_of(eid) else { continue };
         let Some(e) = entities.list.get(i) else { continue };
         if e.removed || e.eid != eid {
             continue;
@@ -85,13 +85,61 @@ pub fn spawn_fresh(g: &mut Game) {
     }
 }
 
+const NONE: u32 = u32::MAX;
+
+/// Frames grouped by entity id. Entity ids are dense, so each id gets one head
+/// index into `items` (a linked list): no hashing per frame, and a lookup is
+/// one array read. Frames of one id come back in push order.
+struct FrameLists {
+    head: Vec<u32>,
+    items: Vec<(u32, Bytes)>,
+}
+
+impl FrameLists {
+    fn new(n: usize) -> Self {
+        Self { head: vec![NONE; n], items: Vec::new() }
+    }
+
+    fn push(&mut self, eid: i32, f: Bytes) {
+        let e = eid as usize;
+        if e >= self.head.len() {
+            self.head.resize(e + 1, NONE);
+        }
+        self.items.push((self.head[e], f));
+        self.head[e] = (self.items.len() - 1) as u32;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
+    fn for_each(&self, eid: i32, mut f: impl FnMut(&Bytes)) {
+        let Some(&h) = self.head.get(eid as usize) else { return };
+        if h == NONE {
+            return;
+        }
+        // the chain is newest first; collect it and replay oldest first
+        let mut chain: Vec<&Bytes> = Vec::new();
+        let mut cur = h;
+        while cur != NONE {
+            let (next, b) = &self.items[cur as usize];
+            chain.push(b);
+            cur = *next;
+        }
+        for b in chain.iter().rev() {
+            f(b);
+        }
+    }
+}
+
 pub fn tick(g: &mut Game) {
     for p in g.players.iter_mut().flatten() {
         p.spawned_tick = 0;
     }
     spawn_fresh(g);
+    let n = g.next_eid.max(1) as usize + 1;
     // ---- 1. movement frames for players
-    let mut moves: AHashMap<i32, Vec<Bytes>> = AHashMap::new();
+    let mut moves = FrameLists::new(n);
     for p in g.players.iter_mut().flatten() {
         let moved = p.pos != p.sent_pos;
         let rotated = (p.yaw, p.pitch) != p.sent_rot;
@@ -119,18 +167,26 @@ pub fn tick(g: &mut Game) {
         }
         p.sent_pos = p.pos;
         p.sent_rot = (p.yaw, p.pitch);
-        moves.insert(p.eid, v);
+        for f in v {
+            moves.push(p.eid, f);
+        }
     }
     // non-player entity moves (encoded by the entity system)
     for (eid, f) in g.entities.moves.drain(..) {
-        moves.entry(eid).or_default().push(f);
+        moves.push(eid, f);
     }
-    let removed: AHashSet<i32> = g.entities.removed.drain(..).collect();
-    let extra: Vec<(i32, Bytes)> = std::mem::take(&mut g.entities.extra);
-    let extra_map: AHashMap<i32, Vec<Bytes>> = extra.into_iter().fold(AHashMap::new(), |mut m, (e, f)| {
-        m.entry(e).or_default().push(f);
-        m
-    });
+    let mut removed = vec![false; n];
+    let mut any_removed = false;
+    for eid in g.entities.removed.drain(..) {
+        if let Some(r) = removed.get_mut(eid as usize) {
+            *r = true;
+            any_removed = true;
+        }
+    }
+    let mut extra_map = FrameLists::new(n);
+    for (e, f) in std::mem::take(&mut g.entities.extra) {
+        extra_map.push(e, f);
+    }
 
     // ---- 2. spatial grid of entities, rebuilt on the periodic pass
     let full = g.tick % 10 == 0;
@@ -161,9 +217,9 @@ pub fn tick(g: &mut Game) {
     g.players.par_iter_mut().flatten().for_each(|p| {
         let mut despawn: Vec<i32> = Vec::new();
         // removed entities
-        if !removed_ref.is_empty() {
+        if any_removed {
             p.tracked.retain(|e| {
-                if removed_ref.contains(e) {
+                if removed_ref.get(*e as usize).copied().unwrap_or(false) {
                     despawn.push(*e);
                     false
                 } else {
@@ -180,7 +236,7 @@ pub fn tick(g: &mut Game) {
             p.tracked.retain(|&e| {
                 let at = match player_chunk.get(&e) {
                     Some(&pc) => Some((pc, PLAYER_RANGE)),
-                    None => ents.index.get(&e).map(|&i| {
+                    None => ents.slot_of(e).map(|i| {
                         let en = &ents.list[i];
                         (en.chunk(), en.kind.track_range())
                     }),
@@ -221,7 +277,7 @@ pub fn tick(g: &mut Game) {
                             if p.tracked.contains(&e) {
                                 continue;
                             }
-                            let Some(&i) = ents.index.get(&e) else { continue };
+                            let Some(i) = ents.slot_of(e) else { continue };
                             let en = &ents.list[i];
                             if en.removed {
                                 continue;
@@ -245,12 +301,8 @@ pub fn tick(g: &mut Game) {
         // movement of tracked entities (skipped while the client is backlogged)
         if !lagging(p) && (!moves_ref.is_empty() || !extra_ref.is_empty()) {
             for e in p.tracked.iter() {
-                if let Some(fs) = moves_ref.get(e) {
-                    p.out.extend(fs.iter().cloned());
-                }
-                if let Some(fs) = extra_ref.get(e) {
-                    p.out.extend(fs.iter().cloned());
-                }
+                moves_ref.for_each(*e, |f| p.out.push(f.clone()));
+                extra_ref.for_each(*e, |f| p.out.push(f.clone()));
             }
         }
     });

@@ -260,21 +260,36 @@ struct Hit {
     damage: f32,
 }
 
-/// Time budget for explosions in one tick. A giant chain that does not fit
-/// continues next tick instead of freezing the server: the world keeps
-/// ticking at 20 TPS and the blast front just advances over a few ticks.
-const BLAST_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
+/// Tick length the server aims for. Explosions get what the tick has left
+/// after the work already done (see `Game::tick_started`), minus the reserve
+/// for the work that still follows (tracking, streaming, flush). A giant chain
+/// that does not fit continues on later ticks: the blast front advances over
+/// a few ticks, and the world keeps ticking at 20 TPS.
+const TICK_GOAL: std::time::Duration = std::time::Duration::from_millis(40);
+const TAIL_RESERVE: std::time::Duration = std::time::Duration::from_millis(8);
+const MIN_BUDGET: std::time::Duration = std::time::Duration::from_millis(2);
 const BLAST_CHUNK: usize = 256;
 
 pub fn process_pending(g: &mut Game) {
     if g.pending_blasts.is_empty() {
         return;
     }
+    let left = TICK_GOAL.saturating_sub(g.tick_started.elapsed() + TAIL_RESERVE).max(MIN_BUDGET);
     let start = std::time::Instant::now();
-    while !g.pending_blasts.is_empty() && start.elapsed() < BLAST_BUDGET {
-        let n = g.pending_blasts.len().min(BLAST_CHUNK);
+    while !g.pending_blasts.is_empty() {
+        let used = start.elapsed();
+        if used >= left {
+            break;
+        }
+        // batch sized from the measured cost per blast, so one batch fits the budget
+        let room_ms = (left - used).as_secs_f64() * 1000.0;
+        let fit = if g.blast_ms > 0.0 { (room_ms / g.blast_ms) as usize } else { BLAST_CHUNK };
+        let n = fit.clamp(1, BLAST_CHUNK).min(g.pending_blasts.len());
         let batch: Vec<[f64; 3]> = g.pending_blasts.drain(..n).collect();
+        let t = std::time::Instant::now();
         explode_batch(g, batch, 4.0);
+        let per = t.elapsed().as_secs_f64() * 1000.0 / n as f64;
+        g.blast_ms = if g.blast_ms > 0.0 { g.blast_ms * 0.8 + per * 0.2 } else { per };
     }
 }
 
@@ -391,9 +406,12 @@ pub fn explode_batch(g: &mut Game, centers: Vec<[f64; 3]>, power: f32) {
             acc[1] += dir[1] * impact;
             acc[2] += dir[2] * impact;
         });
-        e.vel[0] += acc[0];
-        e.vel[1] += acc[1];
-        e.vel[2] += acc[2];
+        if acc != [0.0; 3] {
+            e.vel[0] += acc[0];
+            e.vel[1] += acc[1];
+            e.vel[2] += acc[2];
+            e.asleep = false;
+        }
     });
 
     // ---- phase D: players, exposure-weighted knockback and damage (pre-blast world)

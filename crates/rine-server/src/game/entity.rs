@@ -8,11 +8,12 @@
 use super::player::{max_stack, Stack};
 use super::Game;
 use crate::out;
-use ahash::AHashMap;
+use ahash::{AHashMap, AHashSet};
 use bytes::Bytes;
 use rayon::prelude::*;
 use rine_protocol::BlockPos;
 use rine_world::ChunkPos;
+use std::time::Instant;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -51,7 +52,12 @@ pub struct Ent {
     pub removed: bool,
     pub sent_pos: [f64; 3],
     pub sent_vel: [f64; 3],
+    /// Resting TNT: physics is skipped until a block under it changes or a blast
+    /// pushes it. Its fuse still counts down.
+    pub asleep: bool,
 }
+
+const NO_SLOT: u32 = u32::MAX;
 
 impl Ent {
     pub fn chunk(&self) -> ChunkPos {
@@ -70,7 +76,8 @@ impl Ent {
 #[derive(Default)]
 pub struct Entities {
     pub list: Vec<Ent>,
-    pub index: AHashMap<i32, usize>,
+    /// Slot in `list` by entity id (ids are dense), `NO_SLOT` when absent.
+    pub slot: Vec<u32>,
     /// (eid, frame) movement updates produced this tick.
     pub moves: Vec<(i32, Bytes)>,
     /// Entities removed this tick (despawned by the tracker).
@@ -86,23 +93,36 @@ pub struct Entities {
 }
 
 impl Entities {
+    pub fn slot_of(&self, eid: i32) -> Option<usize> {
+        let s = *self.slot.get(eid as usize)?;
+        (s != NO_SLOT).then_some(s as usize)
+    }
     pub fn get(&self, eid: i32) -> Option<&Ent> {
-        self.index.get(&eid).map(|&i| &self.list[i])
+        self.slot_of(eid).map(|i| &self.list[i])
     }
     pub fn spawn(&mut self, e: Ent) {
-        self.index.insert(e.eid, self.list.len());
+        let id = e.eid as usize;
+        if id >= self.slot.len() {
+            self.slot.resize(id + 1, NO_SLOT);
+        }
+        self.slot[id] = self.list.len() as u32;
         self.fresh.push(e.eid);
         self.list.push(e);
     }
+    /// Drop removed entities. Swap-remove touches only the moved entity's slot,
+    /// so the cost is one pass over the flags, not a rebuild of the index.
     fn compact(&mut self) {
-        if self.list.iter().any(|e| e.removed) {
-            for e in self.list.iter().filter(|e| e.removed) {
+        let mut i = 0;
+        while i < self.list.len() {
+            if self.list[i].removed {
+                let e = self.list.swap_remove(i);
                 self.removed.push(e.eid);
-            }
-            self.list.retain(|e| !e.removed);
-            self.index.clear();
-            for (i, e) in self.list.iter().enumerate() {
-                self.index.insert(e.eid, i);
+                self.slot[e.eid as usize] = NO_SLOT;
+                if let Some(m) = self.list.get(i) {
+                    self.slot[m.eid as usize] = i as u32;
+                }
+            } else {
+                i += 1;
             }
         }
     }
@@ -134,19 +154,19 @@ pub fn spawn_item(g: &mut Game, pos: [f64; 3], vel: [f64; 3], stack: Stack, pick
         return;
     }
     let eid = g.alloc_eid();
-    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Item { stack, pickup_delay }, pos, vel, on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: vel });
+    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Item { stack, pickup_delay }, pos, vel, on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: vel, asleep: false });
 }
 
 pub fn spawn_tnt(g: &mut Game, pos: [f64; 3], fuse: i32) {
     let eid = g.alloc_eid();
     let a = rand_f64(eid as u64) * std::f64::consts::TAU;
     let vel = [-a.sin() * 0.02, 0.2, -a.cos() * 0.02];
-    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Tnt { fuse }, pos, vel, on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: vel });
+    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Tnt { fuse }, pos, vel, on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: vel, asleep: false });
 }
 
 pub fn spawn_falling(g: &mut Game, pos: [f64; 3], state: u16) {
     let eid = g.alloc_eid();
-    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Falling { state }, pos, vel: [0.0; 3], on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: [0.0; 3] });
+    g.entities.spawn(Ent { eid, uuid: Uuid::new_v4(), kind: Kind::Falling { state }, pos, vel: [0.0; 3], on_ground: false, age: 0, removed: false, sent_pos: pos, sent_vel: [0.0; 3], asleep: false });
 }
 
 /// Drop an item from a player's view direction (Q key / creative drop).
@@ -286,7 +306,25 @@ fn move_ent(w: &super::world::World, e: &mut Ent) {
     }
 }
 
+/// Milliseconds since `t`; restarts the clock.
+fn lap_ms(t: &mut Instant) -> f64 {
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    *t = Instant::now();
+    ms
+}
+
+/// Cell (block coordinates) an entity's position falls in.
+fn cell(p: [f64; 3]) -> [i32; 3] {
+    [p[0].floor() as i32, p[1].floor() as i32, p[2].floor() as i32]
+}
+
 pub fn tick(g: &mut Game) {
+    let mut pt = Instant::now();
+    let mut pf: Vec<(&'static str, f64)> = Vec::new();
+    // Blocks changed since the last entity tick. A sleeping TNT wakes when the
+    // block it rests on (cell below) or the cell it is in changed.
+    let wakes: AHashSet<[i32; 3]> = g.world.wake.drain(..).map(|p| [p.x, p.y, p.z]).collect();
+    pf.push(("wake", lap_ms(&mut pt)));
     // ---- parallel physics
     let world = &g.world;
     let sim_r = g.shared.config.simulation_distance as i32 + 2;
@@ -310,6 +348,23 @@ pub fn tick(g: &mut Game) {
                 return fx; // frozen outside simulation distance
             }
             e.age += 1;
+            if e.asleep && !wakes.is_empty() {
+                let k = cell(e.pos);
+                if wakes.contains(&k) || wakes.contains(&[k[0], k[1] - 1, k[2]]) {
+                    e.asleep = false;
+                }
+            }
+            if e.asleep {
+                // resting TNT: only the fuse counts down
+                if let Kind::Tnt { fuse } = &mut e.kind {
+                    *fuse -= 1;
+                    if *fuse <= 0 {
+                        e.removed = true;
+                        fx.explode.push([e.pos[0], e.pos[1] + 0.06125, e.pos[2]]);
+                    }
+                }
+                return fx;
+            }
             if let Kind::Item { pickup_delay, .. } = &mut e.kind {
                 if *pickup_delay > 0 {
                     *pickup_delay -= 1;
@@ -356,6 +411,10 @@ pub fn tick(g: &mut Game) {
                     }
                 }
             }
+            // TNT on the ground with no velocity is at rest: sleep it
+            if matches!(e.kind, Kind::Tnt { .. }) && !e.removed && e.on_ground && e.vel == [0.0; 3] {
+                e.asleep = true;
+            }
             fx
         })
         .reduce(Fx::default, |mut a, b| {
@@ -364,6 +423,7 @@ pub fn tick(g: &mut Game) {
             a
         });
 
+    pf.push(("physics", lap_ms(&mut pt)));
     // ---- item merging (every 10 ticks) and pickup, both via one item index
     let idx = ItemIndex::build(&g.entities.list);
     if g.tick % 10 == 0 {
@@ -371,6 +431,7 @@ pub fn tick(g: &mut Game) {
     }
     pickup(g, &idx);
 
+    pf.push(("items", lap_ms(&mut pt)));
     // ---- falling blocks land
     for (bp, st, _) in fx.land {
         let cur = g.world.get_block(bp.x, bp.y, bp.z);
@@ -385,7 +446,9 @@ pub fn tick(g: &mut Game) {
 
     // ---- explosions (batched, parallel)
     g.pending_blasts.extend(fx.explode);
+    pf.push(("land", lap_ms(&mut pt)));
     super::explosion::process_pending(g);
+    pf.push(("explode", lap_ms(&mut pt)));
 
     // ---- movement packets: one encode per moved entity
     let moves: Vec<(i32, Bytes)> = g
@@ -428,7 +491,13 @@ pub fn tick(g: &mut Game) {
         })
         .collect();
     g.entities.moves.extend(moves);
+    pf.push(("moves", lap_ms(&mut pt)));
     g.entities.compact();
+    pf.push(("compact", lap_ms(&mut pt)));
+    let total: f64 = pf.iter().map(|x| x.1).sum();
+    if total > 30.0 && std::env::var_os("RINE_PROFILE").is_some() {
+        eprintln!("ENTITY {:.1} {:?}", total, pf.iter().map(|(n, m)| format!("{n}={m:.1}")).collect::<Vec<_>>());
+    }
 }
 
 /// Item entities bucketed by 2x2-block cells. Built once per tick; sorted
@@ -580,7 +649,7 @@ fn pickup(g: &mut Game, idx: &ItemIndex) {
         if let Some(p) = g.player(slot) {
             p.out.push(f);
         }
-        if let Some(&i) = g.entities.index.get(&eid) {
+        if let Some(i) = g.entities.slot_of(eid) {
             let e = &mut g.entities.list[i];
             if left > 0 {
                 let rest = stack.with_count(left);
@@ -624,6 +693,7 @@ mod tests {
             removed: false,
             sent_pos: [x, 0.0, 0.0],
             sent_vel: [0.0; 3],
+            asleep: false,
         }
     }
 
