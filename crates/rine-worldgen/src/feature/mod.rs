@@ -29,6 +29,7 @@ pub mod sorter;
 pub mod spring;
 pub mod state;
 pub mod state_provider;
+pub mod tree;
 
 use std::collections::HashMap;
 
@@ -65,6 +66,10 @@ enum Configured {
     WeightedRandom { entries: Vec<(usize, i32)>, total: i32 },
     /// `SequenceFeature`: all placed features in order, stopping at the first failure.
     Sequence(Vec<usize>),
+    /// `minecraft:tree`.
+    Tree(tree::TreeFeature),
+    /// `minecraft:fallen_tree`.
+    FallenTree(tree::fallen::FallenTree),
 }
 
 struct PlacedFeature {
@@ -85,6 +90,8 @@ pub struct Decorator {
     in_step: Vec<Vec<Vec<bool>>>,
     min_y: i32,
     height: i32,
+    /// Block states, tags and special ids of the tree port; `Some` when a tree was compiled.
+    tree_env: Option<tree::TreeEnv>,
 }
 
 fn bundle() -> &'static Value {
@@ -129,6 +136,8 @@ struct Compiler<'a> {
     named: HashMap<String, usize>,
     /// Inline placed features (`{feature, placement}` objects), by their JSON text.
     inline: HashMap<String, usize>,
+    /// Tree block schemas, built on the first tree configured feature.
+    tree_states: Option<tree::state::TreeStates>,
 }
 
 impl<'a> Compiler<'a> {
@@ -176,6 +185,15 @@ impl<'a> Compiler<'a> {
         }
         self.placed.push(PlacedFeature { modifiers, feature });
         Ok(self.placed.len() - 1)
+    }
+
+    /// Builds the tree block schemas on first use, so decorations without trees keep their palette.
+    fn ensure_tree_states(&mut self) -> Result<(), String> {
+        if self.tree_states.is_none() {
+            let wanted = tree::state::tree_wanted_blocks(self.bundle);
+            self.tree_states = Some(tree::state::TreeStates::build(&self.bundle["blockProps"], &wanted, &mut self.pal)?);
+        }
+        Ok(())
     }
 
     /// Configured feature from a name or an inline object.
@@ -272,6 +290,16 @@ impl<'a> Compiler<'a> {
                 }
                 Ok(Configured::Sequence(list))
             }
+            "minecraft:tree" | "minecraft:fallen_tree" => {
+                self.ensure_tree_states()?;
+                let states = self.tree_states.as_ref().expect("tree states");
+                let mut tc = tree::TreeCompile { states, pal: &mut self.pal, tag_names: &self.tag_names, providers: &bundle["blockStateProviders"] };
+                if ty == "minecraft:tree" {
+                    Ok(Configured::Tree(tree::TreeFeature::compile(cfg, &mut tc).map_err(|e| format!("tree: {e}"))?))
+                } else {
+                    Ok(Configured::FallenTree(tree::fallen::FallenTree::compile(cfg, &mut tc)?))
+                }
+            }
             other => Err(format!("configured feature {other} is not ported")),
         }
     }
@@ -294,7 +322,12 @@ impl<'a> Compiler<'a> {
 impl Decorator {
     /// Compiles the decoration of `o` for the top-level placed features `allow` accepts.
     pub fn new(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
-        let bundle = bundle();
+        Self::new_from(bundle(), o, allow)
+    }
+
+    /// Like [`Decorator::new`] with an explicit feature bundle (`features.json` layout). The tree golden bundles
+    /// synthetic placed features with matching biome lists (`tools/noise-golden/make_tree_golden.js`).
+    pub fn new_from(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
         let biome_names: Vec<String> = o.biome_names().to_vec();
         let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
             .as_object()
@@ -311,6 +344,7 @@ impl Decorator {
             placed: Vec::new(),
             named: HashMap::new(),
             inline: HashMap::new(),
+            tree_states: None,
         };
 
         // Biome feature lists, filtered; ids are placed-feature indices.
@@ -348,8 +382,18 @@ impl Decorator {
             }
         }
 
-        // The tag and fluid tables cover the final palette.
+        // The tree tables and the tag and fluid tables cover the final palette.
+        if let Some(ts) = c.tree_states.as_mut() {
+            ts.finish(&c.pal);
+        }
         let tags = Tags::new(&c.pal, &block_tags);
+        let tree_env = match c.tree_states.take() {
+            Some(states) => {
+                let air = c.pal.intern("minecraft:air");
+                Some(tree::TreeEnv { states, tags: tree::TreeTags::new(&tags)?, air })
+            }
+            None => None,
+        };
         Ok(Decorator {
             palette: c.pal.states().to_vec(),
             tags,
@@ -359,6 +403,7 @@ impl Decorator {
             in_step,
             min_y: o.min_y(),
             height: o.height(),
+            tree_env,
         })
     }
 
@@ -462,6 +507,16 @@ impl Decorator {
                     }
                 }
                 self.run_placed(chosen, region, rng, pos, None)
+            }
+            Configured::Tree(t) => {
+                let env = self.tree_env.as_ref().expect("tree env");
+                let mut ctx = tree::Ctx::new(region, env, rng);
+                t.place(&mut ctx, pos)
+            }
+            Configured::FallenTree(t) => {
+                let env = self.tree_env.as_ref().expect("tree env");
+                let mut ctx = tree::Ctx::new(region, env, rng);
+                t.place(&mut ctx, pos)
             }
             Configured::Sequence(list) => {
                 for &q in list {

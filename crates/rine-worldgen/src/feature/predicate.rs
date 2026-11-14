@@ -23,6 +23,10 @@ pub enum BlockPredicate {
     AllOf(Vec<BlockPredicate>),
     AnyOf(Vec<BlockPredicate>),
     Not(Box<BlockPredicate>),
+    /// `would_survive`: `state.canSurvive(level, origin)` for a sapling-like state. A standing state needs the
+    /// block below in `support` (`VegetationBlock.canSurvive`). A hanging mangrove propagule needs the block
+    /// above in `hanging` and nothing else (`MangrovePropaguleBlock.canSurvive`).
+    WouldSurvive { support: u16, hanging: Option<u16> },
 }
 
 fn offset_of(v: &Value) -> Result<[i32; 3], String> {
@@ -39,6 +43,14 @@ fn offset_of(v: &Value) -> Result<[i32; 3], String> {
             }
             Ok(out)
         }
+    }
+}
+
+/// `Identifier` with its property list: `name[k=v,...]` -> (`name`, `k=v,...`).
+fn split_state(state: &str) -> (&str, Option<&str>) {
+    match state.find('[') {
+        Some(i) => (&state[..i], Some(state[i + 1..].trim_end_matches(']'))),
+        None => (state, None),
     }
 }
 
@@ -96,6 +108,30 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
             Ok(if ty == "minecraft:all_of" { BlockPredicate::AllOf(list) } else { BlockPredicate::AnyOf(list) })
         }
         "minecraft:not" => Ok(BlockPredicate::Not(Box::new(parse(&v["predicate"], tag_names, pal)?))),
+        "minecraft:would_survive" => {
+            let state = v["state"].as_str().ok_or("would_survive state")?;
+            let (name, props) = split_state(state);
+            let tag = |n: &str| -> Result<u16, String> {
+                tag_names
+                    .binary_search_by(|t| t.as_str().cmp(n))
+                    .map(|i| i as u16)
+                    .map_err(|_| format!("tag {n} not bundled"))
+            };
+            if name == "minecraft:mangrove_propagule" {
+                if props.is_some_and(|p| p.split(',').any(|kv| kv == "hanging=true")) {
+                    Ok(BlockPredicate::WouldSurvive {
+                        support: 0,
+                        hanging: Some(tag("minecraft:supports_hanging_mangrove_propagule")?),
+                    })
+                } else {
+                    Ok(BlockPredicate::WouldSurvive { support: tag("minecraft:supports_mangrove_propagule")?, hanging: None })
+                }
+            } else if name.ends_with("_sapling") {
+                Ok(BlockPredicate::WouldSurvive { support: tag("minecraft:supports_vegetation")?, hanging: None })
+            } else {
+                Err(format!("would_survive for {name} is not ported"))
+            }
+        }
         other => Err(format!("unsupported block predicate {other}")),
     }
 }
@@ -121,6 +157,10 @@ impl BlockPredicate {
             BlockPredicate::AllOf(list) => list.iter().all(|p| p.test(region, x, y, z)),
             BlockPredicate::AnyOf(list) => list.iter().any(|p| p.test(region, x, y, z)),
             BlockPredicate::Not(p) => !p.test(region, x, y, z),
+            BlockPredicate::WouldSurvive { support, hanging } => match hanging {
+                Some(tag) => region.tags.has(region.get_block(x, y + 1, z), *tag),
+                None => region.tags.has(region.get_block(x, y - 1, z), *support),
+            },
         }
     }
 }

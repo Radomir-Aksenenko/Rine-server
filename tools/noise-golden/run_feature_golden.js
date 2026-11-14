@@ -45,8 +45,17 @@ fs.writeFileSync(
         '',
     ].join('\n')
 );
+// RINE_GOLDEN_KIND=ore (default) or tree. The tree kind also writes the bundle the Rust test reads
+// (RINE_TREE_BUNDLE); both kinds run with ticking frozen so chunks saved after generation hold only worldgen.
+const kind = process.env.RINE_GOLDEN_KIND || 'ore';
 const dpDir = path.join(run, 'golden_world', 'datapacks', 'rine_feature_golden');
-execFileSync(process.execPath, [path.join(__dirname, 'make_feature_datapack.js'), dpDir], { stdio: 'inherit' });
+if (kind === 'tree') {
+    execFileSync(process.execPath, [path.join(__dirname, 'make_tree_golden.js'), dpDir, path.join(run, 'tree_bundle.json')], { stdio: 'inherit' });
+} else if (kind === 'ore') {
+    execFileSync(process.execPath, [path.join(__dirname, 'make_feature_datapack.js'), dpDir], { stdio: 'inherit' });
+} else {
+    throw new Error(`RINE_GOLDEN_KIND must be ore or tree, got ${kind}`);
+}
 
 // Classpath as in run_worldgen.sh: the server jar plus every library jar of vanilla-data/libraries.
 const jars = [path.join(VANILLA, 'versions', '26.3', 'server-26.3.jar')];

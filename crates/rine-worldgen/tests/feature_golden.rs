@@ -195,3 +195,136 @@ fn feature_decoration_matches_vanilla_server() {
     }
     assert_eq!(total_mismatch, 0, "feature decoration differs from vanilla");
 }
+
+/// Tree golden. `tools/noise-golden/make_tree_golden.js` writes the datapack (synthetic tree placed features, one
+/// per supported tree and fallen tree configured feature) and the bundle `RINE_TREE_BUNDLE`. Full block states
+/// are compared, so leaf distance, log axis, vine faces, cocoa and bee nests all count.
+///
+/// `RINE_TREE_ORDER=reverse` decorates the 5x5 in reverse raster order: a mismatch that changes between the two
+/// orders depends on neighbouring decorations, a mismatch that does not is a bug in the tree code.
+#[test]
+fn tree_decoration_matches_vanilla_server() {
+    let (Ok(golden_path), Ok(bundle_path)) = (std::env::var("RINE_FEATURE_GOLDEN"), std::env::var("RINE_TREE_BUNDLE")) else {
+        eprintln!("RINE_FEATURE_GOLDEN or RINE_TREE_BUNDLE not set: skipping tree golden");
+        return;
+    };
+    let golden = read_golden(&std::fs::read(golden_path).expect("golden file"));
+    let bundle: serde_json::Value = serde_json::from_slice(&std::fs::read(bundle_path).expect("tree bundle")).expect("tree bundle json");
+    let reverse = std::env::var("RINE_TREE_ORDER").is_ok_and(|v| v == "reverse");
+
+    let o = Overworld::new(SEED);
+    let dec = Decorator::new_from(&bundle, &o, &|n: &str| n.starts_with("rine:tree_")).expect("decorator");
+    let mut cache = HashMap::new();
+
+    let mut pairs: HashMap<(String, String), usize> = HashMap::new();
+    let mut total_blocks = 0usize;
+    let mut total_mismatch = 0usize;
+    // Only chunks whose 5x5 decoration neighbourhood is inside the golden area are comparable.
+    let xs: Vec<i32> = golden.chunks.keys().map(|k| k.0).collect();
+    let zs: Vec<i32> = golden.chunks.keys().map(|k| k.1).collect();
+    let (min_x, max_x, min_z, max_z) = (
+        *xs.iter().min().unwrap(),
+        *xs.iter().max().unwrap(),
+        *zs.iter().min().unwrap(),
+        *zs.iter().max().unwrap(),
+    );
+    let mut keys: Vec<(i32, i32)> = golden
+        .chunks
+        .keys()
+        .copied()
+        .filter(|&(cx, cz)| cx - min_x >= 2 && max_x - cx >= 2 && cz - min_z >= 2 && max_z - cz >= 2)
+        .collect();
+    keys.sort();
+    for (cx, cz) in keys {
+        let (gpal, gblocks) = &golden.chunks[&(cx, cz)];
+        let gpal: Vec<String> = gpal.iter().map(|s| expand_default(&bundle, s)).collect();
+        let mine = final_chunk_order(&o, &dec, &mut cache, cx, cz, reverse);
+        let mut mismatch = 0usize;
+        for (i, &g) in gblocks.iter().enumerate() {
+            let m = mine.blocks[i] as usize;
+            let (a, b) = (gpal[g as usize].as_str(), mine.palette[m].as_str());
+            if a != b {
+                mismatch += 1;
+                *pairs.entry((a.to_string(), b.to_string())).or_default() += 1;
+            }
+        }
+        total_blocks += gblocks.len();
+        total_mismatch += mismatch;
+        eprintln!("chunk ({cx},{cz}): {mismatch} mismatched blocks");
+    }
+    eprintln!("total: {total_mismatch} / {total_blocks}");
+    use rine_worldgen::feature::tree::order::{TIE_BREAKS, TREEIFY_EVENTS};
+    eprintln!(
+        "treeify events: {}, identity-hash tie breaks: {}",
+        TREEIFY_EVENTS.load(std::sync::atomic::Ordering::Relaxed),
+        TIE_BREAKS.load(std::sync::atomic::Ordering::Relaxed)
+    );
+    let mut top: Vec<_> = pairs.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1));
+    for ((g, m), n) in top.iter().take(30) {
+        eprintln!("  golden {g} | mine {m}: {n}");
+    }
+    assert_eq!(total_mismatch, 0, "tree decoration differs from vanilla");
+}
+
+/// The golden writes a state whose properties are all default as its bare name (`minecraft:oak_leaves` is
+/// `oak_leaves[distance=7,persistent=false,waterlogged=false]`). Expands it to the canonical form.
+fn expand_default(bundle: &serde_json::Value, state: &str) -> String {
+    if state.contains('[') {
+        return state.to_string();
+    }
+    let Some(entry) = bundle["blockProps"].get(state) else {
+        return state.to_string();
+    };
+    let mut keys: Vec<&str> = entry["properties"].as_object().map(|o| o.keys().map(String::as_str).collect()).unwrap_or_default();
+    if keys.is_empty() {
+        return state.to_string();
+    }
+    keys.sort();
+    let body: Vec<String> = keys.iter().map(|k| format!("{k}={}", entry["default"][k].as_str().expect("default value"))).collect();
+    format!("{state}[{}]", body.join(","))
+}
+
+/// `final_chunk` with a selectable decoration order (reverse raster for the neighbour-order check).
+fn final_chunk_order(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i32), Arc<ChunkBlocks>>, cx: i32, cz: i32, reverse: bool) -> ChunkBlocks {
+    let mut area: Vec<ChunkBlocks> = Vec::with_capacity(49);
+    for dz in -3..=3 {
+        for dx in -3..=3 {
+            let key = (cx + dx, cz + dz);
+            let proto = cache.entry(key).or_insert_with(|| Arc::new(o.generate(key.0, key.1))).as_ref().clone();
+            area.push(proto);
+        }
+    }
+    let mut order: Vec<(i32, i32)> = Vec::with_capacity(25);
+    for dz in -2..=2i32 {
+        for dx in -2..=2i32 {
+            order.push((dx, dz));
+        }
+    }
+    if reverse {
+        order.reverse();
+    }
+    for (dx, dz) in order {
+        let mut window: Vec<ChunkBlocks> = Vec::with_capacity(9);
+        for wz in -1..=1i32 {
+            for wx in -1..=1i32 {
+                let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
+                window.push(area[ix].clone());
+            }
+        }
+        let window_wg: Vec<WgHeights> = (-1..=1i32).flat_map(|wz| (-1..=1i32).map(move |wx| (wx, wz))).map(|(wx, wz)| {
+            let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
+            dec.wg_heights(&area[ix])
+        }).collect();
+        dec.decorate(o, SEED, cx + dx, cz + dz, &mut window, &window_wg).unwrap();
+        for wz in -1..=1i32 {
+            for wx in -1..=1i32 {
+                let ix = ((dz + wz + 3) * 7 + (dx + wx + 3)) as usize;
+                area[ix] = window[((wz + 1) * 3 + (wx + 1)) as usize].clone();
+            }
+        }
+    }
+    let mut centre = area[3 * 7 + 3].clone();
+    centre.palette = dec.palette().to_vec();
+    centre
+}
