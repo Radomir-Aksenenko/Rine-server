@@ -155,13 +155,31 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
         S_PLAYER_COMMAND => {
             let _eid = r.varint()?;
             let action = r.varint()?;
+            let _data = r.varint()?;
             let p = g.player(slot).unwrap();
+            let before = p.sprinting;
             match action {
                 1 => p.sprinting = true,
                 2 => p.sprinting = false,
                 _ => {}
             }
-            super::track::flags_changed(g, slot);
+            if p.sprinting != before {
+                super::track::flags_changed(g, slot);
+            }
+        }
+        S_PICK_ITEM_FROM_BLOCK => {
+            let pos = r.block_pos()?;
+            let inc = r.bool()?;
+            super::actions::pick_block(g, slot, pos, inc);
+        }
+        S_PICK_ITEM_FROM_ENTITY => {
+            let eid = r.varint()?;
+            let inc = r.bool()?;
+            super::actions::pick_entity(g, slot, eid, inc);
+        }
+        S_CHANGE_GAME_MODE => {
+            let mode = r.varint()?;
+            super::actions::change_game_mode(g, slot, mode);
         }
         S_PLAYER_INPUT => {
             let flags = r.u8()?;
@@ -175,8 +193,14 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
         S_PLAYER_ABILITIES => {
             let f = r.u8()?;
             let p = g.player(slot).unwrap();
+            let mut changed = false;
             if p.gamemode == 1 || p.gamemode == 3 {
-                p.flying = f & 0x02 != 0;
+                let fly = f & 0x02 != 0;
+                changed = fly != p.flying;
+                p.flying = fly;
+            }
+            if changed {
+                super::track::flags_changed(g, slot);
             }
         }
         S_CLIENT_COMMAND => {
