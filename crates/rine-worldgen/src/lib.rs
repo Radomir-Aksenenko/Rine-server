@@ -4,6 +4,7 @@
 //! Bit-exact with the vanilla server jar; see `tests/golden.rs` and `tools/noise-golden`.
 
 pub mod density;
+pub mod feature;
 pub mod mth;
 pub mod noise;
 pub mod overworld;

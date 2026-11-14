@@ -193,7 +193,7 @@ impl ClimateGrid {
 }
 
 impl<'a> BiomeMap<'a> {
-    fn new(o: &'a Overworld, cx: i32, cz: i32) -> Self {
+    pub(crate) fn new(o: &'a Overworld, cx: i32, cz: i32) -> Self {
         let mut grids = Vec::with_capacity(9);
         for dz in -1..=1 {
             for dx in -1..=1 {
