@@ -28,7 +28,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
                 "1" | "c" | "creative" => 1,
                 "2" | "a" | "adventure" => 2,
                 "3" | "sp" | "spectator" => 3,
-                _ => return reply(g, Text::plain("Использование: /gamemode <survival|creative|adventure|spectator>").color("red")),
+                _ => return reply(g, Text::plain("РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /gamemode <survival|creative|adventure|spectator>").color("red")),
             };
             set_gamemode(g, slot, gm);
         }
@@ -57,7 +57,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
                     let (yaw, pitch) = (p.yaw, p.pitch);
                     p.teleport(x, y, z, yaw, pitch);
                 }
-                None => reply(g, Text::plain("Использование: /tp <x> <y> <z> или /tp <игрок>").color("red")),
+                None => reply(g, Text::plain("РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /tp <x> <y> <z> РёР»Рё /tp <РёРіСЂРѕРє>").color("red")),
             }
         }
         "spawn" => {
@@ -67,7 +67,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
         }
         "give" => {
             let Some(item_name) = args.first() else {
-                return reply(g, Text::plain("Использование: /give <предмет> [кол-во]").color("red"));
+                return reply(g, Text::plain("РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /give <РїСЂРµРґРјРµС‚> [РєРѕР»-РІРѕ]").color("red"));
             };
             let count: i32 = args.get(1).and_then(|c| c.parse().ok()).unwrap_or(1).clamp(1, 64 * 36);
             match super::items::id(item_name) {
@@ -101,7 +101,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
                     let f = out::frame(out::set_time(g.tick as i64, g.day_time, &ids, 1.0));
                     g.broadcast.push(f);
                 }
-                None => reply(g, Text::plain("Использование: /time <day|night|число>").color("red")),
+                None => reply(g, Text::plain("РСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ: /time <day|night|С‡РёСЃР»Рѕ>").color("red")),
             }
         }
         "tps" => {
@@ -139,6 +139,9 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
         }
         "stop" => {
             g.running.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+        _ if super::plugins::has_command(g, &cmd) => {
+            super::plugins::check(g, rine_plugin::SyncKind::Command, rine_plugin::Event::Command { name: name.clone(), line: line.to_string() });
         }
         _ => reply(g, Text::plain(format!("Неизвестная команда: /{cmd}. /help")).color("red")),
     }

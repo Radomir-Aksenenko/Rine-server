@@ -1,4 +1,4 @@
-﻿//! Non-player entities: dropped items, primed TNT, falling blocks.
+//! Non-player entities: dropped items, primed TNT, falling blocks.
 //!
 //! Physics runs data-parallel (rayon) against an immutable world view;
 //! side effects (explosions, pickups, block placement) are collected and

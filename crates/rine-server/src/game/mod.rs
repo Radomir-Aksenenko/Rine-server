@@ -1,4 +1,4 @@
-﻿//! The game loop. One thread owns all game state and runs fixed 20 TPS
+//! The game loop. One thread owns all game state and runs fixed 20 TPS
 //! ticks made of phases; heavy per-player and per-entity work inside the
 //! phases runs data-parallel on the rayon pool.
 
@@ -13,6 +13,7 @@ pub mod interact;
 pub mod explosion;
 pub mod loot;
 pub mod place;
+pub mod plugins;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;
@@ -48,6 +49,7 @@ pub struct Game {
     pub dim_type_id: u32,
     pub clock_ids: Vec<u32>,
     pub running: Arc<std::sync::atomic::AtomicBool>,
+    pub plugins: Option<rine_plugin::PluginHost>,
 }
 
 impl Game {
@@ -77,6 +79,7 @@ impl Game {
             dim_type_id,
             clock_ids,
             running,
+            plugins: None,
         }
     }
 
@@ -87,6 +90,8 @@ impl Game {
     }
 
     pub fn run(mut self) {
+        let pdir = self.shared.config.plugins_dir.clone();
+        self.plugins = plugins::start(&pdir);
         // pre-generate the spawn area so the first join is instant
         let sc = ChunkPos::of_block(self.spawn[0] as i32, self.spawn[2] as i32);
         for dx in -6..=6 {
@@ -120,17 +125,23 @@ impl Game {
         }
         tracing::info!("saving world...");
         for p in self.players.iter_mut().flatten() {
-            let pk = out::disconnect(&Text::plain("РЎРµСЂРІРµСЂ РѕСЃС‚Р°РЅРѕРІР»РµРЅ"));
+            let pk = out::disconnect(&Text::plain("Сервер остановлен"));
             p.send(pk);
             p.flush();
         }
         self.world.save_all();
         tracing::info!("world saved");
+        if let Some(h) = self.plugins.take() {
+            h.shutdown();
+        }
     }
 
     fn do_tick(&mut self) {
         self.tick += 1;
         self.day_time += 1;
+
+        // 0. plugin actions from the previous tick
+        plugins::tick(self);
 
         // 1. world: finished chunk loads
         let loaded = self.world.collect_loaded(self.tick);
@@ -221,7 +232,7 @@ impl Game {
                 p.send(pk);
             }
             if p.last_ka_reply.elapsed() > Duration::from_secs(30) {
-                p.kick = Some("РўР°Р№Рј-Р°СѓС‚ СЃРѕРµРґРёРЅРµРЅРёСЏ".into());
+                p.kick = Some("Тайм-аут соединения".into());
             }
         }
         if self.tick % 100 == 0 && (!self.entities.list.is_empty() || self.players.iter().any(|p| p.is_some())) {
@@ -239,7 +250,7 @@ impl Game {
             let lat: Vec<(uuid::Uuid, i32)> = self.players.iter().flatten().map(|p| (p.uuid, p.ping_ms)).collect();
             if !lat.is_empty() {
                 let f = out::frame(out::info_latency(&lat));
-                let footer = Text::plain(format!("TPS {:.1}  MSPT {:.2}  РёРіСЂРѕРєРѕРІ {}", self.tps, self.mspt, lat.len())).color("gray");
+                let footer = Text::plain(format!("TPS {:.1}  MSPT {:.2}  игроков {}", self.tps, self.mspt, lat.len())).color("gray");
                 let tl = out::frame(out::tab_list(&Text::plain("Rine").color("gold").bold(), &footer));
                 self.broadcast.push(f);
                 self.broadcast.push(tl);
@@ -374,13 +385,14 @@ impl Game {
         drop(entries);
         p.send(all);
         let me = out::frame(out::info_add(&[out::InfoEntry { uuid: p.uuid, name: &p.name, props: &p.props, gamemode: gm as i32, ping: 0 }]));
-        let joined = out::frame(out::system_chat(&Text::plain(format!("{} Р·Р°С€С‘Р» РЅР° СЃРµСЂРІРµСЂ", p.name)).color("yellow"), false));
+        let joined = out::frame(out::system_chat(&Text::plain(format!("{} зашёл на сервер", p.name)).color("yellow"), false));
         for o in self.players.iter_mut().flatten() {
             o.out.push(me.clone());
             o.out.push(joined.clone());
         }
-        let welcome = Text::plain("Р”РѕР±СЂРѕ РїРѕР¶Р°Р»РѕРІР°С‚СЊ РЅР° ").color("gray").push(Text::plain("Rine").color("gold").bold()).push(Text::plain(". /help РґР»СЏ СЃРїРёСЃРєР° РєРѕРјР°РЅРґ").color("gray"));
+        let welcome = Text::plain("Добро пожаловать на ").color("gray").push(Text::plain("Rine").color("gold").bold()).push(Text::plain(". /help для списка команд").color("gray"));
         p.msg(&welcome);
+        plugins::post(self, rine_plugin::Event::Join { name: p.name.clone(), uuid: p.uuid.to_string() });
         self.by_eid.insert(eid, slot);
         self.players[slot] = Some(p);
         self.stream(slot);
@@ -389,6 +401,7 @@ impl Game {
     pub fn leave(&mut self, slot: usize) {
         let Some(p) = self.players.get_mut(slot).and_then(|p| p.take()) else { return };
         tracing::info!("{} left", p.name);
+        plugins::post(self, rine_plugin::Event::Quit { name: p.name.clone() });
         self.by_eid.remove(&p.eid);
         for c in &p.loaded {
             if let Some(s) = self.world.chunks.get_mut(c) {
@@ -400,7 +413,7 @@ impl Game {
         }
         let rm = out::frame(out::info_remove(&[p.uuid]));
         let despawn = out::frame(out::remove_entities(&[p.eid]));
-        let left = out::frame(out::system_chat(&Text::plain(format!("{} РІС‹С€РµР»", p.name)).color("yellow"), false));
+        let left = out::frame(out::system_chat(&Text::plain(format!("{} вышел", p.name)).color("yellow"), false));
         for o in self.players.iter_mut().flatten() {
             o.out.push(rm.clone());
             if o.tracked.remove(&p.eid) {

@@ -1,4 +1,4 @@
-﻿//! Batched TNT explosions.
+//! Batched TNT explosions.
 //!
 //! Follows vanilla `ServerExplosion` semantics for a whole batch of centers at
 //! once: block rays run in parallel, knockback is summed per entity through a

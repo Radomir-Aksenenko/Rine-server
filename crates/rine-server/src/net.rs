@@ -1,4 +1,4 @@
-﻿//! Network front-end. Each TCP connection is an async task that runs
+//! Network front-end. Each TCP connection is an async task that runs
 //! handshake/status/login/configuration entirely off the game thread. Once
 //! the client reaches play, a `NewPlayer` is handed to the game loop with a
 //! raw inbound queue and an outbound sender drained by a writer task.
@@ -147,7 +147,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
         _ => anyhow::bail!("bad intent"),
     }
     if proto != PROTOCOL_VERSION {
-        let msg = Text::plain(format!("РќСѓР¶РµРЅ РєР»РёРµРЅС‚ Minecraft {VERSION_NAME}")).color("red");
+        let msg = Text::plain(format!("Нужен клиент Minecraft {VERSION_NAME}")).color("red");
         let p = packet(login::C_DISCONNECT, |b| b.w_str(&msg.to_json()));
         c.send(p).await?;
         return Ok(());
@@ -165,7 +165,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
     }
     let uuid = offline_uuid(&name);
     if shared.online.load(Ordering::Relaxed) >= shared.config.max_players as usize {
-        let msg = Text::plain("РЎРµСЂРІРµСЂ Р·Р°РїРѕР»РЅРµРЅ").color("red");
+        let msg = Text::plain("Сервер заполнен").color("red");
         c.send(packet(login::C_DISCONNECT, |b| b.w_str(&msg.to_json()))).await?;
         return Ok(());
     }
@@ -238,7 +238,7 @@ async fn handle(sock: TcpStream, addr: SocketAddr, shared: Arc<Shared>) -> anyho
                     }
                 }
                 if !has_core {
-                    let msg = Text::plain("РљР»РёРµРЅС‚ РЅРµ Р·РЅР°РµС‚ РІР°РЅРёР»СЊРЅС‹Р№ РїР°РєРµС‚ РґР°РЅРЅС‹С… 26.3").color("red");
+                    let msg = Text::plain("Клиент не знает ванильный пакет данных 26.3").color("red");
                     c.send(packet(cfg::C_DISCONNECT, |b| msg.to_nbt().write_network(b))).await?;
                     return Ok(());
                 }

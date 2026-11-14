@@ -1,4 +1,4 @@
-﻿//! Block states. State ids follow vanilla: for each block, properties are
+//! Block states. State ids follow vanilla: for each block, properties are
 //! ordered by name and the last property varies fastest, so a state id is
 //! `min + sum(value_index * stride)`. This lets us read/modify properties
 //! with pure arithmetic: no hash lookups on the hot path.

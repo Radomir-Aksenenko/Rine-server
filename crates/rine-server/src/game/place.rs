@@ -1,4 +1,4 @@
-﻿//! Block placement rules and block interaction.
+//! Block placement rules and block interaction.
 //!
 //! Placement follows vanilla `getStateForPlacement` closely enough for the
 //! common blocks. Face ids are the protocol directions: 0 down, 1 up,

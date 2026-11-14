@@ -1,4 +1,4 @@
-﻿use crate::net::{ClientInfo, NewPlayer, Out};
+use crate::net::{ClientInfo, NewPlayer, Out};
 use ahash::AHashSet;
 use bytes::{Bytes, BytesMut};
 use rine_protocol::BlockPos;

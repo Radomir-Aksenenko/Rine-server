@@ -1,4 +1,4 @@
-﻿//! Block loot-table evaluation for vanilla 26.3 (`rine_data::raw::BLOCK_LOOT`).
+//! Block loot-table evaluation for vanilla 26.3 (`rine_data::raw::BLOCK_LOOT`).
 //!
 //! The JSON is parsed once (see [`loot`]) into compact trees indexed by block
 //! index. Server tools carry no enchantments yet, so fortune and silk touch are

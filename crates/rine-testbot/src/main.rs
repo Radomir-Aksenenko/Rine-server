@@ -1,4 +1,4 @@
-﻿//! Headless Minecraft 26.3 (protocol 777) test client for verifying and load-testing the server.
+//! Headless Minecraft 26.3 (protocol 777) test client for verifying and load-testing the server.
 //!
 //! Usage: rine-testbot <host:port> [--bots N] [--name Prefix] [--dump] [--seconds S] [--walk]
 

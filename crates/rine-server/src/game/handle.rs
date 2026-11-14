@@ -265,6 +265,9 @@ fn chat(g: &mut Game, slot: usize, msg: &str) {
     if clean.is_empty() {
         return;
     }
+    if super::plugins::check(g, rine_plugin::SyncKind::Chat, rine_plugin::Event::Chat { name: name.clone(), message: clean.clone() }) {
+        return;
+    }
     tracing::info!("<{name}> {clean}");
     let t = Text::plain("<").color("gray").push(Text::plain(name).color("white")).push(Text::plain("> ").color("gray")).push(Text::plain(clean).color("white"));
     g.broadcast_msg(&t);

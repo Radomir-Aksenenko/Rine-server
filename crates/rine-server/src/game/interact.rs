@@ -98,6 +98,14 @@ pub fn break_block(g: &mut Game, slot: usize, pos: BlockPos, drops: bool) {
         return; // air or unbreakable (bedrock)
     }
     let eid = g.player(slot).map(|p| p.eid).unwrap_or(0);
+    let name = g.player(slot).map(|p| p.name.clone()).unwrap_or_default();
+    let ev = rine_plugin::Event::BlockBreak { name, x: pos.x, y: pos.y, z: pos.z, block: super::plugins::block_name(st) };
+    if super::plugins::check(g, rine_plugin::SyncKind::BlockBreak, ev) {
+        if let Some(p) = g.player(slot) {
+            p.send(out::block_update(pos, st));
+        }
+        return;
+    }
     // two-block structures (doors, tall plants, beds) break together
     let other = super::interact::other_half(st, pos);
     g.world.set_block(pos, 0);
@@ -201,6 +209,12 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         return;
     };
     if !b.has(st, rine_data::blocks::flag::NO_COLLISION) && g.players.iter().flatten().any(|o| intersects_player(o.pos, target)) {
+        resync(g, slot, target, seq);
+        return;
+    }
+    let pname = g.player(slot).map(|p| p.name.clone()).unwrap_or_default();
+    let ev = rine_plugin::Event::BlockPlace { name: pname, x: target.x, y: target.y, z: target.z, block: super::plugins::block_name(st) };
+    if super::plugins::check(g, rine_plugin::SyncKind::BlockPlace, ev) {
         resync(g, slot, target, seq);
         return;
     }

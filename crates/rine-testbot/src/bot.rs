@@ -1,4 +1,4 @@
-﻿//! One headless bot: handshake, login, configuration, play.
+//! One headless bot: handshake, login, configuration, play.
 
 use std::time::Duration;
 
