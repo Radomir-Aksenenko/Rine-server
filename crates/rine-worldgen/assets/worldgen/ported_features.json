@@ -9,7 +9,8 @@
     "minecraft:random_boolean_selector",
     "minecraft:simple_random_selector",
     "minecraft:weighted_random_selector",
-    "minecraft:sequence"
+    "minecraft:sequence",
+    "minecraft:simple_block"
   ],
   "placements": [
     "minecraft:count",
@@ -29,6 +30,23 @@
     "minecraft:matching_fluids",
     "minecraft:all_of",
     "minecraft:any_of",
-    "minecraft:not"
-  ]
+    "minecraft:not",
+    "minecraft:would_survive"
+  ],
+  "simple_blocks": [
+    "minecraft:poppy",
+    "minecraft:dandelion",
+    "minecraft:short_grass",
+    "minecraft:fern",
+    "minecraft:tall_grass",
+    "minecraft:large_fern",
+    "minecraft:sunflower",
+    "minecraft:lilac",
+    "minecraft:rose_bush",
+    "minecraft:peony",
+    "minecraft:dead_bush",
+    "minecraft:sea_pickle",
+    "minecraft:seagrass"
+  ],
+  "_simple_blocks_comment": "Blocks the simple_block port classifies (vegetation.rs kind_of_name). A simple_block state provider and a would_survive predicate may only name these."
 }

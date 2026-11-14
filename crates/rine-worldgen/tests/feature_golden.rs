@@ -121,6 +121,92 @@ fn final_chunk(o: &Overworld, dec: &Decorator, cache: &mut ProtoCache, cx: i32, 
     centre
 }
 
+/// Canonical full state for both sides of the comparison: a bare default name is expanded (`expand_default`), then
+/// the properties are sorted by key, so neither the golden's nor the port's property order matters.
+fn canonical_full(bundle: &serde_json::Value, state: &str) -> String {
+    let expanded = expand_default(bundle, state);
+    let Some((name, rest)) = expanded.split_once('[') else {
+        return expanded;
+    };
+    let mut props: Vec<&str> = rest.trim_end_matches(']').split(',').collect();
+    props.sort();
+    format!("{name}[{}]", props.join(","))
+}
+
+/// Full-state golden for the vegetation family (`simple_block` placements and their survival). Unlike the name-only
+/// test below, every property counts: `half`, `pickles`, `waterlogged`, ... Reports golden and mismatch counts per
+/// block name, so a family with golden count 0 in this area is visible as not exercised.
+#[test]
+fn vegetation_decoration_matches_vanilla_server_full_state() {
+    let Ok(path) = std::env::var("RINE_FEATURE_GOLDEN") else {
+        eprintln!("RINE_FEATURE_GOLDEN not set: skipping vegetation golden");
+        return;
+    };
+    let golden = read_golden(&std::fs::read(path).expect("golden file"));
+    let bundle: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/features.json")).expect("features.json");
+
+    let o = Overworld::new(SEED);
+    let dec = Decorator::new(&o, &ported_only).expect("decorator");
+    let mut cache: ProtoCache = HashMap::new();
+
+    let xs: Vec<i32> = golden.chunks.keys().map(|k| k.0).collect();
+    let zs: Vec<i32> = golden.chunks.keys().map(|k| k.1).collect();
+    let (min_x, max_x) = (*xs.iter().min().unwrap(), *xs.iter().max().unwrap());
+    let (min_z, max_z) = (*zs.iter().min().unwrap(), *zs.iter().max().unwrap());
+    let mut keys: Vec<(i32, i32)> = golden
+        .chunks
+        .keys()
+        .copied()
+        .filter(|&(cx, cz)| cx - min_x >= 2 && max_x - cx >= 2 && cz - min_z >= 2 && max_z - cz >= 2)
+        .collect();
+    keys.sort();
+
+    let mut pairs: HashMap<(String, String), usize> = HashMap::new();
+    // name -> (golden blocks, mismatched blocks)
+    let mut by_name: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut total_blocks = 0usize;
+    let mut total_mismatch = 0usize;
+    let mut shown_veg = 0usize;
+    for (cx, cz) in keys {
+        let (gpal, gblocks) = &golden.chunks[&(cx, cz)];
+        let gcan: Vec<String> = gpal.iter().map(|s| canonical_full(&bundle, s)).collect();
+        let mine = final_chunk(&o, &dec, &mut cache, cx, cz);
+        let mcan: Vec<String> = mine.palette.iter().map(|s| canonical_full(&bundle, s)).collect();
+        for (i, &g) in gblocks.iter().enumerate() {
+            let a = &gcan[g as usize];
+            let b = &mcan[mine.blocks[i] as usize];
+            let name = a.split('[').next().unwrap_or(a).to_string();
+            let entry = by_name.entry(name).or_default();
+            entry.0 += 1;
+            total_blocks += 1;
+            if a != b {
+                entry.1 += 1;
+                total_mismatch += 1;
+                *pairs.entry((a.clone(), b.clone())).or_default() += 1;
+                // Vegetation positions (either side a vegetation name, or air above a double plant) with coordinates.
+                let veg = |s: &str| s.contains("grass") || s.contains("poppy") || s.contains("dandelion") || s.contains("fern");
+                if (veg(a) || veg(b)) && shown_veg < 40 {
+                    shown_veg += 1;
+                    let i = i as i32;
+                    eprintln!("  veg mismatch chunk ({cx},{cz}) x {} y {} z {}: golden {a} | mine {b}", cx * 16 + i % 16, -64 + i / 256, cz * 16 + (i / 16) % 16);
+                }
+            }
+        }
+    }
+    eprintln!("vegetation golden total: {total_mismatch} mismatched / {total_blocks} blocks");
+    let mut names: Vec<_> = by_name.into_iter().collect();
+    names.sort();
+    for (name, (golden_n, mismatch)) in &names {
+        eprintln!("  {name}: golden {golden_n}, mismatched {mismatch}");
+    }
+    let mut top: Vec<_> = pairs.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1));
+    for ((g, m), n) in top.iter().take(30) {
+        eprintln!("  golden {g} | mine {m}: {n}");
+    }
+    assert_eq!(total_mismatch, 0, "vegetation decoration differs from vanilla");
+}
+
 #[test]
 fn feature_decoration_matches_vanilla_server() {
     let Ok(path) = std::env::var("RINE_FEATURE_GOLDEN") else {

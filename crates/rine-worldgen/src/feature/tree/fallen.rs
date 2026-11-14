@@ -17,6 +17,11 @@ use super::{offset, relative, TreeCompile, Ctx, Dir, HORIZONTAL};
 const BEHAVIOUR: &str = include_str!("../../../assets/worldgen/block_behaviour.tsv");
 
 /// `(isSolidRender, isFaceSturdy(UP))` per block name, default state.
+/// `isFaceSturdy(UP)` of a block's default state, from the behaviour table (`None` for blocks it does not list).
+pub(crate) fn sturdy_up_default(name: &str) -> Option<bool> {
+    behaviour().get(name).map(|b| b.1)
+}
+
 fn behaviour() -> &'static HashMap<&'static str, (bool, bool)> {
     static MAP: OnceLock<HashMap<&'static str, (bool, bool)>> = OnceLock::new();
     MAP.get_or_init(|| {

@@ -1,9 +1,11 @@
-//! The shared golden allow rule (`assets/worldgen/ported_features.json`): a top-level placed feature is
-//! allowed when every placement type is ported (`biome` only at the top level) and its configured feature
-//! and every nested placed feature (selectors, sequences) are ported too. `tools/noise-golden`'s
-//! `make_feature_datapack.js` applies the same rule to the vanilla datapack.
+//! The shared golden allow rule (`assets/worldgen/ported_features.json`): a top-level placed feature is allowed when
+//! every placement type is ported (`biome` only at the top level) and its configured feature and every nested placed
+//! feature (selectors, sequences) are ported too. `tools/noise-golden`'s `make_feature_datapack.js` applies the same
+//! rule to the vanilla datapack.
 
 use serde_json::Value;
+
+use super::vegetation;
 
 const FEATURES_JSON: &str = include_str!("../../assets/worldgen/features.json");
 const PORTED_JSON: &str = include_str!("../../assets/worldgen/ported_features.json");
@@ -12,10 +14,14 @@ const PORTED_JSON: &str = include_str!("../../assets/worldgen/ported_features.js
 pub fn ported_only(name: &str) -> bool {
     let bundle: Value = serde_json::from_str(FEATURES_JSON).expect("bundled features.json");
     let ported: Value = serde_json::from_str(PORTED_JSON).expect("bundled ported_features.json");
-    let types: Vec<&str> = ported["types"].as_array().expect("types").iter().filter_map(Value::as_str).collect();
-    let placements: Vec<&str> = ported["placements"].as_array().expect("placements").iter().filter_map(Value::as_str).collect();
-    let predicates: Vec<&str> = ported["predicates"].as_array().expect("predicates").iter().filter_map(Value::as_str).collect();
-    let rule = Rule { bundle: &bundle, types: &types, placements: &placements, predicates: &predicates };
+    let strings = |key: &str| -> Vec<&str> { ported[key].as_array().expect(key).iter().filter_map(Value::as_str).collect() };
+    let rule = Rule {
+        bundle: &bundle,
+        types: &strings("types"),
+        placements: &strings("placements"),
+        predicates: &strings("predicates"),
+        simple_blocks: &strings("simple_blocks"),
+    };
     rule.placed(name, true)
 }
 
@@ -24,6 +30,7 @@ struct Rule<'a> {
     types: &'a [&'a str],
     placements: &'a [&'a str],
     predicates: &'a [&'a str],
+    simple_blocks: &'a [&'a str],
 }
 
 impl Rule<'_> {
@@ -41,8 +48,17 @@ impl Rule<'_> {
         match ty {
             "minecraft:all_of" | "minecraft:any_of" => p["predicates"].as_array().is_some_and(|l| l.iter().all(|x| self.block_predicate(x))),
             "minecraft:not" => self.block_predicate(&p["predicate"]),
+            // `would_survive` is ported for the blocks of `vegetation.rs` only (the sapling and propagule paths are not
+            // in the allow list).
+            "minecraft:would_survive" => p["state"].as_str().is_some_and(|s| self.simple_block_name(s)),
             _ => true,
         }
+    }
+
+    /// A block state string (`name` or `name[props]`) naming a block in the ported vegetation set.
+    fn simple_block_name(&self, state: &str) -> bool {
+        let name = state.split('[').next().unwrap_or(state);
+        self.simple_blocks.contains(&name)
     }
 
     /// A block state provider as `state_provider::parse` reads it: simple states, `weighted`,
@@ -59,6 +75,28 @@ impl Rule<'_> {
                 rules_ok && v.get("fallback").is_none_or(|f| self.state_provider(f))
             }
             _ => false,
+        }
+    }
+
+    /// A `simple_block` provider: every block it can answer with is in the ported vegetation set, and the
+    /// predicates of its `rule_based` parts are ported.
+    fn simple_block_provider(&self, v: &Value) -> bool {
+        let mut names = Vec::new();
+        vegetation::provider_names(v, &mut names).is_ok()
+            && names.iter().all(|n| self.simple_blocks.contains(&n.as_str()))
+            && self.rule_predicates(v)
+    }
+
+    /// The `if_true` predicates of every `rule_based` provider inside `v` are ported block predicates.
+    fn rule_predicates(&self, v: &Value) -> bool {
+        match v.get("type").and_then(Value::as_str) {
+            Some("minecraft:rule_based") => {
+                v["rules"].as_array().is_some_and(|rules| rules.iter().all(|r| self.block_predicate(&r["if_true"]) && self.rule_predicates(&r["then"])))
+                    && v.get("fallback").is_none_or(|f| self.rule_predicates(f))
+            }
+            Some("minecraft:weighted") => v["entries"].as_array().is_some_and(|e| e.iter().all(|x| self.rule_predicates(&x["data"]))),
+            Some("minecraft:randomized_int") => self.rule_predicates(&v["source"]),
+            _ => true,
         }
     }
 
@@ -92,6 +130,9 @@ impl Rule<'_> {
             }
         }
         if ty == "minecraft:disk" && (!self.block_predicate(&cfg["target"]) || !self.state_provider(&cfg["state_provider"])) {
+            return false;
+        }
+        if ty == "minecraft:simple_block" && !self.simple_block_provider(&cfg["to_place"]) {
             return false;
         }
         let sub = |x: &Value| match x.as_str() {

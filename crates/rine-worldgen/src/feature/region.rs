@@ -25,6 +25,8 @@ pub struct Tags {
     fluid_of: Vec<Fluid>,
     /// `Heightmap.Types` predicates as bit masks (see `heightmap::Kind::bit`).
     opaque: Vec<u8>,
+    /// Vegetation survival tables (`vegetation::VegTable`), installed after the palette is final.
+    pub(crate) veg: super::vegetation::VegTable,
 }
 
 impl Tags {
@@ -58,7 +60,7 @@ impl Tags {
         let no_leaves: Vec<bool> = (0..n).map(|s| has(s, no_leaves_tag)).collect();
         let fluid_nonempty: Vec<bool> = fluid_of.iter().map(|&f| f != Fluid::Empty).collect();
         let opaque = heightmap::opaque_masks(&air, &fluid_nonempty, &motion, &no_leaves);
-        Tags { names, words, bits, air, block_of, fluid_of, opaque }
+        Tags { names, words, bits, air, block_of, fluid_of, opaque, veg: Default::default() }
     }
 
     /// Tag id for a tag name, if the bundle has it.

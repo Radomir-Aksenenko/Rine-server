@@ -1,4 +1,4 @@
-//! Phase 4: vanilla biome decoration (`ChunkGenerator.addVanillaDecorations` + `FeaturePlacer`).
+//! Phase 4: vanilla biome decoraion (`ChunkGenerator.addVanillaDecorations` + `FeaturePlacer`).
 //!
 //! Data comes from `assets/worldgen/features.json` (`tools/noise-golden/bundle_features.js`): biome
 //! feature lists, placed features and configured features reached from the overworld biome list.
@@ -30,6 +30,8 @@ pub mod spring;
 pub mod state;
 pub mod state_provider;
 pub mod tree;
+pub mod simple_block;
+pub mod vegetation;
 
 use std::collections::HashMap;
 
@@ -66,6 +68,8 @@ enum Configured {
     WeightedRandom { entries: Vec<(usize, i32)>, total: i32 },
     /// `SequenceFeature`: all placed features in order, stopping at the first failure.
     Sequence(Vec<usize>),
+    /// `SimpleBlockFeature` (`minecraft:simple_block`).
+    SimpleBlock(simple_block::SimpleBlock),
     /// `minecraft:tree`.
     Tree(tree::TreeFeature),
     /// `minecraft:fallen_tree`.
@@ -283,6 +287,16 @@ impl<'a> Compiler<'a> {
                 }
                 Ok(Configured::WeightedRandom { entries, total })
             }
+            "minecraft:simple_block" => {
+                let mut names = Vec::new();
+                vegetation::provider_names(&cfg["to_place"], &mut names)?;
+                for n in &names {
+                    if vegetation::kind_of_name(n).is_none() {
+                        return Err(format!("simple_block places {n}, which is not ported"));
+                    }
+                }
+                Ok(Configured::SimpleBlock(simple_block::SimpleBlock { to_place: state_provider::parse(&cfg["to_place"], tn, &mut self.pal)? }))
+            }
             "minecraft:sequence" => {
                 let mut list = Vec::new();
                 for f in cfg["features"].as_array().ok_or("features")? {
@@ -386,7 +400,10 @@ impl Decorator {
         if let Some(ts) = c.tree_states.as_mut() {
             ts.finish(&c.pal);
         }
-        let tags = Tags::new(&c.pal, &block_tags);
+        // Vegetation survival tables read the final palette (both half variants of the double plants included).
+        let veg = vegetation::VegTable::build(&mut c.pal, &c.tag_names)?;
+        let mut tags = Tags::new(&c.pal, &block_tags);
+        tags.set_vegetation(veg);
         let tree_env = match c.tree_states.take() {
             Some(states) => {
                 let air = c.pal.intern("minecraft:air");
@@ -518,6 +535,7 @@ impl Decorator {
                 let mut ctx = tree::Ctx::new(region, env, rng);
                 t.place(&mut ctx, pos)
             }
+            Configured::SimpleBlock(f) => f.place(region, rng, pos),
             Configured::Sequence(list) => {
                 for &q in list {
                     if !self.run_placed(q, region, rng, pos, None) {
