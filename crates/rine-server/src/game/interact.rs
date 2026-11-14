@@ -98,9 +98,9 @@ pub fn player_action(g: &mut Game, slot: usize, action: i32, pos: BlockPos, dir:
                 p.inv.slots[held] = Stack::EMPTY;
             }
             let sid = p.inv.state_id;
-            let item = p.inv.slots[held].tuple();
-            p.send(out::container_slot(0, sid, held as i16, item));
-            entity::drop_from_player(g, slot, Stack::new(s.item, n), true);
+            let item = p.inv.slots[held];
+            p.send(out::container_slot(0, sid, held as i16, &item));
+            entity::drop_from_player(g, slot, s.with_count(n), true);
             super::track::equipment_changed(g, slot);
         }
         6 => super::survival::release_use_item(g, slot),
@@ -227,6 +227,9 @@ pub fn break_block(g: &mut Game, slot: usize, pos: BlockPos, drops: bool) {
             );
         }
     }
+    // wear is applied after the drops, which use the tool as it was
+    let name = b.block_of(st).name.clone();
+    super::durability::on_mine(g, slot, &name, b.state(st).hardness);
     gravity_check(g, pos.offset(0, 1, 0));
 }
 
@@ -328,8 +331,8 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
             p.inv.slots[inv_slot] = Stack::EMPTY;
         }
         let sid = p.inv.state_id;
-        let it = p.inv.slots[inv_slot].tuple();
-        p.send(out::container_slot(0, sid, inv_slot as i16, it));
+        let it = p.inv.slots[inv_slot];
+        p.send(out::container_slot(0, sid, inv_slot as i16, &it));
         super::track::equipment_changed(g, slot);
     }
     if let Some(p) = g.player(slot) {
@@ -429,9 +432,9 @@ pub fn container_close(g: &mut Game, slot: usize) {
     }
     let mut drop = Vec::new();
     for s in back {
-        let left = p.inv.add(s.item, s.count);
+        let left = p.inv.add(s);
         if left > 0 {
-            drop.push(Stack::new(s.item, left));
+            drop.push(s.with_count(left));
         }
     }
     let inv = p.inventory_packet();
@@ -455,6 +458,7 @@ pub fn attack(g: &mut Game, slot: usize, target: i32) {
         }
         super::survival::exhaust(g, slot, super::survival::EXHAUSTION_ATTACK);
         damage(g, ts, 1.0, "player");
+        super::durability::on_attack(g, slot);
         // knockback
         let (kx, kz) = (-(ayaw.to_radians() as f64).sin() * 0.4, (ayaw.to_radians() as f64).cos() * 0.4);
         let t = g.players[ts].as_mut().unwrap();
@@ -483,6 +487,11 @@ pub fn damage(g: &mut Game, slot: usize, amount: f32, cause: &str) {
     }
     p.health = (p.health - amount).max(0.0);
     let _ = p;
+    // armor takes wear unless the damage type bypasses armor (vanilla
+    // `bypasses_armor` tag); only the melee and explosion causes are wired
+    if matches!(cause, "player" | "explosion") {
+        super::durability::hurt_armor(g, slot, amount);
+    }
     super::survival::exhaust(g, slot, super::survival::EXHAUSTION_DAMAGE);
     let Some(p) = g.player(slot) else { return };
     let (h, f, s, eid) = (p.health, p.food, p.saturation, p.eid);

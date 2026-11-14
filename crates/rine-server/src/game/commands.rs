@@ -95,7 +95,7 @@ pub fn run(g: &mut Game, slot: usize, line: &str) {
             match super::items::id(item_name) {
                 Some(id) => {
                     let p = g.player(slot).unwrap();
-                    let left = p.inv.add(id, count);
+                    let left = p.inv.add(super::player::Stack::new(id, count));
                     let inv = p.inventory_packet();
                     p.send(inv);
                     if left > 0 {

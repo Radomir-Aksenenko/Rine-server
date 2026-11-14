@@ -529,11 +529,11 @@ impl Entry {
     fn gen(&self, ctx: &Ctx, out: &mut Vec<Stack>) {
         let start = out.len();
         match &self.kind {
-            Kind::Item(id) => out.push(Stack { item: *id, count: 1 }),
+            Kind::Item(id) => out.push(Stack::new(*id, 1)),
             Kind::Tag(ids) => {
                 if !ids.is_empty() {
                     let id = ids[rand_below(ids.len() as u32) as usize];
-                    out.push(Stack { item: id, count: 1 });
+                    out.push(Stack::new(id, 1));
                 }
             }
             Kind::Alt(ch) => {

@@ -74,9 +74,9 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
     let after = container_of(lay, &win);
     let mut throws = std::mem::take(&mut fx.throw);
     for s in fx.give {
-        let left = p.inv.add(s.item, s.count);
+        let left = p.inv.add(s);
         if left > 0 {
-            throws.push(Stack::new(s.item, left));
+            throws.push(s.with_count(left));
         }
     }
     let visible = load(&p.inv, lay, &after);
@@ -88,7 +88,7 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
             match st.open.get_mut(&slot) {
                 Some(o) => {
                     o.state_id = bump(o.state_id);
-                    out::container_content(o.window, o.state_id, &tuples(&visible[..lay.size()]), p.inv.cursor.tuple())
+                    out::container_content(o.window, o.state_id, &visible[..lay.size()], &p.inv.cursor)
                 }
                 None => return Ok(()),
             }
@@ -124,6 +124,21 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
         entity::drop_from_player(g, slot, s, true);
     }
     Ok(())
+}
+
+/// The player is leaving. An open window closes (a table grid goes back to
+/// the inventory), then the 2x2 grid and the cursor return to the inventory,
+/// so the saved inventory is complete. Call it before the player is removed.
+pub fn player_left(g: &mut Game, slot: usize) {
+    {
+        let mut st = lock_state();
+        sweep(&mut st, g);
+        st.drags.remove(&slot);
+        if st.open.contains_key(&slot) {
+            close_open(g, slot, &mut st, false);
+        }
+    }
+    close_inventory(g, slot);
 }
 
 /// Client closed a window. Window 0 closes return the 2x2 grid and cursor.
@@ -180,7 +195,7 @@ pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool 
     }));
     let win = load(&p.inv, lay, &container);
     o.state_id = bump(0);
-    p.send(out::container_content(window, o.state_id, &tuples(&win[..lay.size()]), p.inv.cursor.tuple()));
+    p.send(out::container_content(window, o.state_id, &win[..lay.size()], &p.inv.cursor));
     if let Lay::Furnace(_) = lay {
         if let Some(f) = st.furnaces.get(&pos) {
             for (id, v) in furnace_data(f).into_iter().enumerate() {
@@ -258,7 +273,7 @@ pub fn tick(g: &mut Game) {
             let Some(p) = g.players.get_mut(*slot).and_then(|p| p.as_mut()) else { continue };
             for &(i, s) in &items {
                 o.state_id = bump(o.state_id);
-                p.send(out::container_slot(o.window, o.state_id, i as i16, s.tuple()));
+                p.send(out::container_slot(o.window, o.state_id, i as i16, &s));
             }
             for &(id, v) in &data {
                 p.send(data_pk(o.window, id, v));
@@ -557,10 +572,6 @@ fn container_of(lay: Lay, win: &[Stack]) -> Vec<Stack> {
     win[off..off + lay.container_len()].to_vec()
 }
 
-fn tuples(s: &[Stack]) -> Vec<(u32, i32)> {
-    s.iter().map(|x| x.tuple()).collect()
-}
-
 fn resync(g: &mut Game, slot: usize, st: &mut State) {
     let Some(p) = g.players.get_mut(slot).and_then(|p| p.as_mut()) else { return };
     let open = st.open.get(&slot).map(|o| (o.lay, o.pos, o.grid, o.window));
@@ -572,7 +583,7 @@ fn resync(g: &mut Game, slot: usize, st: &mut State) {
             match st.open.get_mut(&slot) {
                 Some(o) => {
                     o.state_id = bump(o.state_id);
-                    out::container_content(window, o.state_id, &tuples(&win[..lay.size()]), p.inv.cursor.tuple())
+                    out::container_content(window, o.state_id, &win[..lay.size()], &p.inv.cursor)
                 }
                 None => return,
             }
@@ -595,7 +606,7 @@ fn notify_viewers(g: &mut Game, st: &mut State, acting: usize, lay: Lay, pos: Bl
         let Some(p) = g.players.get_mut(*slot).and_then(|p| p.as_mut()) else { continue };
         for &i in &changed {
             o.state_id = bump(o.state_id);
-            p.send(out::container_slot(o.window, o.state_id, (i + off) as i16, after[i].tuple()));
+            p.send(out::container_slot(o.window, o.state_id, (i + off) as i16, &after[i]));
         }
     }
 }
@@ -613,9 +624,9 @@ fn return_to_player(g: &mut Game, slot: usize, mut items: Vec<Stack>, extra: Vec
             if s.is_empty() {
                 continue;
             }
-            let left = p.inv.add(s.item, s.count);
+            let left = p.inv.add(s);
             if left > 0 {
-                drops.push(Stack::new(s.item, left));
+                drops.push(s.with_count(left));
             }
         }
         let pk = p.inventory_packet();
@@ -695,7 +706,7 @@ fn data_pk(window: i32, id: i32, value: i32) -> BytesMut {
 }
 
 fn cursor_pk(s: Stack) -> BytesMut {
-    packet(C_SET_CURSOR_ITEM, |b| out::write_item(b, s.item, s.count))
+    packet(C_SET_CURSOR_ITEM, |b| out::write_stack(b, &s))
 }
 
 /// Parses a HashedStack and discards it (the client's data is not trusted).
@@ -1092,7 +1103,7 @@ pub fn apply_click(lay: Lay, win: &mut [Stack], cursor: &mut Stack, drag: &mut D
                             fx.throw.push(*cursor);
                             *cursor = Stack::EMPTY;
                         } else {
-                            fx.throw.push(Stack::new(cursor.item, 1));
+                            fx.throw.push(cursor.with_count(1));
                             cursor.count -= 1;
                             norm(cursor);
                         }
@@ -1113,7 +1124,7 @@ pub fn apply_click(lay: Lay, win: &mut [Stack], cursor: &mut Stack, drag: &mut D
             3 => {
                 if let Some(w) = w {
                     if creative && cursor.is_empty() && !win[w].is_empty() {
-                        *cursor = Stack::new(win[w].item, max_stack(win[w].item));
+                        *cursor = win[w].with_count(max_stack(win[w].item));
                     }
                 }
             }
@@ -1162,13 +1173,13 @@ fn pickup(lay: Lay, win: &mut [Stack], cursor: &mut Stack, w: usize, primary: bo
         if !cursor.is_empty() && may_place(lay, w, cursor.item) {
             let want = if primary { cursor.count } else { 1 };
             let n = want.min(max_for(lay, w, cursor.item));
-            win[w] = Stack::new(cursor.item, n);
+            win[w] = cursor.with_count(n);
             cursor.count -= n;
             norm(cursor);
         }
     } else if cursor.is_empty() {
         let amount = if primary { clicked.count } else { (clicked.count + 1) / 2 };
-        *cursor = Stack::new(clicked.item, amount);
+        *cursor = clicked.with_count(amount);
         win[w].count -= amount;
         norm(&mut win[w]);
     } else if may_place(lay, w, cursor.item) {
@@ -1365,7 +1376,7 @@ fn swap(lay: Lay, win: &mut [Stack], w: usize, button: i32, fx: &mut Fx) {
         if may_place(lay, w, source.item) {
             let max = max_for(lay, w, source.item);
             if source.count > max {
-                win[w] = Stack::new(source.item, max);
+                win[w] = source.with_count(max);
                 win[src].count -= max;
             } else {
                 win[w] = source;
@@ -1377,7 +1388,7 @@ fn swap(lay: Lay, win: &mut [Stack], w: usize, button: i32, fx: &mut Fx) {
     if may_place(lay, w, source.item) {
         let max = max_for(lay, w, source.item);
         if source.count > max {
-            win[w] = Stack::new(source.item, max);
+            win[w] = source.with_count(max);
             win[src].count -= max;
             fx.give.push(target);
         } else {
@@ -1394,13 +1405,13 @@ fn throw_slot(lay: Lay, win: &mut [Stack], w: usize, button: i32, fx: &mut Fx) {
     let s = win[w];
     let n = if button == 0 { 1 } else { s.count };
     if lay.craft() && lay.result() == Some(w) {
-        fx.throw.push(Stack::new(s.item, n));
+        fx.throw.push(s.with_count(n));
         consume_craft(lay, win, fx);
         return;
     }
     win[w].count -= n;
     norm(&mut win[w]);
-    fx.throw.push(Stack::new(s.item, n));
+    fx.throw.push(s.with_count(n));
 }
 
 /// Double-click: gathers matching items into the cursor (crafting results excluded).
@@ -1499,7 +1510,7 @@ fn quick_craft(lay: Lay, win: &mut [Stack], cursor: &mut Stack, drag: &mut Drag,
                     };
                     let new_count = (place + carry).min(max_size);
                     remaining -= new_count - carry;
-                    dragged.push((w, Stack::new(source.item, new_count)));
+                    dragged.push((w, source.with_count(new_count)));
                 }
             }
             for (w, s) in dragged {

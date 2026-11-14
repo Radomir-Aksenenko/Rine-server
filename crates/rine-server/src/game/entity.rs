@@ -111,7 +111,7 @@ pub fn spawn_frames(e: &Ent, outv: &mut Vec<Bytes>) {
         Kind::Item { stack, .. } => {
             let ty = items.entity("item");
             outv.push(out::frame(out::add_entity(e.eid, e.uuid, ty, e.pos[0], e.pos[1], e.pos[2], (e.vel[0], e.vel[1], e.vel[2]), 0.0, 0.0, 0.0, 0)));
-            outv.push(out::frame(out::Meta::new(e.eid).item(8, stack.item, stack.count).finish()));
+            outv.push(out::frame(out::Meta::new(e.eid).item(8, stack).finish()));
         }
         Kind::Tnt { fuse } => {
             let ty = items.entity("tnt");
@@ -471,53 +471,60 @@ impl ItemIndex {
     }
 }
 
-/// Vanilla-style merge: identical items within 0.5 blocks stack up to max size.
-/// The donor is removed when empty; the receiver gets a count metadata update.
+/// `ItemEntity.isMergable` plus the stack and position of an item entity.
+fn mergeable(e: &Ent) -> Option<(Stack, i32, [f64; 3])> {
+    match &e.kind {
+        Kind::Item { stack, pickup_delay } if !e.removed && stack.count < max_stack(stack.item) => Some((*stack, *pickup_delay, e.pos)),
+        _ => None,
+    }
+}
+
+/// `ItemEntity.mergeWithNeighbours`: items of the same kind (item and wear)
+/// within 0.5 blocks horizontally and overlapping vertically merge when the
+/// combined count fits in one stack. The smaller stack is absorbed into the
+/// other one (ties: this entity is absorbed). The receiver takes the larger
+/// pickup delay and the younger age, and its count is sent as metadata.
 fn merge_items(ents: &mut Entities, idx: &ItemIndex) {
     let mut scratch: Vec<usize> = Vec::new();
     for i in 0..ents.list.len() {
-        let (item, pos) = match &ents.list[i] {
-            Ent { removed: false, kind: Kind::Item { stack, .. }, pos, .. } if stack.count < max_stack(stack.item) => (stack.item, *pos),
-            _ => continue,
-        };
+        let Some((_, _, pos)) = mergeable(&ents.list[i]) else { continue };
         scratch.clear();
-        idx.range(item_cell([pos[0] - 0.5, pos[1] - 0.5, pos[2] - 0.5]), item_cell([pos[0] + 0.5, pos[1] + 0.5, pos[2] + 0.5]), |j| scratch.push(j));
+        idx.range(item_cell([pos[0] - 0.5, pos[1] - 0.25, pos[2] - 0.5]), item_cell([pos[0] + 0.5, pos[1] + 0.25, pos[2] + 0.5]), |j| scratch.push(j));
         for &j in &scratch {
             if j == i {
                 continue;
             }
-            let (jitem, jcount, jpos, jremoved) = match &ents.list[j] {
-                Ent { removed, kind: Kind::Item { stack, .. }, pos, .. } => (stack.item, stack.count, *pos, *removed),
-                _ => continue,
-            };
-            if jremoved || jitem != item {
+            let Some((si, _, pi)) = mergeable(&ents.list[i]) else { break };
+            let Some((sj, _, pj)) = mergeable(&ents.list[j]) else { continue };
+            if !si.same_kind(&sj) || (pj[0] - pi[0]).abs() > 0.5 || (pj[2] - pi[2]).abs() > 0.5 || (pj[1] - pi[1]).abs() >= 0.25 {
                 continue;
             }
-            if (jpos[0] - pos[0]).abs() > 0.5 || (jpos[1] - pos[1]).abs() > 0.5 || (jpos[2] - pos[2]).abs() > 0.5 {
+            if si.count + sj.count > max_stack(si.item) {
                 continue;
             }
-            let cur = match &ents.list[i].kind {
-                Kind::Item { stack, .. } => stack.count,
-                _ => break,
-            };
-            let room = max_stack(item) - cur;
-            if room <= 0 {
+            // the smaller stack is absorbed; ties absorb `i` into `j`
+            let (donor, recv) = if sj.count < si.count { (j, i) } else { (i, j) };
+            let (sd, sr) = (if donor == i { si } else { sj }, if recv == i { si } else { sj });
+            let total = sr.count + sd.count;
+            let (dd, rd) = (donor_delay(&ents.list[donor]), donor_delay(&ents.list[recv]));
+            let (da, ra) = (ents.list[donor].age, ents.list[recv].age);
+            ents.list[donor].removed = true;
+            let r = &mut ents.list[recv];
+            r.kind = Kind::Item { stack: sr.with_count(total), pickup_delay: rd.max(dd) };
+            r.age = ra.min(da);
+            let eid = r.eid;
+            ents.extra.push((eid, out::frame(out::Meta::new(eid).item(8, &sr.with_count(total)).finish())));
+            if donor == i {
                 break;
             }
-            let t = room.min(jcount);
-            let left = jcount - t;
-            if let Kind::Item { stack, .. } = &mut ents.list[i].kind {
-                stack.count = cur + t;
-            }
-            if let Kind::Item { stack, .. } = &mut ents.list[j].kind {
-                stack.count = left;
-            }
-            if left <= 0 {
-                ents.list[j].removed = true;
-            }
-            let eid = ents.list[i].eid;
-            ents.extra.push((eid, out::frame(out::Meta::new(eid).item(8, item, cur + t).finish())));
         }
+    }
+}
+
+fn donor_delay(e: &Ent) -> i32 {
+    match &e.kind {
+        Kind::Item { pickup_delay, .. } => *pickup_delay,
+        _ => 0,
     }
 }
 
@@ -556,7 +563,7 @@ fn pickup(g: &mut Game, idx: &ItemIndex) {
             continue;
         }
         let p = g.player(slot).unwrap();
-        let left = p.inv.add(stack.item, stack.count);
+        let left = p.inv.add(stack);
         let got = stack.count - left;
         if got <= 0 {
             taken.remove(&eid);
@@ -573,14 +580,68 @@ fn pickup(g: &mut Game, idx: &ItemIndex) {
         if let Some(&i) = g.entities.index.get(&eid) {
             let e = &mut g.entities.list[i];
             if left > 0 {
+                let rest = stack.with_count(left);
                 if let Kind::Item { stack: s, .. } = &mut e.kind {
-                    s.count = left;
+                    *s = rest;
                 }
+                // partial pickup: trackers see the smaller stack
+                g.entities.extra.push((eid, out::frame(out::Meta::new(eid).item(8, &rest).finish())));
                 taken.remove(&eid);
             } else {
                 e.removed = true;
             }
         }
         super::track::equipment_changed(g, slot);
+    }
+}
+
+impl Ent {
+    #[cfg(test)]
+    fn count(&self) -> i32 {
+        match &self.kind {
+            Kind::Item { stack, .. } => stack.count,
+            _ => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(eid: i32, kind_item: u32, count: i32, damage: u16, x: f64) -> Ent {
+        Ent {
+            eid,
+            uuid: Uuid::nil(),
+            kind: Kind::Item { stack: Stack::damaged(kind_item, count, damage), pickup_delay: 0 },
+            pos: [x, 0.0, 0.0],
+            vel: [0.0; 3],
+            on_ground: false,
+            age: 0,
+            removed: false,
+            sent_pos: [x, 0.0, 0.0],
+            sent_vel: [0.0; 3],
+        }
+    }
+
+    #[test]
+    fn merge_only_when_the_total_fits_and_wear_matches() {
+        rine_data::init();
+        let cobble = crate::game::items::id("minecraft:cobblestone").unwrap();
+        let mut ents = Entities::default();
+        ents.list = vec![
+            item(1, cobble, 40, 0, 0.0),
+            item(2, cobble, 20, 0, 0.2), // 40 + 20 fits: absorbed into eid 1
+            item(3, cobble, 30, 0, 0.1), // 60 + 30 does not fit
+            item(4, cobble, 5, 1, 0.1),  // different wear: no merge
+        ];
+        let idx = ItemIndex::build(&ents.list);
+        merge_items(&mut ents, &idx);
+        assert_eq!(ents.list[0].count(), 60);
+        assert!(ents.list[1].removed);
+        assert_eq!(ents.list[2].count(), 30);
+        assert!(!ents.list[2].removed);
+        assert_eq!(ents.list[3].count(), 5);
+        assert!(ents.extra.iter().any(|(eid, _)| *eid == 1));
     }
 }

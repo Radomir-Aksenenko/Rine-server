@@ -122,8 +122,8 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             }
             let stack = if count > 0 {
                 let item = r.varint()? as u32;
-                // component patch (delimited): we keep only item + count for now
-                super::player::Stack::new(item, count.min(99))
+                // component patch (delimited): only the damage component is kept
+                super::durability::read_creative_stack(&mut r, item, count)?
             } else {
                 super::player::Stack::EMPTY
             };

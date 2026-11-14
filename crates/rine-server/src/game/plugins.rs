@@ -77,7 +77,7 @@ pub fn tick(g: &mut Game) {
             Action::Give { player, item, count } => {
                 if let (Some(s), Some(id)) = (g.find_player(&player), super::items::id(&item)) {
                     let p = g.player(s).unwrap();
-                    let left = p.inv.add(id, count.max(1));
+                    let left = p.inv.add(super::player::Stack::new(id, count.max(1)));
                     let inv = p.inventory_packet();
                     p.send(inv);
                     if left > 0 {
