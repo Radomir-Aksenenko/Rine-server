@@ -17,6 +17,7 @@ pub mod place;
 pub mod plugins;
 pub mod containers;
 pub mod survival;
+pub mod fluids;
 
 use crate::net::{NewPlayer, Shared};
 use crate::out;
