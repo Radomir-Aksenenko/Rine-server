@@ -203,7 +203,7 @@ fn shared_flags(p: &super::player::Player) -> u8 {
 fn meta_for(p: &super::player::Player) -> bytes::BytesMut {
     out::Meta::new(p.eid)
         .byte(0, shared_flags(p))
-        .pose(6, if p.sneaking { 5 } else { 0 })
+        .pose(6, if p.sneaking && !p.flying { 5 } else { 0 })
         .float(9, p.health.max(0.0))
         .humanoid_arm(15, p.info.main_hand.clamp(0, 1))
         .byte(16, p.info.skin_parts)

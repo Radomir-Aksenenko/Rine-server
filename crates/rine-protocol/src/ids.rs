@@ -50,6 +50,7 @@ pub mod play {
     pub const C_BUNDLE_DELIMITER: i32 = 0;
     pub const C_ADD_ENTITY: i32 = 1;
     pub const C_ANIMATE: i32 = 2;
+    pub const C_SWING_ANIMATION: i32 = 123;
     pub const C_BLOCK_CHANGED_ACK: i32 = 4;
     pub const C_BLOCK_DESTRUCTION: i32 = 5;
     pub const C_BLOCK_ENTITY_DATA: i32 = 6;
@@ -122,6 +123,7 @@ pub mod play {
     // serverbound
     pub const S_ACCEPT_TELEPORTATION: i32 = 0;
     pub const S_ATTACK: i32 = 1;
+    pub const S_CHANGE_GAME_MODE: i32 = 5;
     pub const S_CHAT: i32 = 9;
     pub const S_CHAT_ACK: i32 = 6;
     pub const S_CHAT_COMMAND: i32 = 7;
@@ -143,6 +145,7 @@ pub mod play {
     pub const S_MOVE_PLAYER_ROT: i32 = 32;
     pub const S_MOVE_PLAYER_STATUS_ONLY: i32 = 33;
     pub const S_PICK_ITEM_FROM_BLOCK: i32 = 36;
+    pub const S_PICK_ITEM_FROM_ENTITY: i32 = 37;
     pub const S_PING_REQUEST: i32 = 38;
     pub const S_PLAYER_ABILITIES: i32 = 40;
     pub const S_PLAYER_ACTION: i32 = 41;

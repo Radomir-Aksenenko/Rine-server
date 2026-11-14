@@ -229,7 +229,7 @@ pub fn entity_motion(eid: i32, vx: f64, vy: f64, vz: f64) -> BytesMut {
 }
 
 pub fn swing(eid: i32, hand: i32) -> BytesMut {
-    packet(123, |b| {
+    packet(C_SWING_ANIMATION, |b| {
         b.w_varint(eid);
         b.w_varint(hand);
         b.w_varint(1); // WHACK
