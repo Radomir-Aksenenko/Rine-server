@@ -80,7 +80,7 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
         }
         S_CHAT_COMMAND | S_CHAT_COMMAND_SIGNED => {
             let cmd = r.string(32767)?.to_string();
-            super::commands::run(g, slot, &cmd);
+            super::cmd::player_command(g, slot, &cmd);
         }
         S_PLAYER_ACTION => {
             let action = r.varint()?;

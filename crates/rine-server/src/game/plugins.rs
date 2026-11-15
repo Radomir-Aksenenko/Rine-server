@@ -92,7 +92,7 @@ pub fn tick(g: &mut Game) {
             }
             Action::RunCommand { player, line } => {
                 if let Some(s) = g.find_player(&player) {
-                    super::commands::run(g, s, line.trim_start_matches('/'));
+                    super::cmd::player_command(g, s, line.trim_start_matches('/'));
                 }
             }
         }

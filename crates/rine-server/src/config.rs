@@ -17,6 +17,23 @@ pub struct Config {
     pub plugins_dir: String,
     /// Operator nicknames (case-insensitive): permission level 4.
     pub ops: Vec<String>,
+    /// server.properties `op-permission-level`: level given by /op.
+    pub op_permission_level: u8,
+    /// `function-permission-level`.
+    pub function_permission_level: u8,
+    /// `enable-command-block`.
+    pub enable_command_block: bool,
+    /// `broadcast-console-to-ops`.
+    pub broadcast_console_to_ops: bool,
+    /// `broadcast-rcon-to-ops`.
+    pub broadcast_rcon_to_ops: bool,
+    /// `white-list` / `enforce-whitelist`.
+    pub white_list: bool,
+    pub enforce_whitelist: bool,
+    /// `difficulty` (peaceful, easy, normal, hard).
+    pub difficulty: String,
+    /// `player-idle-timeout` minutes (0 = off).
+    pub player_idle_timeout: i32,
 }
 
 impl Default for Config {
@@ -35,6 +52,15 @@ impl Default for Config {
             spawn_protection: false,
             plugins_dir: "plugins".into(),
             ops: Vec::new(),
+            op_permission_level: 4,
+            function_permission_level: 2,
+            enable_command_block: false,
+            broadcast_console_to_ops: true,
+            broadcast_rcon_to_ops: true,
+            white_list: false,
+            enforce_whitelist: false,
+            difficulty: "easy".into(),
+            player_idle_timeout: 0,
         }
     }
 }

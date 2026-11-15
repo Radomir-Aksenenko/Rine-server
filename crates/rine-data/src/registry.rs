@@ -99,6 +99,23 @@ impl Registries {
             .and_then(|r| r.id(entry))
     }
 
+    /// Registry by name, if it exists (builtin or synced).
+    pub fn find(&self, name: &str) -> Option<&Registry> {
+        self.builtin.get(name).or_else(|| self.synced.iter().find(|r| r.name == name))
+    }
+
+    /// Tag entries (`tag` and entries with or without `minecraft:`).
+    pub fn tag(&self, reg: &str, tag: &str) -> Option<&Vec<String>> {
+        let t = self.tags.get(reg)?;
+        t.get(tag).or_else(|| t.get(&format!("minecraft:{tag}"))).or_else(|| tag.strip_prefix("minecraft:").and_then(|x| t.get(x)))
+    }
+
+    /// Whether `entry` is in `#tag` of `reg`.
+    pub fn tag_contains(&self, reg: &str, tag: &str, entry: &str) -> bool {
+        let full = if entry.contains(':') { entry.to_string() } else { format!("minecraft:{entry}") };
+        self.tag(reg, tag).is_some_and(|v| v.iter().any(|e| *e == full || e == entry))
+    }
+
     pub fn synced(&self, reg: &str) -> &Registry {
         self.synced.iter().find(|r| r.name == reg).unwrap()
     }

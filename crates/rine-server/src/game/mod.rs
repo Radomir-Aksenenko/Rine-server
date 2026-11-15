@@ -9,6 +9,7 @@ pub mod handle;
 pub mod track;
 pub mod entity;
 pub mod commands;
+pub mod cmd;
 pub mod neighbors;
 pub mod interact;
 pub mod explosion;
@@ -69,6 +70,18 @@ pub struct Game {
     pub clock_ids: Vec<u32>,
     pub running: Arc<std::sync::atomic::AtomicBool>,
     pub plugins: Option<rine_plugin::PluginHost>,
+    /// Command grammar, executors, packet and parse caches.
+    pub cmds: cmd::Commands,
+    /// Command execution queue (vanilla `ExecutionContext`).
+    pub exec: cmd::exec::ExecState,
+    pub rules: cmd::rules::GameRules,
+    /// Per-entity command state (tags, custom name...), players included,
+    /// kept out of the hot entity arrays.
+    pub ent_meta: AHashMap<i32, cmd::EntMeta>,
+    /// Server default game mode (`/defaultgamemode`).
+    pub default_gamemode: u8,
+    /// Console lines from stdin.
+    pub console_rx: Option<crossbeam_channel::Receiver<String>>,
 }
 
 impl Game {
@@ -92,6 +105,13 @@ impl Game {
                 }
             }
         }
+        let rules = cmd::rules::GameRules::load(&cfg.world_dir);
+        let default_gamemode = match cfg.gamemode.as_str() {
+            "creative" => 1,
+            "adventure" => 2,
+            "spectator" => 3,
+            _ => 0,
+        };
         Self {
             ops,
             shared,
@@ -116,6 +136,21 @@ impl Game {
             clock_ids,
             running,
             plugins: None,
+            cmds: cmd::Commands::new(),
+            exec: Default::default(),
+            rules,
+            ent_meta: AHashMap::new(),
+            default_gamemode,
+            console_rx: None,
+        }
+    }
+
+    /// Op permission level of a player name (0 when not an operator).
+    pub fn op_level_of(&self, name: &str) -> u8 {
+        if self.is_op(name) {
+            self.shared.config.op_permission_level.clamp(1, 4)
+        } else {
+            0
         }
     }
 
@@ -298,6 +333,11 @@ impl Game {
         for slot in 0..self.players.len() {
             handle::process_inbound(self, slot);
         }
+        if let Some(rx) = self.console_rx.clone() {
+            while let Ok(line) = rx.try_recv() {
+                cmd::console_command(self, &line);
+            }
+        }
         track::spawn_fresh(self);
         self.settle_outputs();
         self.flush_players(false);
@@ -413,12 +453,7 @@ impl Game {
         };
         let eid = self.alloc_eid();
         let cfg = self.shared.config.clone();
-        let gm = match cfg.gamemode.as_str() {
-            "creative" => 1,
-            "adventure" => 2,
-            "spectator" => 3,
-            _ => 0,
-        };
+        let gm = self.default_gamemode;
         let saved = playerdata::read(&cfg.world_dir, np.uuid);
         let gm = saved.as_ref().map_or(gm, |d| d.gamemode);
         let mut p = Player::new(np, slot, eid, self.spawn, gm, cfg.view_distance as i32);
@@ -522,9 +557,10 @@ impl Game {
         p.send(inv);
         p.send(out::set_health(p.health, p.food, p.saturation));
         p.op = self.is_op(&p.name);
-        let op = p.op;
-        p.send(out::entity_event(eid, if op { 28 } else { 24 }));
-        p.send(commands::commands_packet(op));
+        let level = self.op_level_of(&p.name);
+        p.send(out::entity_event(eid, 24 + level as i8));
+        let tree = self.cmds.packet(level);
+        p.out.push(tree);
 
         // tab list: everyone to the newcomer, newcomer to everyone
         let mut entries = Vec::new();

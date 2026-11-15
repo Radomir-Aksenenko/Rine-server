@@ -367,6 +367,21 @@ impl Bot {
 
     async fn on_play(&mut self, wr: &mut OwnedWriteHalf, id: i32, body: &[u8]) -> Result<bool> {
         self.check(id, body);
+        // RINE_DUMP_DIR: save raw bodies of the command tree (last one wins)
+        // and append every system chat / suggestion packet, for comparing
+        // command behaviour against the vanilla server.
+        if let Ok(dir) = std::env::var("RINE_DUMP_DIR") {
+            use std::io::Write;
+            if id == pid::C_COMMANDS {
+                let _ = std::fs::write(format!("{dir}/{}-commands.bin", self.name), body);
+            } else if id == pid::C_SYSTEM_CHAT || id == pid::C_COMMAND_SUGGESTIONS {
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/{}-chat.bin", self.name)) {
+                    let _ = f.write_all(&(id as u32).to_le_bytes());
+                    let _ = f.write_all(&(body.len() as u32).to_le_bytes());
+                    let _ = f.write_all(body);
+                }
+            }
+        }
         let mut r = Reader::new(body);
         match id {
             pid::C_LOGIN => {

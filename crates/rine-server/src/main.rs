@@ -33,7 +33,9 @@ fn main() -> anyhow::Result<()> {
         let r = running.clone();
         let _ = ctrlc_hook(move || r.store(false, Ordering::Relaxed));
     }
-    let game = game::Game::new(shared.clone(), new_rx, wake_rx, running.clone());
+    let mut game = game::Game::new(shared.clone(), new_rx, wake_rx, running.clone());
+    let (console_tx, console_rx) = crossbeam_channel::unbounded::<String>();
+    game.console_rx = Some(console_rx);
     tracing::info!("spawn at {:?}", game.spawn);
     let game_thread = std::thread::Builder::new().name("game".into()).spawn(move || game.run())?;
 
@@ -44,16 +46,20 @@ fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
     });
-    // console: read stdin commands (only "stop" for now)
-    let r2 = running.clone();
+    // console: every line goes to the command dispatcher at op level 4
     std::thread::spawn(move || {
         let mut line = String::new();
-        while std::io::stdin().read_line(&mut line).is_ok() {
-            if line.trim() == "stop" {
-                r2.store(false, Ordering::Relaxed);
-                break;
-            }
+        loop {
             line.clear();
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let l = line.trim();
+                    if !l.is_empty() && console_tx.send(l.to_string()).is_err() {
+                        break;
+                    }
+                }
+            }
         }
     });
     let _ = game_thread.join();

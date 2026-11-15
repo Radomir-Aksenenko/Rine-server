@@ -1,0 +1,13 @@
+[package]
+name = "rine-command"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rine-protocol.workspace = true
+rine-data.workspace = true
+bytes.workspace = true
+ahash.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true

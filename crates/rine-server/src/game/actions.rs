@@ -4,7 +4,7 @@
 
 use super::entity::{Ent, Kind};
 use super::player::{Inventory, Stack};
-use super::{commands, track, Game};
+use super::{track, Game};
 use crate::out;
 use rine_protocol::BlockPos;
 
@@ -160,11 +160,12 @@ fn dist2_to_block(eye: [f64; 3], pos: BlockPos) -> f64 {
 /// unknown ids to survival (`GameType.BY_ID` with `OutOfBoundsStrategy.ZERO`).
 pub fn change_game_mode(g: &mut Game, slot: usize, mode: i32) {
     let Some(p) = g.player(slot) else { return };
-    if !p.op {
+    let name = p.name.clone();
+    if g.op_level_of(&name) < 2 {
         return;
     }
     let gm = if (0..=3).contains(&mode) { mode as u8 } else { 0 };
-    commands::set_gamemode(g, slot, gm);
+    super::cmd::commands::gamemode::set_self(g, slot, gm);
 }
 
 #[cfg(test)]
