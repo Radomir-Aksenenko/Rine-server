@@ -18,6 +18,7 @@
 //! - `on_place` / `neighbor_changed` likewise.
 //! Random ticks come from `random::tick`, once per game tick.
 
+pub mod copper;
 pub mod crops;
 pub mod props;
 pub mod random;
@@ -61,6 +62,8 @@ pub enum Beh {
     SweetBerry,
     /// `PitcherCropBlock`.
     PitcherCrop,
+    /// `ChangeOverTimeBlock` copper classes (`WeatheringCopper`).
+    Copper,
 }
 
 struct Table {
@@ -86,6 +89,9 @@ fn table() -> &'static Table {
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
     if let Some(b) = crops::classify(n) {
+        return b;
+    }
+    if let Some(b) = copper::classify(n) {
         return b;
     }
     Beh::None
@@ -199,6 +205,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
     match beh(st) {
         Beh::None => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
+        Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
     }
 }
 
@@ -215,6 +222,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
     match beh(st) {
         Beh::None => st,
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Copper => st,
     }
 }
 
