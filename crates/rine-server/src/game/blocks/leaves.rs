@@ -157,6 +157,26 @@ mod tests {
     }
 
     #[test]
+    fn settled_canopy_stops_scheduling_ticks() {
+        let mut w = TW::new();
+        let mut rs = Rs::default();
+        let p0 = BlockPos::new(0, 64, 0);
+        for x in 1..=3 {
+            w.put(p0.offset(x, 0, 0), leaf(7, false));
+        }
+        engine::set_block(&mut rs, &mut w, p0, log(), fl::ALL, UPDATE_LIMIT);
+        for _ in 0..10 {
+            w.tick(&mut rs);
+        }
+        // `set_block` with an unchanged state does nothing (vanilla setBlock
+        // returns early), so a settled chain sends no more shape updates
+        assert_eq!(rs.scheduled_count(), 0);
+        for x in 1..=3 {
+            assert_eq!(geti(w.get(p0.offset(x, 0, 0)), Pr::Distance), x);
+        }
+    }
+
+    #[test]
     fn update_shape_schedules_only_when_distance_changes() {
         let mut w = TW::new();
         let mut rs = Rs::default();
