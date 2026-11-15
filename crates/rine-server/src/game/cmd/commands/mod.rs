@@ -65,6 +65,7 @@ pub struct States {
     pub world: world::State,
     pub effect: effect::State,
     pub scoreboard: scoreboard::State,
+    pub cmdblock: crate::game::cmd::cmdblock::State,
 }
 
 /// Change a player's game mode (state, abilities, tab list), no message.

@@ -133,7 +133,7 @@ fn informs_admins(g: &Game, out: &Output) -> bool {
     match out {
         Output::Player(_) => true,
         Output::Console => g.shared.config.broadcast_console_to_ops,
-        Output::CommandBlock(_) => g.rules.bool("command_block_output"),
+        Output::CommandBlock(pos) => g.rules.bool("command_block_output") && super::cmdblock::tracks_output(g, *pos),
         Output::Null => false,
     }
 }

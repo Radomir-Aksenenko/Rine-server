@@ -270,6 +270,7 @@ impl Game {
         // level's scheduled functions (`ServerLevel.tickTime`)
         cmd::commands::function::tick_functions(self);
         cmd::commands::function::tick_schedule(self);
+        cmd::cmdblock::tick(self);
 
         // 4. entities (items, TNT, falling blocks) + explosions
         entity::tick(self);

@@ -82,6 +82,14 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             let cmd = r.string(32767)?.to_string();
             super::cmd::player_command(g, slot, &cmd);
         }
+        55 => {
+            // set_command_block
+            let pos = r.block_pos()?;
+            let cmd = r.string(32767)?.to_string();
+            let mode = r.varint()?;
+            let flags = r.u8()?;
+            super::cmd::cmdblock::handle_set(g, slot, pos, &cmd, mode, flags);
+        }
         S_PLAYER_ACTION => {
             let action = r.varint()?;
             let pos = r.block_pos()?;

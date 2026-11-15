@@ -275,6 +275,12 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
 
     // interacting with blocks (doors, trapdoors, fence gates, TNT + flint)
     if !sneaking || stack.is_empty() {
+        if super::cmd::cmdblock::on_use(g, slot, pos) {
+            if let Some(p) = g.player(slot) {
+                p.ack(seq);
+            }
+            return;
+        }
         if super::containers::open_block(g, slot, pos, clicked) {
             if let Some(p) = g.player(slot) {
                 p.ack(seq);
