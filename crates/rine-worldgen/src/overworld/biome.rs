@@ -37,6 +37,13 @@ impl Simplex2 {
     }
 }
 
+/// `Biome.BIOME_INFO_NOISE.get(x, z)` (`Noise.get(double, double)`, a float widened by the caller). A static in
+/// vanilla (`new SimplexNoise(new WorldgenRandom(new LegacyRandomSource(2345L)), true)`), independent of the seed.
+pub fn biome_info_noise(x: f64, z: f64) -> f32 {
+    static NOISE: std::sync::OnceLock<SimplexNoise> = std::sync::OnceLock::new();
+    NOISE.get_or_init(|| simplex_discard(2345).1).get_value_2d(x, z)
+}
+
 /// `Biome.FROZEN_TEMPERATURE_NOISE`, `Biome.TEMPERATURE_NOISE`, `Biome.BIOME_INFO_NOISE` use
 /// `new WorldgenRandom(new LegacyRandomSource(seed))`; `WorldgenRandom` forwards to the legacy source.
 fn simplex_discard(seed: i64) -> (Legacy, SimplexNoise) {
