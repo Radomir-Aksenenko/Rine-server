@@ -33,6 +33,9 @@ struct LightDone {
 pub struct Loaded {
     pub chunk: Box<Chunk>,
     pub frame: Bytes,
+    /// Redstone blocks that need block entity data rebuilt (see
+    /// `redstone::load_scan`).
+    pub rs_scan: Vec<BlockPos>,
 }
 
 pub struct World {
@@ -52,6 +55,18 @@ pub struct World {
     pub wake: Vec<BlockPos>,
     /// Scheduled fluid ticks.
     pub fluids: super::fluids::Sched,
+    /// Redstone engine state: scheduled block ticks, block events, moving pistons.
+    pub redstone: super::redstone::Rs,
+    /// Block changes made outside the redstone engine, waiting for their
+    /// vanilla side effects (`redstone::process`).
+    pub rs_events: Vec<super::redstone::RsEvent>,
+    /// Set while the redstone engine writes, so its own writes are not queued.
+    pub rs_mute: bool,
+    /// Game time the redstone engine sees: the time of the last level tick
+    /// (vanilla `getGameTime` between ticks, when packets are handled).
+    pub rs_time: u64,
+    /// Redstone positions from chunks loaded this tick (`Loaded::rs_scan`).
+    pub rs_loaded: Vec<BlockPos>,
     /// Chunks whose lighting must be recomputed (after block changes).
     pub relight: AHashSet<ChunkPos>,
     /// Chunks with a lighting job running on the background pool.
@@ -93,6 +108,11 @@ impl World {
             fluid_touched: Vec::new(),
             wake: Vec::new(),
             fluids: Default::default(),
+            redstone: Default::default(),
+            rs_events: Vec::new(),
+            rs_mute: false,
+            rs_time: 0,
+            rs_loaded: Vec::new(),
             relight: AHashSet::new(),
             light_jobs: AHashSet::new(),
             light_tx,
@@ -119,10 +139,11 @@ impl World {
                 }
             };
             chunk.dirty = chunk.dirty || false;
+            let rs_scan = super::redstone::load_scan(&chunk);
             let mut b = BytesMut::with_capacity(16 * 1024);
             rine_world::encode::encode_chunk_packet(&chunk, &mut b);
             let frame = out::frame(b);
-            let _ = tx.send(Loaded { chunk: Box::new(chunk), frame });
+            let _ = tx.send(Loaded { chunk: Box::new(chunk), frame, rs_scan });
         });
     }
 
@@ -133,6 +154,8 @@ impl World {
             let pos = l.chunk.pos;
             self.pending.remove(&pos);
             let v = l.chunk.version;
+            self.rs_loaded.extend_from_slice(&l.rs_scan);
+            self.redstone.chunk_loaded(pos.x, pos.z, self.rs_time);
             self.next_uid += 1;
             let uid = self.next_uid;
             self.chunks.insert(pos, ChunkSlot { chunk: l.chunk, frame: Some((v, l.frame)), viewers: Vec::new(), idle_since: tick, uid });
@@ -192,6 +215,9 @@ impl World {
             self.touched.push(p);
             self.fluid_touched.push(p);
             self.wake.push(p);
+            if !self.rs_mute {
+                self.rs_events.push(super::redstone::RsEvent::Set(p, old, state));
+            }
             let b = &rine_data::get().blocks;
             let (so, sn) = (b.state(old), b.state(state));
             if so.light_emit != sn.light_emit || so.light_block != sn.light_block {
@@ -279,7 +305,8 @@ impl World {
             }
         }
         for p in victims {
-            if let Some(s) = self.chunks.remove(&p) {
+            if let Some(mut s) = self.chunks.remove(&p) {
+                self.redstone.chunk_unloaded(p.x, p.z, &mut s.chunk);
                 if s.chunk.dirty {
                     let store = self.store.clone();
                     let chunk = s.chunk;

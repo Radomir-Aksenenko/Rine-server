@@ -109,6 +109,9 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
         Lay::Chest => {
             st.chests.insert(pos, after.clone());
             notify_viewers(g, &mut st, slot, lay, pos, &container, &after);
+            if after != container {
+                super::redstone::container_changed(&mut g.world, pos);
+            }
         }
         Lay::Furnace(_) => {
             if let Some(f) = st.furnaces.get_mut(&pos) {
@@ -116,6 +119,9 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
                 f.sent_items = f.items;
             }
             notify_viewers(g, &mut st, slot, lay, pos, &container, &after);
+            if after != container {
+                super::redstone::container_changed(&mut g.world, pos);
+            }
         }
         Lay::Inv => {}
     }
@@ -204,6 +210,7 @@ pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool 
         }
     }
     st.open.insert(slot, o);
+    super::redstone::viewers_changed(&mut g.world, pos);
     true
 }
 
@@ -266,6 +273,9 @@ pub fn tick(g: &mut Game) {
         }
     }
     for (pos, items, data) in updates {
+        if !items.is_empty() {
+            super::redstone::container_changed(&mut g.world, pos);
+        }
         for (slot, o) in st.open.iter_mut() {
             if o.pos != pos || !matches!(o.lay, Lay::Furnace(_)) {
                 continue;
@@ -504,6 +514,42 @@ pub struct Fx {
     pub throw: Vec<Stack>,
 }
 
+/// Comparator reading of a stored container (vanilla
+/// `AbstractContainerMenu.getRedstoneSignalFromContainer`). None when the
+/// position holds no stored container.
+pub fn analog_signal(pos: BlockPos) -> Option<u8> {
+    let st = lock_state();
+    if let Some(c) = st.chests.get(&pos) {
+        Some(signal_of(c))
+    } else {
+        st.furnaces.get(&pos).map(|f| signal_of(&f.items))
+    }
+}
+
+/// `getRedstoneSignalFromContainer` for a list of slots.
+pub fn signal_of(items: &[Stack]) -> u8 {
+    if items.is_empty() {
+        return 0;
+    }
+    let mut fullness = 0f32;
+    let mut any = false;
+    for s in items.iter().filter(|s| !s.is_empty()) {
+        any = true;
+        fullness += s.count as f32 / max_stack(s.item).max(1) as f32;
+    }
+    if !any {
+        return 0;
+    }
+    fullness /= items.len() as f32;
+    (fullness * 14.0).floor() as u8 + 1
+}
+
+/// Players with the container at `pos` open (trapped chest output).
+pub fn viewers_at_pos(pos: BlockPos) -> u8 {
+    let st = lock_state();
+    st.open.values().filter(|o| o.pos == pos && o.lay == Lay::Chest).count().min(255) as u8
+}
+
 fn lock_state() -> MutexGuard<'static, State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(State::default())).lock().unwrap_or_else(|e| e.into_inner())
@@ -646,6 +692,9 @@ fn return_to_player(g: &mut Game, slot: usize, mut items: Vec<Stack>, extra: Vec
 
 fn close_open(g: &mut Game, slot: usize, st: &mut State, notify: bool) {
     let Some(o) = st.open.remove(&slot) else { return };
+    if o.lay == Lay::Chest {
+        super::redstone::viewers_changed(&mut g.world, o.pos);
+    }
     st.drags.remove(&slot);
     let items = if o.lay == Lay::Table { o.grid.to_vec() } else { Vec::new() };
     let mut extra = Vec::new();

@@ -306,7 +306,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         return;
     }
     // don't place blocks inside players
-    let st = super::place::placement_state(g, place_state, target, face, cursor, yaw, pitch);
+    let st = super::place::placement_state(g, place_state, target, face, cursor, yaw, pitch).map(|st| super::redstone::placement_state(g, target, st));
     let Some(st) = st else {
         resync(g, slot, target, seq);
         return;
@@ -323,6 +323,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     }
     g.world.set_block(target, st);
     super::place::after_place(g, target, st);
+    super::redstone::placed(g, target);
     gravity_check(g, target);
     let p = g.player(slot).unwrap();
     if gm != 1 {

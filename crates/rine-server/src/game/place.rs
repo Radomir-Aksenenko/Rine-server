@@ -6,7 +6,6 @@
 //! Player yaw: 0 = south, 90 = west, 180 = north, 270 = east.
 
 use super::entity;
-use super::interact;
 use super::items;
 use super::player::Stack;
 use super::Game;
@@ -176,12 +175,6 @@ fn set(b: &Blocks, st: u16, prop: &str, val: &str) -> u16 {
 
 fn has_prop(b: &Blocks, st: u16, prop: &str) -> bool {
     b.block_of(st).props.iter().any(|p| p.name == prop)
-}
-
-/// Flip a boolean property ("true" <-> "false").
-fn toggle(b: &Blocks, st: u16, prop: &str) -> Option<u16> {
-    let on = b.get_prop(st, prop)? == "true";
-    b.with_prop(st, prop, if on { "false" } else { "true" })
 }
 
 /// Plants and crops need suitable ground; cactus and sugar cane have extra rules.
@@ -410,28 +403,8 @@ pub fn interact_block(g: &mut Game, _slot: usize, pos: BlockPos, state: u16, hel
     let b = blocks();
     let name = short(&b.block_of(state).name);
 
-    let openable = (name.ends_with("_door") && name != "iron_door")
-        || (name.ends_with("trapdoor") && name != "iron_trapdoor")
-        || name.ends_with("_fence_gate");
-    if openable {
-        let Some(new) = toggle(b, state, "open") else { return false };
-        g.world.set_block(pos, new);
-        // doors: keep the other half in sync
-        if let Some(other) = interact::other_half(state, pos) {
-            let ost = state_at(g, other);
-            if b.block_of(ost).id == b.block_of(state).id {
-                let open = b.get_prop(new, "open").unwrap_or("false");
-                if let Some(o) = b.with_prop(ost, "open", open) {
-                    g.world.set_block(other, o);
-                }
-            }
-        }
-        return true;
-    }
-
-    if name == "lever" {
-        let Some(new) = toggle(b, state, "powered") else { return false };
-        g.world.set_block(pos, new);
+    // levers, buttons, diodes, wire, doors, trapdoors, fence gates, note blocks
+    if super::redstone::use_block(g, _slot, pos, state) {
         return true;
     }
 
