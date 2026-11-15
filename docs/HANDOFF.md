@@ -41,16 +41,22 @@ Rine: сервер Minecraft Java 26.3 на Rust. Логика игры вани
 - Ванильный сервер для сверок: `vanilla-data/` (jar 26.3, порт 25566).
 - Клиент 26.3 для `javap`: `E:\PC-Storage\AppData\FreesmLauncher\libraries\com\mojang\minecraft\26.3\minecraft-26.3-client.jar`.
 
-## В работе на момент передачи
+## Последнее сделанное
 
-- Агент «noise counts»: `noise_threshold_count`, `noise_based_count`, фильтры
-  (глубина воды, environment_scan, carving_mask), кактусы, тростник, грибы,
-  мох, бамбук, лианы, снег и лёд, озёра, айсберги. Ветка
-  `worktree-agent-a124676f469c59adb`, после завершения влить в `master`.
+- `noise_threshold_count` и `noise_based_count` (шум `BIOME_INFO_NOISE`, сид 2345)
+  влиты в `master`: трава на равнинах и в лесах сходится с ванилью
+  (short_grass 1513 из 1513, tall_grass 190 из 192).
+- Работающих агентов нет.
 
 ## Дальше по порядку
 
-1. Влить ветку агента выше, проверить `cargo test -p rine-worldgen`.
+1. Цветочные поля: `flower_plains`, `flower_cherry`, `wildflowers_meadow`
+   (выживание клумб `pink_petals`/`wildflowers`, проверить блок из таргета
+   `flower_plain` по `reports/blocks.json`). Затем фильтры
+   `surface_water_depth_filter`, `environment_scan`,
+   `surface_relative_threshold_filter`, `carving_mask` (включить карверы в
+   сверочном датапаке), затем кактусы, тростник, грибы, мох, бамбук, лианы,
+   `freeze_top_layer`, озёра, айсберги.
 2. Переделать `pipeline.rs`: декорировать каждый чанк один раз, когда готовы 3x3
    прото-чанки; финальный чанк, когда декорированы 3x3; цель ~10 мс/чанк;
    ускорить `Overworld::generate` (сейчас 31 мс с карверами).
