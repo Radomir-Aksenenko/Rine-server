@@ -60,6 +60,11 @@ pub struct World {
     /// Block changes made outside the redstone engine, waiting for their
     /// vanilla side effects (`redstone::process`).
     pub rs_events: Vec<super::redstone::RsEvent>,
+    /// Positions whose block entity was dropped by a block change; their
+    /// typed container state is forgotten on the next container tick.
+    pub be_removed: Vec<BlockPos>,
+    /// Positions that got a new block entity (hoppers start ticking).
+    pub be_added: Vec<BlockPos>,
     /// Set while the redstone engine writes, so its own writes are not queued.
     pub rs_mute: bool,
     /// Game time the redstone engine sees: the time of the last level tick
@@ -110,6 +115,8 @@ impl World {
             fluids: Default::default(),
             redstone: Default::default(),
             rs_events: Vec::new(),
+            be_removed: Vec::new(),
+            be_added: Vec::new(),
             rs_mute: false,
             rs_time: 0,
             rs_loaded: Vec::new(),
@@ -227,6 +234,22 @@ impl World {
                 slot.chunk.block_entities.retain(|e| !(e.x == lx && e.z == lz && e.y as i32 == p.y));
                 if slot.chunk.block_entities.len() != before {
                     slot.chunk.dirty = true;
+                    self.be_removed.push(p);
+                }
+            }
+            // a block with a block entity gets an empty one (its system
+            // fills in the data); same-block property changes keep the old one
+            if b.block_of(old).id != b.block_of(state).id {
+                if let Some(ty) = super::blockent::type_of_block(b.block_of(state).id) {
+                    slot.chunk.block_entities.push(rine_world::chunk::BlockEntity {
+                        x: (p.x & 15) as u8,
+                        y: p.y as i16,
+                        z: (p.z & 15) as u8,
+                        type_id: ty,
+                        nbt: None,
+                    });
+                    slot.chunk.dirty = true;
+                    self.be_added.push(p);
                 }
             }
             let (so, sn) = (b.state(old), b.state(state));
@@ -315,6 +338,7 @@ impl World {
             }
         }
         for p in victims {
+            super::blockinv::chunk_unloading(self, p);
             if let Some(mut s) = self.chunks.remove(&p) {
                 self.redstone.chunk_unloaded(p.x, p.z, &mut s.chunk);
                 if s.chunk.dirty {
@@ -328,6 +352,7 @@ impl World {
 
     pub fn save_all(&mut self) {
         use rayon::prelude::*;
+        super::blockinv::flush_all(self);
         let store = self.store.clone();
         self.chunks.par_iter_mut().for_each(|(_, s)| {
             if s.chunk.dirty {

@@ -46,6 +46,8 @@ pub struct PlayerData {
     pub slots: Vec<SlotData>,
     /// Item on the cursor when the player left.
     pub cursor: Option<ItemData>,
+    /// Ender chest contents (`EnderItems`), non-empty slots only.
+    pub ender: Vec<SlotData>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -106,6 +108,12 @@ impl PlayerData {
             held: p.held,
             slots,
             cursor: (!p.inv.cursor.is_empty()).then(|| ItemData::of(&p.inv.cursor)),
+            ender: super::containers::ender_items(p.uuid)
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| !s.is_empty())
+                .map(|(i, s)| SlotData { slot: i as u8, item: ItemData::of(s) })
+                .collect(),
         }
     }
 }
@@ -138,6 +146,13 @@ pub fn apply(p: &mut Player, d: &PlayerData) {
         }
     }
     p.inv.cursor = d.cursor.as_ref().and_then(|c| c.stack()).unwrap_or(Stack::EMPTY);
+    let mut ender = vec![Stack::EMPTY; 27];
+    for s in &d.ender {
+        if let (Some(st), true) = (s.item.stack(), (s.slot as usize) < 27) {
+            ender[s.slot as usize] = st;
+        }
+    }
+    super::containers::set_ender(p.uuid, ender);
 }
 
 struct Pending {

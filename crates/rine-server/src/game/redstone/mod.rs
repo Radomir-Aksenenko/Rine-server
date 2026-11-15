@@ -19,7 +19,7 @@ pub mod engine;
 pub mod piston;
 pub mod rails;
 #[cfg(test)]
-mod game_tests;
+pub(crate) mod game_tests;
 #[cfg(test)]
 mod tests;
 
@@ -484,12 +484,16 @@ impl Lvl for GameLvl<'_> {
         count_in(self.g, min, max, living_only)
     }
 
-    fn container_signal(&self, p: BlockPos, _st: u16) -> Option<u8> {
-        super::containers::analog_signal(p)
+    fn container_signal(&self, p: BlockPos, st: u16) -> Option<u8> {
+        super::containers::analog_signal(p, st)
     }
 
     fn chest_viewers(&self, p: BlockPos) -> u8 {
         super::containers::viewers_at_pos(p)
+    }
+
+    fn dispense(&mut self, p: BlockPos, st: u16) {
+        super::blockinv::dispense(self.g, p, st);
     }
 
     fn rand(&mut self) -> f32 {
@@ -552,8 +556,8 @@ impl Lvl for View<'_> {
     fn count_entities(&self, min: [f64; 3], max: [f64; 3], living_only: bool) -> usize {
         count_in(self.g, min, max, living_only)
     }
-    fn container_signal(&self, p: BlockPos, _st: u16) -> Option<u8> {
-        super::containers::analog_signal(p)
+    fn container_signal(&self, p: BlockPos, st: u16) -> Option<u8> {
+        super::containers::analog_signal(p, st)
     }
     fn chest_viewers(&self, p: BlockPos) -> u8 {
         super::containers::viewers_at_pos(p)

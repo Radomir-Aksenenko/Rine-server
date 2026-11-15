@@ -22,11 +22,13 @@ use ahash::AHashMap;
 use bytes::BytesMut;
 use rine_protocol::frame::packet;
 use rine_protocol::ids::play::{C_CONTAINER_CLOSE, C_CONTAINER_SET_DATA, C_OPEN_SCREEN, C_SET_CURSOR_ITEM};
-use rine_protocol::text::Text;
 use rine_protocol::{BlockPos, ProtoError, Reader, Writer};
 use rine_world::ChunkPos;
 use serde_json::Value;
 use std::sync::{Mutex, MutexGuard, OnceLock};
+use ahash::AHashSet;
+use uuid::Uuid;
+use super::blockinv;
 
 /// Serverbound container_click. Must fully consume the packet body.
 pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError> {
@@ -49,9 +51,9 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
     let mut st = lock_state();
     sweep(&mut st, g);
     let inv_state = g.player(slot).map_or(0, |p| p.inv.state_id);
-    let (lay, pos, grid, expected, cur) = match st.open.get(&slot) {
-        Some(o) => (o.lay, o.pos, o.grid, o.window, o.state_id),
-        None => (Lay::Inv, BlockPos::default(), [Stack::EMPTY; 9], 0, inv_state),
+    let (lay, src, grid, expected, cur) = match st.open.get(&slot) {
+        Some(o) => (o.lay, o.src, o.grid, o.window, o.state_id),
+        None => (Lay::Inv, Src::None, [Stack::EMPTY; 9], 0, inv_state),
     };
     if window != expected {
         resync(g, slot, &mut st);
@@ -62,7 +64,7 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
     let _ = client_state;
     let _ = cur;
 
-    let container = container_items(&st, lay, pos, &grid);
+    let container = container_items(&st, lay, src, &grid);
     let mut drag = st.drags.remove(&slot).unwrap_or_default();
     let mut fx = Fx::default();
     let Some(p) = g.players.get_mut(slot).and_then(|p| p.as_mut()) else { return Ok(()) };
@@ -106,21 +108,26 @@ pub fn click(g: &mut Game, slot: usize, r: &mut Reader) -> Result<(), ProtoError
                 o.grid.copy_from_slice(&after);
             }
         }
-        Lay::Chest => {
-            st.chests.insert(pos, after.clone());
-            notify_viewers(g, &mut st, slot, lay, pos, &container, &after);
+        Lay::Store { .. } => {
             if after != container {
-                super::redstone::container_changed(&mut g.world, pos);
+                write_src(&mut st, src, &after);
+                notify_viewers(g, &mut st, slot, src);
+                for p in src_blocks(src) {
+                    super::redstone::container_changed(&mut g.world, p);
+                }
             }
         }
         Lay::Furnace(_) => {
-            if let Some(f) = st.furnaces.get_mut(&pos) {
-                f.items.copy_from_slice(&after);
-                f.sent_items = f.items;
-            }
-            notify_viewers(g, &mut st, slot, lay, pos, &container, &after);
-            if after != container {
-                super::redstone::container_changed(&mut g.world, pos);
+            if let Src::One(pos) = src {
+                if let Some(f) = st.furnaces.get_mut(&pos) {
+                    f.items.copy_from_slice(&after);
+                    f.sent_items = f.items;
+                }
+                if after != container {
+                    st.dirty.insert(pos);
+                    notify_viewers(g, &mut st, slot, src);
+                    super::redstone::container_changed(&mut g.world, pos);
+                }
             }
         }
         Lay::Inv => {}
@@ -159,16 +166,13 @@ pub fn close(g: &mut Game, slot: usize, window: i32) {
     }
 }
 
-/// Right-click on a block that opens a window. Return true if handled.
+/// Right-click on a block that opens a window. Return true if handled
+/// (a blocked chest or shulker box consumes the click without opening).
 pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool {
-    let (lay, title, menu) = match rine_data::get().blocks.block_of(state).name.as_str() {
-        "minecraft:crafting_table" => (Lay::Table, "Верстак", "minecraft:crafting"),
-        "minecraft:chest" | "minecraft:trapped_chest" => (Lay::Chest, "Сундук", "minecraft:generic_9x3"),
-        "minecraft:barrel" => (Lay::Chest, "Бочка", "minecraft:generic_9x3"),
-        "minecraft:furnace" => (Lay::Furnace(Fk::Furnace), "Печь", "minecraft:furnace"),
-        "minecraft:smoker" => (Lay::Furnace(Fk::Smoker), "Коптильня", "minecraft:smoker"),
-        "minecraft:blast_furnace" => (Lay::Furnace(Fk::Blast), "Плавильная печь", "minecraft:blast_furnace"),
-        _ => return false,
+    let Some(menu) = blockinv::menu_for(g, slot, pos, state) else { return false };
+    let blockinv::Menu { lay, title, menu, src } = match menu {
+        blockinv::Opened::Blocked => return true,
+        blockinv::Opened::Menu(m) => m,
     };
     let mut st = lock_state();
     sweep(&mut st, g);
@@ -177,8 +181,15 @@ pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool 
         close_open(g, slot, &mut st, false);
     }
     match lay {
-        Lay::Chest => {
-            st.chests.entry(pos).or_insert_with(|| vec![Stack::EMPTY; 27]);
+        Lay::Store { n, .. } => {
+            for (i, p) in src_blocks(src).into_iter().enumerate() {
+                let len = if matches!(src, Src::Two(..)) { n as usize / 2 } else { n as usize };
+                let _ = i;
+                st.chests.entry(p).or_insert_with(|| vec![Stack::EMPTY; len]);
+            }
+            if let Src::Ender(u) = src {
+                st.ender.entry(u).or_insert_with(|| vec![Stack::EMPTY; 27]);
+            }
         }
         Lay::Furnace(fk) => {
             let f = st.furnaces.entry(pos).or_insert_with(|| Furnace::new(fk));
@@ -191,13 +202,15 @@ pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool 
     st.next_window = st.next_window % 100 + 1;
     let window = st.next_window;
     let menu_id = rine_data::get().registries.id("minecraft:menu", menu).unwrap_or(0) as i32;
-    let mut o = Open { eid, window, state_id: 0, lay, pos, grid: [Stack::EMPTY; 9] };
-    let container = container_items(&st, lay, pos, &o.grid);
+    let mut o = Open { eid, window, state_id: 0, lay, pos, src, grid: [Stack::EMPTY; 9] };
+    let container = container_items(&st, lay, src, &o.grid);
+    let lids = blockinv::lid_blocks(pos, src);
+    let before: Vec<usize> = lids.iter().map(|b| openers(&st.open, *b)).collect();
     let Some(p) = g.players.get_mut(slot).and_then(|p| p.as_mut()) else { return false };
     p.send(packet(C_OPEN_SCREEN, |b| {
         b.w_varint(window);
         b.w_varint(menu_id);
-        out::write_text(b, &Text::plain(title));
+        out::write_text(b, &title);
     }));
     let win = load(&p.inv, lay, &container);
     o.state_id = bump(0);
@@ -209,24 +222,72 @@ pub fn open_block(g: &mut Game, slot: usize, pos: BlockPos, state: u16) -> bool 
             }
         }
     }
+    // spectators look inside without moving the lid
+    let spectator = p.gamemode == 3;
+    let is_store = matches!(lay, Lay::Store { .. });
     st.open.insert(slot, o);
+    let after: Vec<usize> = lids.iter().map(|b| openers(&st.open, *b)).collect();
+    drop(st);
+    if is_store && !spectator {
+        for (i, b) in lids.iter().enumerate() {
+            blockinv::lid(g, *b, before[i], after[i]);
+        }
+    }
     super::redstone::viewers_changed(&mut g.world, pos);
+    if let Src::Two(a, b) = src {
+        super::redstone::viewers_changed(&mut g.world, if a == pos { b } else { a });
+    }
     true
 }
 
 /// Called once per tick. Advances every furnace that holds items or fuel;
 /// does nothing when no furnace is tracked.
-pub fn tick(g: &mut Game) {
+pub fn tick(g: &mut Game, runs: bool) {
     let mut st = lock_state();
+    // blocks whose block entity went away without a drop (/setblock, /fill)
+    let gone: Vec<BlockPos> = std::mem::take(&mut g.world.be_removed);
+    for p in gone {
+        st.chests.remove(&p);
+        st.furnaces.remove(&p);
+        if st.hoppers.remove(&p).is_some() {
+            st.hopper_order.retain(|h| *h != p);
+        }
+        st.dirty.remove(&p);
+    }
+    for p in std::mem::take(&mut g.world.be_added) {
+        let state = g.world.get_block(p.x, p.y, p.z);
+        if rine_data::get().blocks.block_of(state).name == "minecraft:hopper" {
+            st.chests.entry(p).or_insert_with(|| vec![Stack::EMPTY; 5]);
+            blockinv::add_hopper(&mut st, p, blockinv::Hopper { cooldown: -1, ticked: 0 });
+        }
+    }
+    let mut changed: Vec<BlockPos> = Vec::new();
+    if runs {
+        blockinv::tick_hoppers(g, &mut st, &mut changed);
+    }
+    changed.sort_unstable_by_key(|p| (p.x, p.y, p.z));
+    changed.dedup();
+    for p in &changed {
+        refresh_viewers(g, &mut st, *p);
+    }
+    for p in changed {
+        super::redstone::container_changed(&mut g.world, p);
+    }
+    furnace_tick(g, &mut st);
+    blockinv::flush(&mut st, &mut g.world);
+}
+
+fn furnace_tick(g: &mut Game, st: &mut State) {
     if st.furnaces.is_empty() {
         return;
     }
-    sweep(&mut st, g);
+    sweep(st, g);
     let blocks = &rine_data::get().blocks;
     let mut updates: Vec<(BlockPos, Vec<(usize, Stack)>, Vec<(i32, i32)>)> = Vec::new();
     let mut lit: Vec<(BlockPos, u16, bool)> = Vec::new();
     let mut gone: Vec<BlockPos> = Vec::new();
     let mut idle: Vec<BlockPos> = Vec::new();
+    let mut st_dirty: Vec<BlockPos> = Vec::new();
     for (&pos, f) in st.furnaces.iter_mut() {
         if !g.world.chunks.contains_key(&ChunkPos::new(pos.x >> 4, pos.z >> 4)) {
             continue;
@@ -245,6 +306,7 @@ pub fn tick(g: &mut Game) {
         let data = furnace_data(f);
         let data_changed: Vec<(i32, i32)> = (0..4).filter(|&i| data[i] != f.sent_data[i]).map(|i| (i as i32, data[i])).collect();
         if !items_changed.is_empty() || !data_changed.is_empty() {
+            st_dirty.push(pos);
             f.sent_items = f.items;
             f.sent_data = data;
             updates.push((pos, items_changed, data_changed));
@@ -253,6 +315,7 @@ pub fn tick(g: &mut Game) {
             idle.push(pos);
         }
     }
+    st.dirty.extend(st_dirty);
     for (pos, cur, want) in lit {
         let v = if want { "true" } else { "false" };
         if let Some(ns) = blocks.with_prop(cur, "lit", v) {
@@ -260,8 +323,8 @@ pub fn tick(g: &mut Game) {
         }
     }
     for pos in gone {
-        for v in viewers_at(&st, pos) {
-            close_open(g, v, &mut st, true);
+        for v in viewers_at(st, pos) {
+            close_open(g, v, st, true);
         }
         if let Some(f) = st.furnaces.remove(&pos) {
             drop_at(g, pos, &f.items);
@@ -305,6 +368,8 @@ pub fn block_removed(g: &mut Game, pos: BlockPos, _old_state: u16) {
     if let Some(f) = st.furnaces.remove(&pos) {
         drops.extend(f.items);
     }
+    st.hoppers.remove(&pos);
+    st.dirty.remove(&pos);
     drop(st);
     drop_at(g, pos, &drops);
 }
@@ -326,8 +391,9 @@ pub enum Lay {
     Inv,
     /// Crafting table, 3x3 grid.
     Table,
-    /// generic_9x3: chest, trapped chest, barrel.
-    Chest,
+    /// A plain slot container of `n` slots (chest 27, double chest 54,
+    /// dispenser / dropper 9, hopper 5); `shulker` rejects shulker boxes.
+    Store { n: u8, shulker: bool },
     Furnace(Fk),
 }
 
@@ -336,7 +402,7 @@ impl Lay {
     pub fn size(self) -> usize {
         match self {
             Lay::Inv | Lay::Table => 46,
-            Lay::Chest => 63,
+            Lay::Store { n, .. } => n as usize + 36,
             Lay::Furnace(_) => 39,
         }
     }
@@ -356,7 +422,7 @@ impl Lay {
         match self {
             Lay::Inv | Lay::Table => Some(0),
             Lay::Furnace(_) => Some(2),
-            Lay::Chest => None,
+            Lay::Store { .. } => None,
         }
     }
     fn craft(self) -> bool {
@@ -378,7 +444,7 @@ impl Lay {
         match self {
             Lay::Inv => 0,
             Lay::Table => 9,
-            Lay::Chest => 27,
+            Lay::Store { n, .. } => n as usize,
             Lay::Furnace(_) => 3,
         }
     }
@@ -387,7 +453,7 @@ impl Lay {
         match self {
             Lay::Inv => Some(i),
             Lay::Table => (9..=44).contains(&i).then(|| i + 1),
-            Lay::Chest => (9..=44).contains(&i).then(|| i + 18),
+            Lay::Store { n, .. } => (9..=44).contains(&i).then(|| i - 9 + n as usize),
             Lay::Furnace(_) => (9..=44).contains(&i).then(|| i - 6),
         }
     }
@@ -396,19 +462,57 @@ impl Lay {
         match self {
             Lay::Inv => Some(w),
             Lay::Table => (10..46).contains(&w).then(|| w - 1),
-            Lay::Chest => (27..63).contains(&w).then(|| w - 18),
+            Lay::Store { n, .. } => (n as usize..n as usize + 36).contains(&w).then(|| w - n as usize + 9),
             Lay::Furnace(_) => (3..39).contains(&w).then(|| w + 6),
         }
     }
 }
 
 #[derive(Default)]
-struct State {
+pub(super) struct State {
     next_window: i32,
     open: AHashMap<usize, Open>,
     drags: AHashMap<usize, Drag>,
-    chests: AHashMap<BlockPos, Vec<Stack>>,
-    furnaces: AHashMap<BlockPos, Furnace>,
+    /// Slot containers by block (chest halves, barrels, shulker boxes,
+    /// dispensers, droppers, hoppers). Loaded with their chunk.
+    pub(super) chests: AHashMap<BlockPos, Vec<Stack>>,
+    pub(super) furnaces: AHashMap<BlockPos, Furnace>,
+    /// Hopper cooldown / last tick, by block, ticked in `hopper_order`
+    /// (load / placement order, like the level's block entity tickers).
+    pub(super) hoppers: AHashMap<BlockPos, super::blockinv::Hopper>,
+    pub(super) hopper_order: Vec<BlockPos>,
+    /// Ender chest contents per player.
+    pub(super) ender: AHashMap<Uuid, Vec<Stack>>,
+    /// Containers changed since their block entity NBT was last written.
+    pub(super) dirty: AHashSet<BlockPos>,
+}
+
+/// Where the container slots of an open window live.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Src {
+    None,
+    One(BlockPos),
+    /// Double chest: the first half (top rows), then the second.
+    Two(BlockPos, BlockPos),
+    Ender(Uuid),
+}
+
+impl Src {
+    fn covers(self, p: BlockPos) -> bool {
+        match self {
+            Src::One(a) => a == p,
+            Src::Two(a, b) => a == p || b == p,
+            _ => false,
+        }
+    }
+    fn overlaps(self, o: Src) -> bool {
+        match (self, o) {
+            (Src::Ender(a), Src::Ender(b)) => a == b,
+            (Src::One(a), x) | (x, Src::One(a)) => x.covers(a),
+            (Src::Two(a, b), x) => x.covers(a) || x.covers(b),
+            _ => false,
+        }
+    }
 }
 
 /// A non-inventory window open by one player.
@@ -417,25 +521,27 @@ struct Open {
     window: i32,
     state_id: i32,
     lay: Lay,
+    /// The clicked block (lid animation, distance checks).
     pos: BlockPos,
+    src: Src,
     /// Crafting table grid (per player; chests and furnaces keep theirs in `State`).
     grid: [Stack; 9],
 }
 
 /// Furnace block entity state, keyed by block position.
-struct Furnace {
-    kind: Fk,
-    items: [Stack; 3],
-    burn_left: i32,
-    burn_total: i32,
-    cook: i32,
-    cook_total: i32,
+pub(super) struct Furnace {
+    pub(super) kind: Fk,
+    pub(super) items: [Stack; 3],
+    pub(super) burn_left: i32,
+    pub(super) burn_total: i32,
+    pub(super) cook: i32,
+    pub(super) cook_total: i32,
     sent_items: [Stack; 3],
     sent_data: [i32; 4],
 }
 
 impl Furnace {
-    fn new(kind: Fk) -> Self {
+    pub(super) fn new(kind: Fk) -> Self {
         Furnace {
             kind,
             items: [Stack::EMPTY; 3],
@@ -517,9 +623,16 @@ pub struct Fx {
 /// Comparator reading of a stored container (vanilla
 /// `AbstractContainerMenu.getRedstoneSignalFromContainer`). None when the
 /// position holds no stored container.
-pub fn analog_signal(pos: BlockPos) -> Option<u8> {
+pub fn analog_signal(pos: BlockPos, state: u16) -> Option<u8> {
     let st = lock_state();
     if let Some(c) = st.chests.get(&pos) {
+        if let Some(partner) = blockinv::chest_partner(pos, state) {
+            if let Some(p) = st.chests.get(&partner) {
+                let mut all = c.clone();
+                all.extend_from_slice(p);
+                return Some(signal_of(&all));
+            }
+        }
         Some(signal_of(c))
     } else {
         st.furnaces.get(&pos).map(|f| signal_of(&f.items))
@@ -547,12 +660,26 @@ pub fn signal_of(items: &[Stack]) -> u8 {
 /// Players with the container at `pos` open (trapped chest output).
 pub fn viewers_at_pos(pos: BlockPos) -> u8 {
     let st = lock_state();
-    st.open.values().filter(|o| o.pos == pos && o.lay == Lay::Chest).count().min(255) as u8
+    openers(&st.open, pos).min(255) as u8
 }
 
-fn lock_state() -> MutexGuard<'static, State> {
+pub(super) fn lock_state() -> MutexGuard<'static, State> {
     static STATE: OnceLock<Mutex<State>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(State::default())).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Players with a store window on the block at `pos` (both halves count
+/// for a double chest; an ender chest counts at the clicked block).
+fn openers(open: &AHashMap<usize, Open>, pos: BlockPos) -> usize {
+    open.values().filter(|o| matches!(o.lay, Lay::Store { .. }) && (o.pos == pos || o.src.covers(pos))).count()
+}
+
+pub(super) fn is_shulker_box(item: u32) -> bool {
+    item_name(item).ends_with("shulker_box")
+}
+
+pub(super) fn is_fuel(item: u32) -> bool {
+    fuel_time(item) > 0
 }
 
 /// Drops entries whose player slot no longer holds the same entity.
@@ -568,12 +695,54 @@ fn bump(s: i32) -> i32 {
     s.wrapping_add(1) & 0x7FFF
 }
 
-fn container_items(st: &State, lay: Lay, pos: BlockPos, grid: &[Stack; 9]) -> Vec<Stack> {
+fn container_items(st: &State, lay: Lay, src: Src, grid: &[Stack; 9]) -> Vec<Stack> {
     match lay {
         Lay::Inv => Vec::new(),
         Lay::Table => grid.to_vec(),
-        Lay::Chest => st.chests.get(&pos).cloned().unwrap_or_else(|| vec![Stack::EMPTY; 27]),
-        Lay::Furnace(_) => st.furnaces.get(&pos).map_or_else(|| vec![Stack::EMPTY; 3], |f| f.items.to_vec()),
+        Lay::Store { n, .. } => read_src(st, src, n as usize),
+        Lay::Furnace(_) => match src {
+            Src::One(pos) => st.furnaces.get(&pos).map_or_else(|| vec![Stack::EMPTY; 3], |f| f.items.to_vec()),
+            _ => vec![Stack::EMPTY; 3],
+        },
+    }
+}
+
+/// Slots of a store source (`n` = total window container slots).
+pub(super) fn read_src(st: &State, src: Src, n: usize) -> Vec<Stack> {
+    let part = |p: BlockPos, len: usize| st.chests.get(&p).cloned().unwrap_or_else(|| vec![Stack::EMPTY; len]);
+    let mut v = match src {
+        Src::One(p) => part(p, n),
+        Src::Two(a, b) => {
+            let mut v = part(a, n / 2);
+            v.resize(n / 2, Stack::EMPTY);
+            v.extend(part(b, n / 2));
+            v
+        }
+        Src::Ender(u) => st.ender.get(&u).cloned().unwrap_or_else(|| vec![Stack::EMPTY; 27]),
+        Src::None => Vec::new(),
+    };
+    v.resize(n, Stack::EMPTY);
+    v
+}
+
+/// Writes a store source back and marks its blocks dirty.
+pub(super) fn write_src(st: &mut State, src: Src, items: &[Stack]) {
+    match src {
+        Src::One(p) => {
+            st.chests.insert(p, items.to_vec());
+            st.dirty.insert(p);
+        }
+        Src::Two(a, b) => {
+            let h = items.len() / 2;
+            st.chests.insert(a, items[..h].to_vec());
+            st.chests.insert(b, items[h..].to_vec());
+            st.dirty.insert(a);
+            st.dirty.insert(b);
+        }
+        Src::Ender(u) => {
+            st.ender.insert(u, items.to_vec());
+        }
+        Src::None => {}
     }
 }
 
@@ -618,13 +787,13 @@ fn container_of(lay: Lay, win: &[Stack]) -> Vec<Stack> {
     win[off..off + lay.container_len()].to_vec()
 }
 
-fn resync(g: &mut Game, slot: usize, st: &mut State) {
+pub(super) fn resync(g: &mut Game, slot: usize, st: &mut State) {
     let Some(p) = g.players.get_mut(slot).and_then(|p| p.as_mut()) else { return };
-    let open = st.open.get(&slot).map(|o| (o.lay, o.pos, o.grid, o.window));
+    let open = st.open.get(&slot).map(|o| (o.lay, o.src, o.grid, o.window));
     let pk = match open {
         None => p.inventory_packet(),
-        Some((lay, pos, grid, window)) => {
-            let container = container_items(st, lay, pos, &grid);
+        Some((lay, src, grid, window)) => {
+            let container = container_items(st, lay, src, &grid);
             let win = load(&p.inv, lay, &container);
             match st.open.get_mut(&slot) {
                 Some(o) => {
@@ -638,22 +807,29 @@ fn resync(g: &mut Game, slot: usize, st: &mut State) {
     p.send(pk);
 }
 
-/// Notifies the other viewers of a chest or furnace about changed slots.
-fn notify_viewers(g: &mut Game, st: &mut State, acting: usize, lay: Lay, pos: BlockPos, before: &[Stack], after: &[Stack]) {
-    let changed: Vec<usize> = (0..after.len()).filter(|&i| before.get(i) != Some(&after[i])).collect();
-    if changed.is_empty() {
-        return;
+/// Resends the window of every other player looking at the same slots
+/// (a double chest and one of its halves share theirs).
+pub(super) fn notify_viewers(g: &mut Game, st: &mut State, acting: usize, src: Src) {
+    let others: Vec<usize> = st.open.iter().filter(|(s, o)| **s != acting && o.src.overlaps(src)).map(|(s, _)| *s).collect();
+    for s in others {
+        resync(g, s, st);
     }
-    let off = lay.container_offset();
-    for (slot, o) in st.open.iter_mut() {
-        if *slot == acting || o.pos != pos || o.lay != lay {
-            continue;
-        }
-        let Some(p) = g.players.get_mut(*slot).and_then(|p| p.as_mut()) else { continue };
-        for &i in &changed {
-            o.state_id = bump(o.state_id);
-            p.send(out::container_slot(o.window, o.state_id, (i + off) as i16, &after[i]));
-        }
+}
+
+/// Block positions a source stores its slots in.
+pub(super) fn src_blocks(src: Src) -> Vec<BlockPos> {
+    match src {
+        Src::One(a) => vec![a],
+        Src::Two(a, b) => vec![a, b],
+        _ => Vec::new(),
+    }
+}
+
+/// Every window showing slots stored at `pos` (hoppers and droppers changed it).
+pub(super) fn refresh_viewers(g: &mut Game, st: &mut State, pos: BlockPos) {
+    let v: Vec<usize> = st.open.iter().filter(|(_, o)| o.src.covers(pos)).map(|(s, _)| *s).collect();
+    for s in v {
+        resync(g, s, st);
     }
 }
 
@@ -691,9 +867,21 @@ fn return_to_player(g: &mut Game, slot: usize, mut items: Vec<Stack>, extra: Vec
 }
 
 fn close_open(g: &mut Game, slot: usize, st: &mut State, notify: bool) {
+    let lids = st.open.get(&slot).map(|o| blockinv::lid_blocks(o.pos, o.src)).unwrap_or_default();
+    let before: Vec<usize> = lids.iter().map(|b| openers(&st.open, *b)).collect();
     let Some(o) = st.open.remove(&slot) else { return };
-    if o.lay == Lay::Chest {
+    if let Lay::Store { .. } = o.lay {
+        let spectator = g.player(slot).is_some_and(|p| p.gamemode == 3);
+        if !spectator {
+            for (i, b) in lids.iter().enumerate() {
+                let after = openers(&st.open, *b);
+                blockinv::lid(g, *b, before[i], after);
+            }
+        }
         super::redstone::viewers_changed(&mut g.world, o.pos);
+        if let Src::Two(a, b) = o.src {
+            super::redstone::viewers_changed(&mut g.world, if a == o.pos { b } else { a });
+        }
     }
     st.drags.remove(&slot);
     let items = if o.lay == Lay::Table { o.grid.to_vec() } else { Vec::new() };
@@ -868,6 +1056,7 @@ fn may_place(lay: Lay, w: usize, item: u32) -> bool {
     match lay {
         Lay::Inv if (5..=8).contains(&w) => armor_slot(item) == Some(w),
         Lay::Furnace(_) if w == 1 => fuel_time(item) > 0,
+        Lay::Store { shulker: true, .. } if w < 27 => !is_shulker_box(item),
         _ => true,
     }
 }
@@ -1326,11 +1515,12 @@ fn route(lay: Lay, win: &mut [Stack], w: usize, s: &mut Stack) -> bool {
             }
             mv(lay, win, s, 10, 46, false)
         }
-        Lay::Chest => {
-            if w < 27 {
-                mv(lay, win, s, 27, 63, true)
+        Lay::Store { n, .. } => {
+            let n = n as usize;
+            if w < n {
+                mv(lay, win, s, n, n + 36, true)
             } else {
-                mv(lay, win, s, 0, 27, false)
+                mv(lay, win, s, 0, n, false)
             }
         }
         Lay::Furnace(fk) => {
@@ -1385,7 +1575,7 @@ fn mv(lay: Lay, win: &mut [Stack], s: &mut Stack, start: usize, end: usize, back
         }
         if win[i].is_empty() && may_place(lay, i, item) {
             let n = max_for(lay, i, item).min(s.count);
-            win[i] = Stack::new(item, n);
+            win[i] = s.with_count(n);
             s.count -= n;
             moved = true;
         }
@@ -1803,13 +1993,38 @@ mod tests {
     }
 }
 
-/// Chest / barrel contents at `pos` (`None` when no inventory is kept),
-/// for `/data` and other commands.
-pub fn chest_items(pos: BlockPos) -> Option<Vec<Stack>> {
-    lock_state().chests.get(&pos).cloned()
+/// Ender chest contents of a player (27 slots).
+pub fn ender_items(uuid: Uuid) -> Vec<Stack> {
+    lock_state().ender.get(&uuid).cloned().unwrap_or_else(|| vec![Stack::EMPTY; 27])
 }
 
-/// Replace chest / barrel contents (`/data merge block`, `/item`).
-pub fn set_chest_items(pos: BlockPos, items: Vec<Stack>) {
-    lock_state().chests.insert(pos, items);
+pub fn set_ender(uuid: Uuid, items: Vec<Stack>) {
+    lock_state().ender.insert(uuid, items);
+}
+
+/// Slot contents of the container block at `pos` (`None` when it holds
+/// none), for `/data`, `/item` and `/loot`.
+pub fn block_items(pos: BlockPos) -> Option<Vec<Stack>> {
+    let st = lock_state();
+    if let Some(c) = st.chests.get(&pos) {
+        return Some(c.clone());
+    }
+    st.furnaces.get(&pos).map(|f| f.items.to_vec())
+}
+
+/// Replaces the slots of the container block at `pos` (`/data merge block`,
+/// `/item`); open windows and comparators see the change.
+pub fn set_block_items(g: &mut Game, pos: BlockPos, items: Vec<Stack>) {
+    let mut st = lock_state();
+    if let Some(f) = st.furnaces.get_mut(&pos) {
+        for (i, s) in items.iter().take(3).enumerate() {
+            f.items[i] = *s;
+        }
+    } else {
+        st.chests.insert(pos, items);
+    }
+    st.dirty.insert(pos);
+    refresh_viewers(g, &mut st, pos);
+    drop(st);
+    super::redstone::container_changed(&mut g.world, pos);
 }

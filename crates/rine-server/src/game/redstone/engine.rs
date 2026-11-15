@@ -77,6 +77,10 @@ pub trait Lvl {
     fn chest_viewers(&self, p: BlockPos) -> u8;
     /// Uniform in [0, 1).
     fn rand(&mut self) -> f32;
+    /// `DispenserBlock.dispenseFrom` (the default: an empty dispenser clicks).
+    fn dispense(&mut self, p: BlockPos, _st: u16) {
+        self.level_event(1001, p, 0);
+    }
     /// Custom block hooks (command blocks...). Return true when handled.
     fn hook_neighbor(&mut self, _rs: &mut Rs, _p: BlockPos, _st: u16) -> bool {
         false
@@ -1089,10 +1093,7 @@ fn tick_block<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
                 set_block(rs, l, pos, set(st, P::Power, 0), fl::ALL, UPDATE_LIMIT);
             }
         }
-        K::Dispenser | K::Dropper => {
-            // no dispenser inventories yet: vanilla `dispenseFrom` with an empty inventory
-            l.level_event(1001, pos, 0);
-        }
+        K::Dispenser | K::Dropper => l.dispense(pos, st),
         _ => {}
     }
 }

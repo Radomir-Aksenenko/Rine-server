@@ -312,7 +312,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         return;
     }
     // don't place blocks inside players
-    let st = super::place::placement_state(g, place_state, target, face, cursor, yaw, pitch).map(|st| super::redstone::placement_state(g, target, st));
+    let st = super::place::placement_state(g, place_state, target, face, cursor, yaw, pitch).map(|st| super::redstone::placement_state(g, target, st)).map(|st| super::blockinv::chest_placement(g, st, target, face, sneaking));
     let Some(st) = st else {
         resync(g, slot, target, seq);
         return;

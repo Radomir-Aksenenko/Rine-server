@@ -58,6 +58,11 @@ fn check(g: &mut Game, pos: BlockPos) -> bool {
     if b.is_air(st) {
         return false;
     }
+    // chests join and split with their neighbours (`ChestBlock.updateShape`)
+    if let Some(ns) = super::blockinv::chest_update(g, pos, st) {
+        g.world.set_block(pos, ns);
+        return true;
+    }
     // grass_block / podzol / mycelium: snowy follows the block above
     if let Some(cur) = b.get_prop(st, "snowy") {
         let above = g.world.get_block(pos.x, pos.y + 1, pos.z);

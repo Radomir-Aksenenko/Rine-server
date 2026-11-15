@@ -17,6 +17,8 @@ pub mod loot;
 pub mod place;
 pub mod plugins;
 pub mod containers;
+pub mod blockent;
+pub mod blockinv;
 pub mod survival;
 pub mod actions;
 pub mod durability;
@@ -251,6 +253,9 @@ impl Game {
 
         // 1. world: finished chunk loads
         let loaded = self.world.collect_loaded(self.tick);
+        for &cp in &loaded {
+            blockinv::chunk_loaded(self, cp);
+        }
         if !loaded.is_empty() {
             for p in self.players.iter_mut().flatten() {
                 p.stream_dirty = true;
@@ -284,7 +289,7 @@ impl Game {
         }
         mark(1, &mut t);
 
-        super::game::containers::tick(self);
+        super::game::containers::tick(self, runs);
         super::game::survival::tick(self);
         interact::dig_tick(self);
         mark(2, &mut t);
