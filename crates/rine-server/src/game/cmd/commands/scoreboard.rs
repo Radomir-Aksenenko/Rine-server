@@ -1692,30 +1692,30 @@ fn players_list_target(x: &mut Ctx) -> CmdResult<i32> {
 }
 
 /// `ScoreboardCommand.performOperation` operator semantics.
-fn apply_op(op: Operation, a: i32, b: i32) -> (i32, Option<i32>) {
-    match op {
+fn apply_op(op: Operation, a: i32, b: i32) -> CmdResult<(i32, Option<i32>)> {
+    let div0 = || rine_command::CmdError::key("arguments.operation.div0");
+    Ok(match op {
         Operation::Assign => (b, None),
         Operation::Add => (a.wrapping_add(b), None),
         Operation::Sub => (a.wrapping_sub(b), None),
         Operation::Mul => (a.wrapping_mul(b), None),
         Operation::Div => {
             if b == 0 {
-                (a, None)
-            } else {
-                (floor_div(a, b), None)
+                return Err(div0());
             }
+            (floor_div(a, b), None)
         }
         Operation::Mod => {
             if b == 0 {
-                (a, None)
-            } else {
-                (a.rem_euclid(b), None)
+                return Err(div0());
             }
+            // `Mth.positiveModulo` = `Math.floorMod` (sign of the divisor)
+            ((a as i64).rem_euclid(b as i64) as i32 + if b < 0 && (a as i64).rem_euclid(b as i64) != 0 { b } else { 0 }, None)
         }
         Operation::Min => (a.min(b), None),
         Operation::Max => (a.max(b), None),
         Operation::Swap => (b, Some(a)),
-    }
+    })
 }
 
 fn floor_div(a: i32, b: i32) -> i32 {
@@ -1975,7 +1975,7 @@ fn players_operation(x: &mut Ctx) -> CmdResult<i32> {
             let mut sa = acc(x.g, sh, soid);
             let a = acc_value(x.g, &ta);
             let b = acc_value(x.g, &sa);
-            let (na, swap) = apply_op(op, a, b);
+            let (na, swap) = apply_op(op, a, b)?;
             acc_set(x.g, th, &mut ta, na);
             if let Some(sv) = swap {
                 acc_set(x.g, sh, &mut sa, sv);

@@ -177,6 +177,8 @@ impl Game {
     pub fn run(mut self) {
         let pdir = self.shared.config.plugins_dir.clone();
         self.plugins = plugins::start(&pdir);
+        let wdir = self.shared.config.world_dir.clone();
+        cmd::commands::scoreboard::load(&mut self, &wdir);
         // pre-generate the spawn area so the first join is instant
         let sc = ChunkPos::of_block(self.spawn[0] as i32, self.spawn[2] as i32);
         for dx in -6..=6 {
@@ -223,6 +225,7 @@ impl Game {
         playerdata::save_all(&self, true);
         playerdata::flush();
         self.world.save_all();
+            cmd::commands::scoreboard::save(&self, &self.shared.config.world_dir.clone());
         tracing::info!("world saved");
         if let Some(h) = self.plugins.take() {
             h.shutdown();
@@ -309,6 +312,7 @@ impl Game {
         }
         if self.tick % (20 * 60 * 5) == 0 {
             self.world.save_all();
+            cmd::commands::scoreboard::save(&self, &self.shared.config.world_dir.clone());
         }
 
         // 9. disconnects + flush
@@ -585,6 +589,8 @@ impl Game {
         self.by_eid.insert(eid, slot);
         self.players[slot] = Some(p);
         cmd::commands::world::on_join(self, slot);
+        cmd::commands::scoreboard::on_join(self, slot);
+        cmd::commands::bossbar::on_join(self, slot);
         self.stream(slot);
     }
 
