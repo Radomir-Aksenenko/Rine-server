@@ -89,7 +89,43 @@ fn encode(c: &Chunk) -> Vec<u8> {
         }
         o.extend_from_slice(&s.biomes);
     }
+    // block entities (optional trailer; chunks written before it end here)
+    o.extend_from_slice(BE_MARK);
+    o.extend_from_slice(&(c.block_entities.len() as u32).to_le_bytes());
+    for be in &c.block_entities {
+        o.push(be.x);
+        o.extend_from_slice(&be.y.to_le_bytes());
+        o.push(be.z);
+        o.extend_from_slice(&be.type_id.to_le_bytes());
+        match &be.nbt {
+            Some(t) => {
+                o.push(1);
+                t.write_network(&mut o);
+            }
+            None => o.push(0),
+        }
+    }
     o
+}
+
+const BE_MARK: &[u8; 4] = b"BENT";
+
+fn decode_block_entities(c: &mut Chunk, d: &[u8]) -> Option<()> {
+    if d.len() < 8 || &d[..4] != BE_MARK {
+        return None;
+    }
+    let n = u32::from_le_bytes(d[4..8].try_into().ok()?) as usize;
+    let mut r = rine_protocol::Reader::new(&d[8..]);
+    for _ in 0..n {
+        let x = r.u8().ok()?;
+        let y = i16::from_le_bytes(r.bytes(2).ok()?.try_into().ok()?);
+        let z = r.u8().ok()?;
+        let t = r.bytes(4).ok()?;
+        let type_id = u32::from_le_bytes(t.try_into().ok()?);
+        let nbt = if r.u8().ok()? != 0 { rine_protocol::nbt::read::read_network(&mut r).ok()? } else { None };
+        c.block_entities.push(crate::chunk::BlockEntity { x, y, z, type_id, nbt });
+    }
+    Some(())
 }
 
 fn decode(p: ChunkPos, d: &[u8]) -> Option<Chunk> {
@@ -136,8 +172,44 @@ fn decode(p: ChunkPos, d: &[u8]) -> Option<Chunk> {
         i += 64;
         c.sections[sy] = s;
     }
+    if let Some(rest) = d.get(i..) {
+        if decode_block_entities(&mut c, rest).is_none() {
+            c.block_entities.clear();
+        }
+    }
     c.finish_bulk();
     c.dirty = false;
     crate::light::light_chunk(&mut c);
     Some(c)
+}
+
+#[cfg(test)]
+mod be_tests {
+    use super::*;
+    use rine_protocol::nbt::Tag;
+
+    #[test]
+    fn block_entities_round_trip() {
+        rine_data::init();
+        let mut c = Chunk::new(ChunkPos::new(3, -2));
+        let nbt = Tag::compound().with("Command", Tag::String("say hi".into())).with("auto", Tag::Byte(1));
+        c.block_entities.push(crate::chunk::BlockEntity { x: 5, y: -40, z: 15, type_id: 7, nbt: Some(nbt.clone()) });
+        c.block_entities.push(crate::chunk::BlockEntity { x: 0, y: 300, z: 0, type_id: 2, nbt: None });
+        let back = decode(c.pos, &encode(&c)).unwrap();
+        assert_eq!(back.block_entities.len(), 2);
+        let a = &back.block_entities[0];
+        assert_eq!((a.x, a.y, a.z, a.type_id), (5, -40, 15, 7));
+        assert_eq!(a.nbt.as_ref(), Some(&nbt));
+        assert_eq!(back.block_entities[1].y, 300);
+        assert!(back.block_entities[1].nbt.is_none());
+    }
+
+    #[test]
+    fn old_chunks_without_trailer_load() {
+        rine_data::init();
+        let c = Chunk::new(ChunkPos::new(0, 0));
+        let mut raw = encode(&c);
+        raw.truncate(raw.len() - 8); // drop "BENT" + count
+        assert!(decode(c.pos, &raw).unwrap().block_entities.is_empty());
+    }
 }
