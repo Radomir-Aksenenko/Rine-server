@@ -154,8 +154,8 @@ fn filter_ok(g: &Game, eid: i32, f: &Filter) -> bool {
             Some(_) => r.matches(super::commands::experience::level_of(g, eid)),
             None => false,
         },
-        Filter::XRot(r) => r.matches(wrap_degrees(entity_rot(g, eid)[0]) as f64),
-        Filter::YRot(r) => r.matches(wrap_degrees(entity_rot(g, eid)[1]) as f64),
+        Filter::XRot(r) => rot_matches(r, entity_rot(g, eid)[0]),
+        Filter::YRot(r) => rot_matches(r, entity_rot(g, eid)[1]),
         Filter::Scores(list) => {
             let name = scoreboard_name(g, eid);
             list.iter().all(|(obj, r)| match super::commands::scoreboard::score(g, &name, obj) {
@@ -598,4 +598,15 @@ fn resolve_raw(g: &Game, src: &Source, fields: &[(String, Tag)], entity: Option<
     }
     // object / unknown content: pass through unchanged
     Ok(Text { content: Content::Raw(fields.to_vec()), ..Text::empty() })
+}
+
+/// `EntitySelectorParser.createRotationPredicate` (bounds pre-wrapped).
+fn rot_matches(r: &rine_command::args::misc::FloatRange, rot: f32) -> bool {
+    let (min, max) = (r.min.unwrap_or(0.0) as f32, r.max.unwrap_or(359.0) as f32);
+    let rot = wrap_degrees(rot);
+    if min > max {
+        rot >= min || rot <= max
+    } else {
+        rot >= min && rot <= max
+    }
 }

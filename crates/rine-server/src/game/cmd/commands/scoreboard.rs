@@ -8,6 +8,10 @@ use rine_protocol::text::Text;
 
 pub fn register(_c: &mut Commands) {}
 
+/// Objectives, scores, teams, display slots (`ServerScoreboard`).
+#[derive(Default)]
+pub struct State {}
+
 /// `ScoreHolder`: scoreboard name plus the entity it came from (for the
 /// feedback display name).
 #[derive(Debug, Clone, PartialEq)]
