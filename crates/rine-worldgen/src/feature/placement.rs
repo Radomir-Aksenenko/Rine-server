@@ -8,6 +8,7 @@ use super::heightmap::Kind;
 use super::predicate::BlockPredicate;
 use super::rng::WorldgenRng;
 use super::region::Region;
+use crate::overworld::biome::biome_info_noise;
 
 /// `IntProvider`: constant, `UniformInt`, `TrapezoidInt`, `BiasedToBottomInt`.
 #[derive(Clone, Copy, Debug)]
@@ -76,6 +77,11 @@ pub enum Modifier {
     Offset(IntProvider, IntProvider, IntProvider),
     /// `heightmap` (`HeightmapPlacement`): the column's height, when above the build bottom.
     Heightmap(Kind),
+    /// `noise_threshold_count` (`NoiseThresholdCountPlacement`): `below` or `above` by the biome info noise at
+    /// `(x / 200, z / 200)` against `level`.
+    NoiseThresholdCount { level: f64, below: i32, above: i32 },
+    /// `noise_based_count` (`NoiseBasedCountPlacement`): `ceil((noise + offset) * ratio)` at `(x / factor, z / factor)`.
+    NoiseBasedCount { ratio: i32, factor: f64, offset: f64 },
 }
 
 pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
@@ -197,6 +203,22 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
             let dz = sample_int(z, rng);
             out.push((ox + dx, oy + dy, oz + dz));
         }
+        Modifier::NoiseThresholdCount { level, below, above } => {
+            // RepeatingPlacement.count: no random draws; the origin is emitted `count` times.
+            let noise = biome_info_noise(ox as f64 / 200.0, oz as f64 / 200.0) as f64;
+            let count = if noise < *level { *below } else { *above };
+            for _ in 0..count {
+                out.push(origin);
+            }
+        }
+        Modifier::NoiseBasedCount { ratio, factor, offset } => {
+            // (int)Math.ceil((noise + offset) * ratio): Rust's saturating cast matches d2i.
+            let noise = biome_info_noise(ox as f64 / factor, oz as f64 / factor) as f64;
+            let count = ((noise + offset) * *ratio as f64).ceil() as i32;
+            for _ in 0..count {
+                out.push(origin);
+            }
+        }
         Modifier::Heightmap(kind) => {
             // HeightmapPlacement.modify: emit (x, height, z) when height > minY; draws no random numbers.
             let height = region.height_of(*kind, ox, oz);
@@ -279,6 +301,16 @@ pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
             parse_int_provider(&v["z"])?,
         )),
         "minecraft:heightmap" => Ok(Modifier::Heightmap(Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?)),
+        "minecraft:noise_threshold_count" => Ok(Modifier::NoiseThresholdCount {
+            level: v["noise_level"].as_f64().ok_or("noise_level")?,
+            below: v["below_noise"].as_i64().ok_or("below_noise")? as i32,
+            above: v["above_noise"].as_i64().ok_or("above_noise")? as i32,
+        }),
+        "minecraft:noise_based_count" => Ok(Modifier::NoiseBasedCount {
+            ratio: v["noise_to_count_ratio"].as_i64().ok_or("noise_to_count_ratio")? as i32,
+            factor: v["noise_factor"].as_f64().ok_or("noise_factor")?,
+            offset: v["noise_offset"].as_f64().unwrap_or(0.0),
+        }),
         other => Err(format!("unsupported placement modifier {other}")),
     }
 }

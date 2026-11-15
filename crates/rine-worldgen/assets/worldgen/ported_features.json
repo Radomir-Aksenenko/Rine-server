@@ -20,7 +20,9 @@
     "minecraft:height_range",
     "minecraft:biome",
     "minecraft:offset",
-    "minecraft:block_predicate_filter"
+    "minecraft:block_predicate_filter",
+    "minecraft:noise_threshold_count",
+    "minecraft:noise_based_count"
   ],
   "_predicates_comment": "Block predicate types that the port evaluates. A predicate of a block_predicate_filter placement or of a block_column allowed_placement must use only these types (recursively through predicate/predicates).",
   "predicates": [
