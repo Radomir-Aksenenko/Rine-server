@@ -13,7 +13,9 @@ pub mod experience;
 pub mod function;
 pub mod gamemode;
 pub mod gamerule;
+pub mod itemcmd;
 pub mod items;
+pub mod misc;
 pub mod players;
 pub mod random;
 pub mod rine;
@@ -42,6 +44,8 @@ pub fn register_all(c: &mut Commands) {
     bossbar::register(c);
     function::register(c);
     datapack::register(c);
+    itemcmd::register(c);
+    misc::register(c);
     stopwatch::register(c);
     summon::register(c);
     blocks::register(c);
