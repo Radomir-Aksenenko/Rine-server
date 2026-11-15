@@ -325,12 +325,14 @@ fn set_block_slots(g: &mut Game, pos: [i32; 3], items: Vec<Stack>) {
 /// Rarity is not modelled, so every item uses the common colour.
 fn item_display(s: &Stack) -> Text {
     let name = rine_data::get().items.get(s.item).map(|i| i.name.as_str()).unwrap_or("minecraft:air");
-    let inner = Text::key(feedback::item_description_id(name));
+    // `ItemStack.getDisplayName`: the hover name inside an empty component
+    let inner = Text::empty().push(Text::key(feedback::item_description_id(name)));
     let t = Text::tr("chat.square_brackets", vec![inner]);
     if s.is_empty() {
         t
     } else {
-        t.color("white").on_hover(hover_item(name, s.count, None))
+        let comps = (s.damage > 0).then(|| Tag::compound().with("minecraft:damage", Tag::Int(i32::from(s.damage))));
+        t.color("white").on_hover(hover_item(name, s.count, comps))
     }
 }
 
@@ -339,21 +341,39 @@ fn plain_stack(name: &str, plain: bool, count: i32) -> CmdResult<Stack> {
     if !plain {
         return Err(unmodelled("item data components"));
     }
+    stack_with(name, 0, count)
+}
+
+/// `minecraft:damage` is the one component stacks carry; others are not modelled.
+fn damage_component(comps: &[(String, Option<Tag>)]) -> CmdResult<u16> {
+    let mut damage = 0u16;
+    for (k, v) in comps {
+        let k = k.strip_prefix("minecraft:").unwrap_or(k);
+        match (k, v) {
+            ("damage", Some(Tag::Int(d))) => damage = (*d).clamp(0, u16::MAX as i32) as u16,
+            ("damage", None) => damage = 0,
+            _ => return Err(unmodelled("item data components")),
+        }
+    }
+    Ok(damage)
+}
+
+fn stack_with(name: &str, damage: u16, count: i32) -> CmdResult<Stack> {
     let id = items::id(name).ok_or_else(|| CmdError::tr("argument.item.id.invalid", vec![lit(name)]))?;
     let max = max_stack(id);
     if count > max {
         let full = rine_data::get().items.get(id).map(|i| i.name.clone()).unwrap_or_default();
         return Err(CmdError::tr("arguments.item.overstacked", vec![lit(full), lit(max)]));
     }
-    Ok(Stack::new(id, count))
+    Ok(Stack::damaged(id, count, damage))
 }
 
 fn with_item(x: &Ctx) -> CmdResult<Stack> {
-    let (name, plain) = match x.arg("item") {
-        Arg::Item(i) => (i.item.clone(), i.components.is_empty()),
+    let (name, damage) = match x.arg("item") {
+        Arg::Item(i) => (i.item.clone(), damage_component(&i.components)?),
         _ => return Err(CmdError::key("argument.item.id.invalid")),
     };
-    plain_stack(&name, plain, x.int_or("count", 1))
+    stack_with(&name, damage, x.int_or("count", 1))
 }
 
 // ---------------------------------------------------------------------------

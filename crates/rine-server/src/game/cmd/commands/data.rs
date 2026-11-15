@@ -85,15 +85,48 @@ pub fn block_entity_nbt(g: &Game, pos: [i32; 3]) -> Option<Tag> {
     let mut t = be.nbt.clone().unwrap_or_else(Tag::compound);
     let ty = rine_data::get().registries.find("minecraft:block_entity_type").and_then(|r| r.entries.get(be.type_id as usize)).map(|e| e.to_string()).unwrap_or_default();
     if let Tag::Compound(v) = &mut t {
+        // `saveWithFullMetadata`: the block entity's components (empty when none)
+        let comps = v.iter().find(|(k, _)| k == "components").map(|(_, c)| c.clone()).unwrap_or_else(Tag::compound);
         v.retain(|(k, _)| !matches!(k.as_str(), "x" | "y" | "z" | "id" | "components"));
-        v.push(("x".into(), Tag::Int(pos[0])));
-        v.push(("y".into(), Tag::Int(pos[1])));
-        v.push(("z".into(), Tag::Int(pos[2])));
-        v.push(("id".into(), Tag::String(ty)));
+        v.insert(0, ("components".into(), comps));
         if let Some(items) = crate::game::containers::block_items(rine_protocol::buf::BlockPos::new(pos[0], pos[1], pos[2])) {
             v.retain(|(k, _)| k != "Items");
             v.push(("Items".into(), items_tag(&items)));
         }
+        // fields a fresh block entity of this type saves
+        let short = ty.strip_prefix("minecraft:").unwrap_or(&ty);
+        let defaults: &[(&str, fn() -> Tag)] = match short {
+            "chest" | "trapped_chest" | "barrel" | "dispenser" | "dropper" | "crafter" => &[("Items", || Tag::List(Vec::new()))],
+            "hopper" => &[("TransferCooldown", || Tag::Int(-1)), ("Items", || Tag::List(Vec::new()))],
+            "furnace" | "smoker" | "blast_furnace" => &[
+                ("lit_total_time", || Tag::Int(0)),
+                ("cooking_time_spent", || Tag::Int(0)),
+                ("speed_multiplier", || Tag::Float(1.0)),
+                ("cooking_total_time", || Tag::Int(0)),
+                ("Items", || Tag::List(Vec::new())),
+                ("lit_time_remaining", || Tag::Int(0)),
+                ("RecipesUsed", Tag::compound),
+            ],
+            "brewing_stand" => &[
+                ("Fuel", || Tag::Int(0)),
+                ("speed_multiplier", || Tag::Float(1.0)),
+                ("Items", || Tag::List(Vec::new())),
+                ("BrewTime", || Tag::Short(0)),
+                ("total_brew_time", || Tag::Int(0)),
+                ("total_fuel", || Tag::Int(0)),
+            ],
+            _ => &[],
+        };
+        for (k, f) in defaults {
+            if !v.iter().any(|(n, _)| n == k) {
+                v.push((k.to_string(), f()));
+            }
+        }
+        // `saveMetadata` puts the id and position after the data
+        v.push(("id".into(), Tag::String(ty)));
+        v.push(("x".into(), Tag::Int(pos[0])));
+        v.push(("y".into(), Tag::Int(pos[1])));
+        v.push(("z".into(), Tag::Int(pos[2])));
     }
     Some(t)
 }

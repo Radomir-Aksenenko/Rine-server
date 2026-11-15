@@ -1551,7 +1551,8 @@ fn pretty(t: &Tag, depth: u32, out: &mut Vec<Text>) {
                 out.push(Text::plain("}"));
             } else {
                 out.push(Text::plain("{"));
-                for (i, (k, v)) in c.iter().enumerate() {
+                for (i, &j) in java_hash_order(c).iter().enumerate() {
+                    let (k, v) = &c[j];
                     if i > 0 {
                         out.push(Text::plain(", "));
                     }
@@ -1564,6 +1565,23 @@ fn pretty(t: &Tag, depth: u32, out: &mut Vec<Text>) {
             }
         }
     }
+}
+
+/// Iteration order of a `CompoundTag` (a Java `HashMap` filled one key at a
+/// time): by bucket of `String.hashCode` in the table the map grew to, keys
+/// of one bucket in insertion order.
+pub fn java_hash_order(c: &[(String, Tag)]) -> Vec<usize> {
+    let mut cap: usize = 16;
+    while c.len() * 4 > cap * 3 {
+        cap *= 2;
+    }
+    let bucket = |k: &str| {
+        let h = k.encode_utf16().fold(0i32, |h, u| h.wrapping_mul(31).wrapping_add(u as i32)) as u32;
+        ((h ^ (h >> 16)) as usize) & (cap - 1)
+    };
+    let mut idx: Vec<usize> = (0..c.len()).collect();
+    idx.sort_by_key(|&i| bucket(&c[i].0));
+    idx
 }
 
 fn array_open(out: &mut Vec<Text>, prefix: &'static str) {
@@ -1748,6 +1766,20 @@ mod tests {
             let printed = to_snbt(&t);
             assert_eq!(to_snbt(&p(&printed)), printed);
         }
+    }
+
+    #[test]
+    fn java_hash_order_matches_vanilla() {
+        // `/data get block` of a chest on a vanilla 26.3 server; keys in the
+        // order `saveWithFullMetadata` puts them (data first, then id, x, y, z)
+        let keys = ["components", "Items", "id", "x", "y", "z"];
+        let c: Vec<(String, Tag)> = keys.iter().map(|k| (k.to_string(), Tag::Int(0))).collect();
+        let order: Vec<&str> = java_hash_order(&c).into_iter().map(|i| keys[i]).collect();
+        assert_eq!(order, ["components", "x", "y", "Items", "z", "id"]);
+        let keys = ["count", "Slot", "id", "components"];
+        let c: Vec<(String, Tag)> = keys.iter().map(|k| (k.to_string(), Tag::Int(0))).collect();
+        let order: Vec<&str> = java_hash_order(&c).into_iter().map(|i| keys[i]).collect();
+        assert_eq!(order, ["components", "count", "Slot", "id"]);
     }
 
     #[test]
