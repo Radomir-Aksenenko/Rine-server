@@ -5,8 +5,9 @@
 //! The chunk's block entity NBT is the single source of truth (so /data,
 //! /clone and saving see the same state); parsed commands are cached by
 //! the command parse cache, so repeating blocks never re-parse.
-//! Scheduled ticks run in vanilla order (trigger tick, then scheduling
-//! order). Redstone power is read through `neighbor_signal`.
+//! Power and scheduled ticks go through the redstone engine: its
+//! `neighborChanged` hook updates `powered`, block ticks share LevelTicks
+//! with every other block, so nothing is polled per tick.
 
 use crate::game::Game;
 use ahash::AHashSet;
@@ -14,7 +15,6 @@ use rine_protocol::buf::BlockPos;
 use rine_protocol::nbt::Tag;
 use rine_protocol::text::Text;
 use rine_world::ChunkPos;
-use std::collections::BTreeSet;
 
 const KINDS: [&str; 3] = ["command_block", "chain_command_block", "repeating_command_block"];
 
@@ -30,10 +30,6 @@ pub enum Mode {
 pub struct State {
     /// Known command block positions (discovered on use, packet, scans).
     known: AHashSet<[i32; 3]>,
-    /// Scheduled block ticks: (trigger tick, order, pos).
-    ticks: BTreeSet<(u64, u64, [i32; 3])>,
-    scheduled: AHashSet<[i32; 3]>,
-    seq: u64,
 }
 
 /// Parsed block entity (`BaseCommandBlock` + `CommandBlockEntity`).
@@ -248,14 +244,13 @@ fn local_offset_secs() -> i64 {
     0
 }
 
+/// `level.scheduleTick(pos, block, delay)`: a normal-priority block tick in
+/// the redstone engine's LevelTicks, so it orders with every other block.
 fn schedule(g: &mut Game, pos: [i32; 3], delay: u64) {
-    let st = &mut g.cs.cmdblock;
-    if !st.scheduled.insert(pos) {
-        return;
+    let bp = BlockPos::new(pos[0], pos[1], pos[2]);
+    if !crate::game::redstone::has_scheduled_tick(g, bp) {
+        crate::game::redstone::schedule_tick(g, bp, delay as u32, 0);
     }
-    st.seq += 1;
-    let t = g.tick + delay;
-    st.ticks.insert((t, st.seq, pos));
 }
 
 /// `CommandBlockEntity.markConditionMet`.
@@ -405,68 +400,38 @@ fn execute(g: &mut Game, pos: [i32; 3], s: u16, d: &mut Data, has_command: bool)
     }
 }
 
-/// `Level.hasNeighborSignal` for the direct power sources Rine models.
+/// `Level.hasNeighborSignal`, from the redstone engine.
 pub fn neighbor_signal(g: &Game, pos: [i32; 3]) -> bool {
-    const DIRS: [([i32; 3], &str); 6] =
-        [([0, -1, 0], "down"), ([0, 1, 0], "up"), ([0, 0, -1], "north"), ([0, 0, 1], "south"), ([-1, 0, 0], "west"), ([1, 0, 0], "east")];
-    let blocks = &rine_data::get().blocks;
-    DIRS.iter().any(|(d, dname)| {
-        let q = [pos[0] + d[0], pos[1] + d[1], pos[2] + d[2]];
-        let s = g.world.get_block(q[0], q[1], q[2]);
-        let name = blocks.block_of(s).name.as_str();
-        let name = name.strip_prefix("minecraft:").unwrap_or(name);
-        let prop = |k: &str| blocks.get_prop(s, k);
-        // `dname` = direction from this block to the neighbour
-        let opposite = match *dname {
-            "down" => "up",
-            "up" => "down",
-            "north" => "south",
-            "south" => "north",
-            "west" => "east",
-            _ => "west",
-        };
-        match name {
-            "redstone_block" => true,
-            "lever" => prop("powered") == Some("true"),
-            n if n.ends_with("_button") => prop("powered") == Some("true"),
-            n if n.ends_with("pressure_plate") => prop("powered") == Some("true") || prop("power").is_some_and(|p| p != "0"),
-            "redstone_torch" => prop("lit") == Some("true") && *dname != "up",
-            "redstone_wall_torch" => prop("lit") == Some("true") && prop("facing") != Some(dname),
-            "repeater" | "comparator" => prop("powered") == Some("true") && prop("facing") == Some(dname),
-            "observer" => prop("powered") == Some("true") && prop("facing") == Some(opposite),
-            "redstone_wire" => {
-                let powered = prop("power").is_some_and(|p| p != "0");
-                powered && (*dname == "up" || (*dname != "down" && prop(opposite).is_some_and(|c| c != "none")))
-            }
-            "daylight_detector" | "target" | "sculk_sensor" | "calibrated_sculk_sensor" => prop("power").is_some_and(|p| p != "0"),
-            _ => false,
-        }
-    })
+    crate::game::redstone::has_neighbor_signal(g, BlockPos::new(pos[0], pos[1], pos[2]))
 }
 
-/// Per-tick work: power edges of known blocks, scheduled ticks, and a
-/// periodic scan of loaded chunks for command blocks.
+/// `CommandBlock.neighborChanged`.
+fn hook_neighbor(g: &mut Game, pos: BlockPos, _st: u16) {
+    let p = [pos.x, pos.y, pos.z];
+    let powered = neighbor_signal(g, p);
+    set_powered(g, p, powered);
+}
+
+/// `CommandBlock.tick`.
+fn hook_tick(g: &mut Game, pos: BlockPos, _st: u16) {
+    tick_block(g, [pos.x, pos.y, pos.z]);
+}
+
+fn register_hooks() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let h = crate::game::redstone::BlockHooks { neighbor_changed: Some(hook_neighbor), tick: Some(hook_tick) };
+        for k in KINDS {
+            crate::game::redstone::register_hooks(k, h);
+        }
+    });
+}
+
+/// Per-tick work: a periodic scan of loaded chunks for command blocks.
 pub fn tick(g: &mut Game) {
+    register_hooks();
     if g.tick % 20 == 0 {
         scan(g);
-    }
-    let known: Vec<[i32; 3]> = g.cs.cmdblock.known.iter().copied().collect();
-    for pos in known {
-        if !g.world.is_loaded(pos[0], pos[2]) || block_kind(g, pos).is_none() {
-            g.cs.cmdblock.known.remove(&pos);
-            continue;
-        }
-        let p = neighbor_signal(g, pos);
-        set_powered(g, pos, p);
-    }
-    loop {
-        let Some(&first) = g.cs.cmdblock.ticks.iter().next() else { break };
-        if first.0 > g.tick {
-            break;
-        }
-        g.cs.cmdblock.ticks.remove(&first);
-        g.cs.cmdblock.scheduled.remove(&first.2);
-        tick_block(g, first.2);
     }
 }
 

@@ -14,11 +14,11 @@ fn st(s: &str) -> u16 {
     rine_data::get().blocks.parse_state(s).unwrap_or_else(|| panic!("state {s}"))
 }
 
-fn setup(tag: &str) -> Game {
+pub(crate) fn setup(tag: &str) -> Game {
     rine_data::init();
     let dir = std::env::temp_dir().join(format!("rine-rs-{tag}-{}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
-    let config = Config { world_dir: dir.to_string_lossy().into_owned(), plugins_dir: dir.join("plugins").to_string_lossy().into_owned(), ..Config::default() };
+    let config = Config { world_dir: dir.to_string_lossy().into_owned(), plugins_dir: dir.join("plugins").to_string_lossy().into_owned(), enable_command_block: true, ..Config::default() };
     let (new_tx, new_rx) = crossbeam_channel::unbounded();
     let (wake_tx, wake_rx) = crossbeam_channel::bounded::<()>(1);
     let shared = Arc::new(Shared { config, online: AtomicUsize::new(0), new_players: new_tx, wake: wake_tx, config_frames: Vec::new() });
@@ -132,4 +132,45 @@ fn game_wire_lamp_piston_plate() {
     assert!(on(get_at(&g, torch), P::Lit));
     ticks(&mut g, 2);
     assert!(!on(get_at(&g, torch), P::Lit));
+}
+
+#[test]
+fn game_command_block_impulse() {
+    use crate::game::cmd::cmdblock;
+    let mut g = setup("cb");
+    let o = origin(&g);
+    for x in -2..=4 {
+        for z in -2..=4 {
+            put(&mut g, o.offset(x, -1, z), "stone");
+        }
+    }
+    let cb = o.offset(1, 0, 1);
+    put(&mut g, cb, "command_block[facing=up]");
+    ticks(&mut g, 1);
+    let p3 = [cb.x, cb.y, cb.z];
+    let mut d = cmdblock::read(&g, p3).unwrap_or_default();
+    d.command = format!("setblock {} {} {} minecraft:gold_block", cb.x, cb.y + 2, cb.z);
+    cmdblock::write(&mut g, p3, &d);
+    ticks(&mut g, 2);
+    assert!(is_air(get_at(&g, cb.offset(0, 2, 0))), "not run without power");
+
+    // power edge -> one run, one tick later
+    put(&mut g, o.offset(0, 0, 1), "redstone_block");
+    ticks(&mut g, 3);
+    assert_eq!(block_name(get_at(&g, cb.offset(0, 2, 0))), "gold_block");
+    assert!(cmdblock::read(&g, p3).unwrap().powered);
+    assert_eq!(cmdblock::read(&g, p3).unwrap().success_count, 1);
+
+    // staying powered does not run again
+    put(&mut g, cb.offset(0, 2, 0), "air");
+    ticks(&mut g, 3);
+    assert!(is_air(get_at(&g, cb.offset(0, 2, 0))), "impulse runs once per edge");
+
+    // power off, then on again -> runs again
+    put(&mut g, o.offset(0, 0, 1), "air");
+    ticks(&mut g, 2);
+    assert!(!cmdblock::read(&g, p3).unwrap().powered);
+    put(&mut g, o.offset(0, 0, 1), "redstone_block");
+    ticks(&mut g, 3);
+    assert_eq!(block_name(get_at(&g, cb.offset(0, 2, 0))), "gold_block");
 }
