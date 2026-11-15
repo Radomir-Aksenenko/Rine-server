@@ -149,6 +149,12 @@ async fn main() -> Result<()> {
         let mut opts = opts.clone();
         if i == 0 {
             opts.cmds = cfg.cmds.clone();
+            // RINE_CMD_FILE: extra commands, one per line (# comments)
+            if let Ok(f) = std::env::var("RINE_CMD_FILE") {
+                if let Ok(t) = std::fs::read_to_string(f) {
+                    opts.cmds.extend(t.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(|l| l.trim_start_matches('/').to_string()));
+                }
+            }
         }
         let addr = cfg.addr.clone();
         let seconds = cfg.seconds;

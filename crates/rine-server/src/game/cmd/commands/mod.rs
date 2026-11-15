@@ -1,7 +1,10 @@
 //! Executors, one module per vanilla command class
 //! (`net/minecraft/server/commands/*.java`).
 
+pub mod bossbar;
 pub mod data;
+pub mod execute;
+pub mod function;
 pub mod experience;
 pub mod gamemode;
 pub mod gamerule;
@@ -9,6 +12,8 @@ pub mod players;
 pub mod random;
 pub mod rine;
 pub mod scoreboard;
+pub mod stopwatch;
+pub mod summon;
 
 use crate::game::cmd::Commands;
 use crate::game::Game;
@@ -24,6 +29,21 @@ pub fn register_all(c: &mut Commands) {
     random::register(c);
     scoreboard::register(c);
     rine::register(c);
+    execute::register(c);
+    bossbar::register(c);
+    function::register(c);
+    stopwatch::register(c);
+    summon::register(c);
+}
+
+/// State of command subsystems, one field per module that keeps any.
+#[derive(Default)]
+pub struct States {
+    /// Command storage (`/data storage`).
+    pub storage: ahash::AHashMap<String, rine_protocol::nbt::Tag>,
+    pub bossbar: bossbar::State,
+    pub stopwatch: stopwatch::State,
+    pub function: function::State,
 }
 
 /// Change a player's game mode (state, abilities, tab list), no message.

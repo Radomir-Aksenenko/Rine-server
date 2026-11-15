@@ -479,8 +479,18 @@ impl Bot {
             return Ok(());
         };
         println!("[{}] sending command: /{c}", self.name);
+        // command marker in the chat dump (record id u32::MAX) to group replies
+        if let Ok(dir) = std::env::var("RINE_DUMP_DIR") {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(format!("{dir}/{}-chat.bin", self.name)) {
+                let _ = f.write_all(&u32::MAX.to_le_bytes());
+                let _ = f.write_all(&(c.len() as u32).to_le_bytes());
+                let _ = f.write_all(c.as_bytes());
+            }
+        }
         self.send_pkt(wr, pid::S_CHAT_COMMAND, |b| b.w_str(&c)).await?;
-        self.next_cmd_at = (!self.cmds.is_empty()).then(|| TokioInstant::now() + CMD_GAP);
+        let gap = std::env::var("RINE_CMD_GAP_MS").ok().and_then(|v| v.parse().ok()).map(Duration::from_millis).unwrap_or(CMD_GAP);
+        self.next_cmd_at = (!self.cmds.is_empty()).then(|| TokioInstant::now() + gap);
         Ok(())
     }
 

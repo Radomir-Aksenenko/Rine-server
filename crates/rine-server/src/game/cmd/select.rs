@@ -18,12 +18,11 @@ use rine_world::ChunkPos;
 
 /// Coordinates context of a source (anchor applied for `^`).
 pub fn pose(g: &Game, src: &Source) -> SourcePose {
+    // EntityAnchorArgument.Anchor.apply(source): source position, plus the
+    // entity's eye height for EYES
     let anchor_pos = if src.anchor_eyes {
         match src.entity {
-            Some(e) => {
-                let p = entity_pos(g, e).unwrap_or(src.pos);
-                [p[0], p[1] + eye_height(g, e), p[2]]
-            }
+            Some(e) => [src.pos[0], src.pos[1] + eye_height(g, e), src.pos[2]],
             None => src.pos,
         }
     } else {

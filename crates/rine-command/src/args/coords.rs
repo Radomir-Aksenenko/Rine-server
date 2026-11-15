@@ -54,6 +54,88 @@ pub fn mth_cos(deg: f32) -> f32 {
     let i = (((deg * DEG_TO_RAD) as f64 * 10430.378350470453 + 16384.0) as i64 & 65535) as usize;
     SIN_TABLE.with(|t| t[i])
 }
+/// Vanilla `Mth.wrapDegrees(float)`.
+pub fn wrap_degrees(angle: f32) -> f32 {
+    let mut a = angle % 360.0;
+    if a >= 180.0 {
+        a -= 360.0;
+    }
+    if a < -180.0 {
+        a += 360.0;
+    }
+    a
+}
+
+/// Vanilla `Mth.atan2` (table-based approximation).
+pub fn mth_atan2(mut y: f64, mut x: f64) -> f64 {
+    let d2 = x * x + y * y;
+    if d2.is_nan() {
+        return f64::NAN;
+    }
+    let neg_y = y < 0.0;
+    if neg_y {
+        y = -y;
+    }
+    let neg_x = x < 0.0;
+    if neg_x {
+        x = -x;
+    }
+    let steep = y > x;
+    if steep {
+        std::mem::swap(&mut x, &mut y);
+    }
+    let rinv = fast_inv_sqrt(d2);
+    x *= rinv;
+    y *= rinv;
+    let frac_bias = f64::from_bits(4805340802404319232);
+    let yp = frac_bias + y;
+    let index = yp.to_bits() as i32 as usize;
+    let (phi, c_phi) = ATAN_TABS.with(|t| (t.0[index], t.1[index]));
+    let s_phi = yp - frac_bias;
+    let sd = y * c_phi - x * s_phi;
+    let d = (6.0 + sd * sd) * sd * 0.16666666666666666;
+    let mut theta = phi + d;
+    if steep {
+        theta = std::f64::consts::FRAC_PI_2 - theta;
+    }
+    if neg_x {
+        theta = std::f64::consts::PI - theta;
+    }
+    if neg_y {
+        theta = -theta;
+    }
+    theta
+}
+
+fn fast_inv_sqrt(x: f64) -> f64 {
+    let xhalf = 0.5 * x;
+    let i = 6910469410427058090i64 - ((x.to_bits() as i64) >> 1);
+    let x = f64::from_bits(i as u64);
+    x * (1.5 - xhalf * x * x)
+}
+
+thread_local! {
+    static ATAN_TABS: (Vec<f64>, Vec<f64>) = {
+        let mut asin = vec![0.0; 257];
+        let mut cos = vec![0.0; 257];
+        for i in 0..257 {
+            let a = (i as f64 / 256.0).asin();
+            asin[i] = a;
+            cos[i] = a.cos();
+        }
+        (asin, cos)
+    };
+}
+
+/// `CommandSourceStack.facing(Vec3)`: rotation from `from` towards `to`.
+pub fn facing(from: [f64; 3], to: [f64; 3]) -> [f32; 2] {
+    let (xd, yd, zd) = (to[0] - from[0], to[1] - from[1], to[2] - from[2]);
+    let sd = (xd * xd + zd * zd).sqrt();
+    let x_rot = wrap_degrees(-(mth_atan2(yd, sd) * 180.0f32 as f64 / std::f32::consts::PI as f64) as f32);
+    let y_rot = wrap_degrees((mth_atan2(zd, xd) * 180.0f32 as f64 / std::f32::consts::PI as f64) as f32 - 90.0);
+    [x_rot, y_rot]
+}
+
 pub const DEG_TO_RAD: f32 = (std::f64::consts::PI / 180.0) as f32;
 
 thread_local! {

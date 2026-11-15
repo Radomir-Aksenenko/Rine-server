@@ -516,8 +516,85 @@ impl<'a> Ctx<'a> {
             .and_then(|e| self.g.by_eid.get(&e).copied())
             .ok_or_else(|| CmdError::key("permissions.requires.player"))
     }
+    /// `ScoreHolderArgument.getNames` with a wildcard supplier.
+    fn holders_with(&mut self, n: &str, wildcard: bool) -> CmdResult<Vec<commands::scoreboard::Holder>> {
+        use commands::scoreboard::Holder;
+        use rine_command::args::selector::ScoreHolderArg;
+        let arg = match self.arg(n) {
+            Arg::ScoreHolder(h) => (**h).clone(),
+            a => panic!("{n}: not a score holder: {a:?}"),
+        };
+        let v = match arg {
+            ScoreHolderArg::Wildcard => {
+                if wildcard {
+                    commands::scoreboard::tracked_holders(self.g)
+                } else {
+                    Vec::new()
+                }
+            }
+            ScoreHolderArg::Name(name) => vec![Holder::named(name)],
+            ScoreHolderArg::Selector(sel) => {
+                let ents = select::find_entities(self.g, self.src, &sel)?;
+                if ents.is_empty() {
+                    return Err(CmdError::key("argument.entity.notfound.entity"));
+                }
+                ents.into_iter().map(|e| Holder { name: select::scoreboard_name(self.g, e), entity: Some(e) }).collect()
+            }
+        };
+        if v.is_empty() {
+            return Err(CmdError::key("argument.entity.notfound.entity"));
+        }
+        Ok(v)
+    }
+    /// `ScoreHolderArgument.getName` (first of the resolved names).
+    pub fn score_holder(&mut self, n: &str) -> CmdResult<commands::scoreboard::Holder> {
+        Ok(self.holders_with(n, false)?.swap_remove(0))
+    }
+    /// `ScoreHolderArgument.getNames`.
+    pub fn score_holders(&mut self, n: &str) -> CmdResult<Vec<commands::scoreboard::Holder>> {
+        self.holders_with(n, false)
+    }
+    /// `ScoreHolderArgument.getNamesWithDefaultWildcard`.
+    pub fn score_holders_wild(&mut self, n: &str) -> CmdResult<Vec<commands::scoreboard::Holder>> {
+        self.holders_with(n, true)
+    }
+    /// `ObjectiveArgument.getObjective`.
+    pub fn objective(&self, n: &str) -> CmdResult<String> {
+        let name = self.str(n).to_string();
+        if !commands::scoreboard::objective_exists(self.g, &name) {
+            return Err(CmdError::tr("arguments.objective.notFound", vec![lit(&name)]));
+        }
+        Ok(name)
+    }
+    /// `ObjectiveArgument.getWritableObjective`.
+    pub fn writable_objective(&self, n: &str) -> CmdResult<String> {
+        let name = self.objective(n)?;
+        if !commands::scoreboard::objective_writable(self.g, &name) {
+            return Err(CmdError::tr("arguments.objective.readonly", vec![lit(&name)]));
+        }
+        Ok(name)
+    }
     /// `getEntityOrException`.
     pub fn source_entity(&self) -> CmdResult<i32> {
         self.src.entity.filter(|e| select::entity_pos(self.g, *e).is_some()).ok_or_else(|| CmdError::key("permissions.requires.entity"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every registered path exists and has the right node kind; prints
+    /// the executable paths that still have no executor.
+    #[test]
+    fn registry_paths_valid() {
+        rine_data::init();
+        let c = super::Commands::new();
+        let missing = c.missing();
+        let total = c.tree.nodes.iter().filter(|n| n.executable).count();
+        let mut by_cmd: std::collections::BTreeMap<&str, usize> = Default::default();
+        for p in &missing {
+            *by_cmd.entry(p.split(' ').next().unwrap_or("")).or_default() += 1;
+        }
+        println!("executors: {}/{} paths", total - missing.len(), total);
+        println!("missing: {by_cmd:?}");
     }
 }

@@ -78,6 +78,8 @@ pub struct Game {
     /// Per-entity command state (tags, custom name...), players included,
     /// kept out of the hot entity arrays.
     pub ent_meta: AHashMap<i32, cmd::EntMeta>,
+    /// State of command subsystems (scoreboard, bossbars, storage...).
+    pub cs: cmd::commands::States,
     /// Server default game mode (`/defaultgamemode`).
     pub default_gamemode: u8,
     /// Console lines from stdin.
@@ -140,6 +142,7 @@ impl Game {
             exec: Default::default(),
             rules,
             ent_meta: AHashMap::new(),
+            cs: Default::default(),
             default_gamemode,
             console_rx: None,
         }
