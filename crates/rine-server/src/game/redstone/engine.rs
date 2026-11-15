@@ -113,11 +113,31 @@ impl PartialOrd for Tick {
 /// One entry of the collecting neighbor updater.
 #[derive(Clone, Copy, Debug)]
 enum Upd {
-    Shape { dir: u8, nstate: u16, pos: BlockPos, npos: BlockPos, flags: u32, limit: i32 },
-    Simple { pos: BlockPos, block: u16 },
-    Full { pos: BlockPos, state: u16, block: u16, piston: bool },
+    Shape {
+        dir: u8,
+        nstate: u16,
+        pos: BlockPos,
+        npos: BlockPos,
+        flags: u32,
+        limit: i32,
+    },
+    Simple {
+        pos: BlockPos,
+        block: u16,
+    },
+    Full {
+        pos: BlockPos,
+        state: u16,
+        block: u16,
+        piston: bool,
+    },
     /// `skip` 6 = none.
-    Multi { src: BlockPos, block: u16, skip: u8, idx: u8 },
+    Multi {
+        src: BlockPos,
+        block: u16,
+        skip: u8,
+        idx: u8,
+    },
 }
 
 /// `PistonMovingBlockEntity`.
@@ -1873,9 +1893,36 @@ fn ring_bell<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
 /// Instrument names by `NoteBlockInstrument` (block below / mob head above).
 fn instrument_below(st: u16) -> &'static str {
     let n = block_name(st);
-    if n.ends_with("_log") || n.ends_with("_planks") || n.ends_with("_wood") || n.ends_with("_stem") || n.ends_with("_hyphae") || n.ends_with("_fence")
-        || n.ends_with("_fence_gate") || n.ends_with("_door") || n.ends_with("_trapdoor") || n.ends_with("_slab") && n.contains("oak")
-        || matches!(n, "note_block" | "jukebox" | "bookshelf" | "chest" | "trapped_chest" | "crafting_table" | "barrel" | "lectern" | "composter" | "beehive" | "bee_nest" | "loom" | "cartography_table" | "fletching_table" | "smithing_table" | "chiseled_bookshelf" | "daylight_detector")
+    if n.ends_with("_log")
+        || n.ends_with("_planks")
+        || n.ends_with("_wood")
+        || n.ends_with("_stem")
+        || n.ends_with("_hyphae")
+        || n.ends_with("_fence")
+        || n.ends_with("_fence_gate")
+        || n.ends_with("_door")
+        || n.ends_with("_trapdoor")
+        || n.ends_with("_slab") && n.contains("oak")
+        || matches!(
+            n,
+            "note_block"
+                | "jukebox"
+                | "bookshelf"
+                | "chest"
+                | "trapped_chest"
+                | "crafting_table"
+                | "barrel"
+                | "lectern"
+                | "composter"
+                | "beehive"
+                | "bee_nest"
+                | "loom"
+                | "cartography_table"
+                | "fletching_table"
+                | "smithing_table"
+                | "chiseled_bookshelf"
+                | "daylight_detector"
+        )
     {
         return "bass";
     }
@@ -1902,7 +1949,13 @@ fn instrument_below(st: u16) -> &'static str {
         return "guitar";
     }
     let full = rine_data::get().blocks.has(st, rine_data::blocks::flag::TOOL_REQUIRED);
-    if full || n.contains("stone") || n.contains("brick") || n.ends_with("_ore") || n.contains("deepslate") || n.contains("terracotta") || n.contains("quartz")
+    if full
+        || n.contains("stone")
+        || n.contains("brick")
+        || n.ends_with("_ore")
+        || n.contains("deepslate")
+        || n.contains("terracotta")
+        || n.contains("quartz")
         || matches!(n, "netherrack" | "obsidian" | "crying_obsidian" | "bedrock" | "basalt" | "end_stone" | "prismarine" | "magma_block" | "respawn_anchor")
     {
         return "basedrum";
