@@ -181,14 +181,7 @@ fn escape_if_required(s: &str) -> String {
 
 /// `ComponentUtils.formatList` with the gray `, ` separator.
 fn format_list(items: Vec<Text>) -> Text {
-    let mut out = Text::empty();
-    for (i, t) in items.into_iter().enumerate() {
-        if i > 0 {
-            out = out.push(Text::plain(", ").color("gray"));
-        }
-        out = out.push(t);
-    }
-    out
+    crate::game::cmd::feedback::format_list(items, &crate::game::cmd::feedback::list_sep())
 }
 
 fn list_all(x: &mut Ctx) -> CmdResult<i32> {

@@ -34,7 +34,7 @@ pub fn register(c: &mut Commands) {
 /// Rarity is not in the item tables, so every item uses the common colour.
 fn item_display(item: u32) -> Text {
     let name = rine_data::get().items.get(item).map(|i| i.name.as_str()).unwrap_or("minecraft:air");
-    let inner = Text::key(feedback::item_description_id(name));
+    let inner = Text::empty().push(Text::key(feedback::item_description_id(name)));
     Text::tr("chat.square_brackets", vec![inner]).color("white").on_hover(hover_item(name, 1, None))
 }
 

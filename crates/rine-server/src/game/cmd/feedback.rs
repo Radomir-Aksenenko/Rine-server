@@ -208,3 +208,25 @@ pub fn send_failure(g: &mut Game, src: &Source, t: &Text) {
         output_message(g, &src.output, &m);
     }
 }
+
+/// `ComponentUtils.DEFAULT_SEPARATOR`: gray ", ".
+pub fn list_sep() -> Text {
+    Text::plain(", ").color("gray")
+}
+
+/// `ComponentUtils.formatList`: nothing gives an empty component, one
+/// element is returned as is, more become children of an empty root with
+/// `sep` between them.
+pub fn format_list(items: Vec<Text>, sep: &Text) -> Text {
+    if items.len() == 1 {
+        return items.into_iter().next().unwrap();
+    }
+    let mut out = Text::empty();
+    for (i, t) in items.into_iter().enumerate() {
+        if i > 0 {
+            out.extra.push(sep.clone());
+        }
+        out.extra.push(t);
+    }
+    out
+}

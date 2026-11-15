@@ -460,7 +460,7 @@ pub fn report_parse_error(g: &mut Game, src: &Source, e: &CmdError, line: &str) 
         let before = &input[..cursor];
         let nchars = before.chars().count();
         if nchars > 10 {
-            ctx = ctx.push(Text::key("chat.ellipsis"));
+            ctx = ctx.push(Text::plain("..."));
         }
         let start = before.char_indices().nth(nchars.saturating_sub(10)).map(|(i, _)| i).unwrap_or(0);
         let start = if nchars > 10 { start } else { 0 };

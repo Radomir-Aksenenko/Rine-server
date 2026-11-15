@@ -442,6 +442,15 @@ pub fn resolve_message(g: &Game, src: &Source, m: &MessageArg) -> CmdResult<Text
 pub fn text_from_tag(t: &Tag) -> Text {
     match t {
         Tag::String(s) => Text::plain(s.clone()),
+        // primitive translation args (vanilla allows numbers and booleans)
+        Tag::Byte(v) => Text::plain(if *v == 0 { "false".to_string() } else { "true".to_string() }),
+        Tag::Short(v) => Text::plain(v.to_string()),
+        Tag::Int(v) => Text::plain(v.to_string()),
+        Tag::Long(v) => Text::plain(v.to_string()),
+        Tag::Float(v) => Text::plain(rine_command::error::java_double(*v as f64)),
+        Tag::Double(v) => Text::plain(rine_command::error::java_double(*v)),
+        // heterogeneous-list wrapper {"": value}
+        Tag::Compound(f) if f.len() == 1 && f[0].0.is_empty() => text_from_tag(&f[0].1),
         Tag::List(items) => {
             let mut it = items.iter();
             let Some(first) = it.next() else { return Text::empty() };
@@ -522,7 +531,7 @@ pub fn resolve_component(g: &Game, src: &Source, t: &Tag) -> CmdResult<Text> {
 
 pub fn resolve_text(g: &Game, src: &Source, t: &Text, entity: Option<i32>, depth: u32) -> CmdResult<Text> {
     if depth > DEPTH_LIMIT {
-        return Ok(Text::key("chat.ellipsis"));
+        return Ok(Text::plain("..."));
     }
     let mut base = match &t.content {
         Content::Raw(fields) => resolve_raw(g, src, fields, entity, depth + 1)?,

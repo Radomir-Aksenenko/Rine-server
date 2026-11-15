@@ -293,11 +293,10 @@ pub fn resolve_nbt_component(g: &Game, src: &Source, fields: &[(String, Tag)], e
         Some(s) => select::resolve_text(g, src, &select::text_from_tag(s), entity, depth)?,
         None => Text::plain(", "),
     };
-    let mut out = Text::empty();
-    for (i, el) in elements.iter().enumerate() {
-        if i > 0 {
-            out = out.push(sep.clone());
-        }
+    // `NbtContents.resolve`: elements.reduce((l, r) -> l.append(sep).append(r)),
+    // so the first element is the root and inherits nothing from a wrapper.
+    let mut out: Option<Text> = None;
+    for el in elements.iter() {
         let part = if interpret {
             select::resolve_text(g, src, &select::text_from_tag(el), entity, depth)?
         } else if plain {
@@ -305,9 +304,15 @@ pub fn resolve_nbt_component(g: &Game, src: &Source, fields: &[(String, Tag)], e
         } else {
             to_pretty_text(el)
         };
-        out = out.push(part);
+        match &mut out {
+            None => out = Some(part),
+            Some(root) => {
+                root.extra.push(sep.clone());
+                root.extra.push(part);
+            }
+        }
     }
-    Ok(out)
+    Ok(out.unwrap_or_else(Text::empty))
 }
 
 /// `NbtPathArgument.NbtPath.countMatching`.

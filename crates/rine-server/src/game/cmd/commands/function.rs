@@ -644,14 +644,8 @@ fn function_guarded(g: &mut Game, src: &Source, chain: &Arc<Chain>, mods: Mods, 
 
 /// `ComponentUtils.formatList(ids, Component::translationArg)`.
 fn format_list<'a>(ids: impl Iterator<Item = &'a str>) -> Text {
-    let mut t = Text::empty();
-    for (i, id) in ids.enumerate() {
-        if i > 0 {
-            t = t.push(Text::plain(", "));
-        }
-        t = t.push(Text::plain(id));
-    }
-    t
+    let items = ids.map(Text::plain).collect();
+    crate::game::cmd::feedback::format_list(items, &crate::game::cmd::feedback::list_sep())
 }
 
 /// The `arguments` of the executed `function` variant.

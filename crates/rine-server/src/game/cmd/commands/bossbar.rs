@@ -332,15 +332,7 @@ fn boss_of(x: &Ctx, id: &str) -> CmdResult<Boss> {
 }
 
 fn join_texts(items: Vec<Text>) -> Text {
-    let sep = Text::plain(", ").color("gray");
-    let mut t = Text::empty();
-    for (i, it) in items.into_iter().enumerate() {
-        if i > 0 {
-            t = t.push(sep.clone());
-        }
-        t = t.push(it);
-    }
-    t
+    crate::game::cmd::feedback::format_list(items, &crate::game::cmd::feedback::list_sep())
 }
 
 fn list(x: &mut Ctx) -> CmdResult<i32> {

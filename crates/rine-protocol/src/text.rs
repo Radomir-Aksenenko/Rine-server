@@ -161,7 +161,7 @@ impl Text {
                     c.push(("fallback".into(), Tag::String(f.clone())));
                 }
                 if !with.is_empty() {
-                    c.push(("with".into(), Tag::List(with.iter().map(Text::to_nbt_arg).collect())));
+                    c.push(("with".into(), component_list(with)));
                 }
             }
             Content::Keybind(k) => c.push(("keybind".into(), Tag::String(k.clone()))),
@@ -198,23 +198,9 @@ impl Text {
             c.push(("hover_event".into(), (**h).clone()));
         }
         if !self.extra.is_empty() {
-            c.push(("extra".into(), Tag::List(self.extra.iter().map(|e| e.to_nbt_compound()).collect())));
+            c.push(("extra".into(), component_list(&self.extra)));
         }
         Tag::Compound(c)
-    }
-
-    /// Translation arguments: vanilla writes plain literal args as bare
-    /// strings only when every element is one; mixed lists must be
-    /// compounds, so args always go out as compounds unless plain.
-    fn to_nbt_arg(&self) -> Tag {
-        self.to_nbt_compound()
-    }
-
-    fn to_nbt_compound(&self) -> Tag {
-        match self.to_nbt() {
-            Tag::String(s) => Tag::compound().with("text", Tag::String(s)),
-            t => t,
-        }
     }
 
     pub fn to_json(&self) -> String {
@@ -332,4 +318,11 @@ pub fn json_str(s: &str) -> String {
     }
     o.push('"');
     o
+}
+
+/// A component list as vanilla's codec builds it: plain literals are bare
+/// strings, styled ones compounds. The NBT writer wraps a mixed list's
+/// non-compound elements as `{"": value}`, like vanilla's NbtOps.
+fn component_list(items: &[Text]) -> Tag {
+    Tag::List(items.iter().map(Text::to_nbt).collect())
 }

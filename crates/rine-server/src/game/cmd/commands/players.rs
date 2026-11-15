@@ -783,11 +783,8 @@ fn kick_players(x: &mut Ctx, reason: Option<Text>) -> CmdResult<i32> {
 /// `ListPlayersCommand.format`.
 fn list_format(x: &mut Ctx, uuids: bool) -> CmdResult<i32> {
     let slots: Vec<usize> = x.g.players.iter().enumerate().filter(|(_, p)| p.is_some()).map(|(i, _)| i).collect();
-    let mut list = Text::empty();
-    for (i, &slot) in slots.iter().enumerate() {
-        if i > 0 {
-            list = list.push(sep());
-        }
+    let mut items = Vec::with_capacity(slots.len());
+    for &slot in &slots {
         let item = if uuids {
             match x.g.players.get(slot).and_then(|p| p.as_ref()) {
                 Some(p) => Text::tr("commands.list.nameAndId", vec![Text::plain(p.name.clone()), lit(p.uuid)]),
@@ -796,8 +793,9 @@ fn list_format(x: &mut Ctx, uuids: bool) -> CmdResult<i32> {
         } else {
             x.player_name(slot)
         };
-        list = list.push(item);
+        items.push(item);
     }
+    let list = crate::game::cmd::feedback::format_list(items, &sep());
     let n = slots.len();
     let max = x.g.shared.config.max_players;
     x.success(Text::tr("commands.list.players", vec![lit(n), lit(max), list]), false);

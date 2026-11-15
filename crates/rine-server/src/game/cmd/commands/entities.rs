@@ -161,14 +161,8 @@ fn tags_of(g: &Game, eid: i32) -> Vec<String> {
 
 /// `formatList(tags)`: sorted, green names, gray ", " separators.
 fn format_tags(tags: &BTreeSet<String>) -> Text {
-    let mut t = Text::empty();
-    for (i, name) in tags.iter().enumerate() {
-        if i > 0 {
-            t = t.push(Text::plain(", ").color("gray"));
-        }
-        t = t.push(Text::plain(name.clone()).color("green"));
-    }
-    t
+    let items = tags.iter().map(|n| Text::plain(n.clone()).color("green")).collect();
+    crate::game::cmd::feedback::format_list(items, &crate::game::cmd::feedback::list_sep())
 }
 
 /// `Entity.addTag`: false when present or the set is full.
