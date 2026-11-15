@@ -568,6 +568,11 @@ impl Lvl for GameLvl<'_> {
         self.g.cs.world.weather.raining
     }
 
+    fn sky_darken(&self) -> u8 {
+        let w = &self.g.cs.world.weather;
+        crate::game::blocks::sky_darken(self.g.day_time, w.rain_level, w.thunder_level)
+    }
+
     fn thundering(&self) -> bool {
         self.g.cs.world.weather.thundering
     }

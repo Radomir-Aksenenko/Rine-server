@@ -26,6 +26,26 @@ pub mod rng;
 #[cfg(test)]
 pub mod testw;
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sky_darken_follows_day_and_weather() {
+        use super::sky_darken;
+        assert_eq!(sky_darken(6000, 0.0, 0.0), 0);
+        // night: 15 * 0.26666668 = 4 -> darken 11
+        assert_eq!(sky_darken(18000, 0.0, 0.0), 11);
+        // midway down the dusk ramp
+        assert_eq!(sky_darken(12768, 0.0, 0.0), 5);
+        // dawn wraps over the period
+        assert_eq!(sky_darken(24000 + 133, 0.0, 0.0), 0);
+        assert_eq!(sky_darken(-1670, 0.0, 0.0), 11);
+        // full rain at noon: 15 -> lerp(0.3125, 15, 4) = 11.5625 -> darken 3
+        assert_eq!(sky_darken(6000, 1.0, 0.0), 3);
+        // thunder: 15 -> lerp(0.52734375, 15, 4) = 9.199 -> darken 5
+        assert_eq!(sky_darken(6000, 1.0, 1.0), 5);
+    }
+}
+
 use super::redstone::engine::Lvl;
 use super::redstone::Rs;
 use rine_protocol::BlockPos;
@@ -160,6 +180,41 @@ pub fn raw_brightness<L: Lvl>(l: &L, p: BlockPos) -> u8 {
 #[inline]
 pub fn local_brightness<L: Lvl>(l: &L, p: BlockPos) -> u8 {
     l.block_light(p).max(l.sky_light(p).saturating_sub(l.sky_darken()))
+}
+
+/// `Level.skyDarken` in the overworld: `15 - SKY_LIGHT_LEVEL`, where the
+/// attribute is 15 multiplied by the `minecraft:day` timeline track
+/// `gameplay/sky_light_level` (linear keyframes, period 24000 on the
+/// overworld clock), then the weather layer (`WeatherAttributes`: alpha
+/// blend toward 4.0 with alpha 0.3125 for rain, 0.52734375 for thunder,
+/// each lerped by its level). `thunder` is the raw thunder level; vanilla
+/// `getThunderLevel` multiplies it by the rain level.
+pub fn sky_darken(clock: i64, rain: f32, thunder_raw: f32) -> u8 {
+    // (ticks, value) keyframes of timeline/day.json
+    const K: [(i64, f32); 4] = [(133, 1.0), (11867, 1.0), (13670, 0.266_666_68), (22330, 0.266_666_68)];
+    let t = clock.rem_euclid(24000);
+    // baked segments: wrap-in, inner, wrap-out (`KeyframeTrackSampler`)
+    let segs = [(K[3].0 - 24000, K[3].1, K[0].0, K[0].1), (K[0].0, K[0].1, K[1].0, K[1].1), (K[1].0, K[1].1, K[2].0, K[2].1), (K[2].0, K[2].1, K[3].0, K[3].1), (K[3].0, K[3].1, K[0].0 + 24000, K[0].1)];
+    let seg = segs.iter().find(|s| t < s.2).copied().unwrap_or(segs[4]);
+    let f = if t <= seg.0 {
+        seg.1
+    } else if t >= seg.2 {
+        seg.3
+    } else {
+        let a = (t - seg.0) as f32 / (seg.2 - seg.0) as f32;
+        seg.1 + a * (seg.3 - seg.1)
+    };
+    let lerp = |d: f32, a: f32, b: f32| a + d * (b - a);
+    let mut v = 15.0f32 * f;
+    let thunder = thunder_raw * rain;
+    let rain_only = rain - thunder;
+    if rain_only > 0.0 {
+        v = lerp(rain_only, v, lerp(0.3125, v, 4.0));
+    }
+    if thunder > 0.0 {
+        v = lerp(thunder, v, lerp(0.527_343_75, v, 4.0));
+    }
+    (15.0 - v.clamp(0.0, 15.0)) as u8
 }
 
 /// Game rule value by index, falling back to `default` when the level has no rules.
