@@ -2,6 +2,7 @@
 name = "rine-plugin"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 jni = { version = "0.22", features = ["invocation"] }

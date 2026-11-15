@@ -2,6 +2,7 @@
 name = "rine-command"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 rine-protocol.workspace = true

@@ -2,6 +2,7 @@
 name = "rine-testbot"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 rine-protocol = { path = "../rine-protocol" }
