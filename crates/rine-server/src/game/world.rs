@@ -219,6 +219,16 @@ impl World {
                 self.rs_events.push(super::redstone::RsEvent::Set(p, old, state));
             }
             let b = &rine_data::get().blocks;
+            // `LevelChunk.setBlockState`: a different block drops the old
+            // block entity (same block, other properties, keeps it)
+            if !slot.chunk.block_entities.is_empty() && b.block_of(old).id != b.block_of(state).id {
+                let (lx, lz) = ((p.x & 15) as u8, (p.z & 15) as u8);
+                let before = slot.chunk.block_entities.len();
+                slot.chunk.block_entities.retain(|e| !(e.x == lx && e.z == lz && e.y as i32 == p.y));
+                if slot.chunk.block_entities.len() != before {
+                    slot.chunk.dirty = true;
+                }
+            }
             let (so, sn) = (b.state(old), b.state(state));
             if so.light_emit != sn.light_emit || so.light_block != sn.light_block {
                 self.relight.insert(cp);
