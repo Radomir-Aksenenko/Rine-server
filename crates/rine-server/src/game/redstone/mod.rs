@@ -151,6 +151,13 @@ pub fn placement_state(g: &Game, pos: BlockPos, st: u16) -> u16 {
     engine::placement_state(&g.world.redstone, &View { g }, pos, st)
 }
 
+/// Placement corrections of the block behaviour families
+/// (`blocks::placement`): connections, shapes, persistence. None when the
+/// block cannot be placed there.
+pub fn blocks_placement(g: &Game, pos: BlockPos, st: u16, ctx: &crate::game::blocks::PlaceCtx) -> Option<u16> {
+    crate::game::blocks::placement(&View { g }, st, pos, ctx)
+}
+
 /// A player placed the block at `pos`; call after the `set_block`.
 pub fn placed(g: &mut Game, pos: BlockPos) {
     g.world.rs_events.push(RsEvent::Placed(pos));

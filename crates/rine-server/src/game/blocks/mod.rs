@@ -168,7 +168,30 @@ pub fn rule_bool<L: Lvl>(l: &L, idx: &OnceLock<Option<usize>>, name: &str, defau
     rule_int(l, idx, name, default as i32) != 0
 }
 
+/// What a player's placement looked like (`BlockPlaceContext`).
+#[derive(Clone, Copy, Debug)]
+pub struct PlaceCtx {
+    /// Clicked face of the clicked block (protocol direction id).
+    pub face: u8,
+    /// Cursor position on the clicked face, 0..1.
+    pub cursor: (f32, f32, f32),
+    pub yaw: f32,
+    pub pitch: f32,
+    pub sneaking: bool,
+    /// The clicked block (the placed block is there or next to it).
+    pub clicked: BlockPos,
+}
+
 // ------------------------------------------------------------------ dispatch
+
+/// `Block.getStateForPlacement` corrections for this family's blocks, run
+/// after the generic placement in `place.rs` and the redstone engine's.
+/// Read-only. None means the block cannot be placed.
+pub fn placement<L: Lvl>(_l: &L, st: u16, _pos: BlockPos, _ctx: &PlaceCtx) -> Option<u16> {
+    match beh(st) {
+        _ => Some(st),
+    }
+}
 
 /// `BlockState.randomTick`. Only called for states with the vanilla
 /// `isRandomlyTicking` flag.
