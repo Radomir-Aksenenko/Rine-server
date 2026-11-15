@@ -19,6 +19,7 @@
 //! Random ticks come from `random::tick`, once per game tick.
 
 pub mod crops;
+pub mod leaves;
 pub mod props;
 pub mod random;
 pub mod rng;
@@ -61,6 +62,8 @@ pub enum Beh {
     SweetBerry,
     /// `PitcherCropBlock`.
     PitcherCrop,
+    /// `LeavesBlock` and subclasses (distance, decay).
+    Leaves,
 }
 
 struct Table {
@@ -86,6 +89,9 @@ fn table() -> &'static Table {
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
     if let Some(b) = crops::classify(n) {
+        return b;
+    }
+    if let Some(b) = leaves::classify(n) {
         return b;
     }
     Beh::None
@@ -187,8 +193,9 @@ pub struct PlaceCtx {
 /// `Block.getStateForPlacement` corrections for this family's blocks, run
 /// after the generic placement in `place.rs` and the redstone engine's.
 /// Read-only. None means the block cannot be placed.
-pub fn placement<L: Lvl>(_l: &L, st: u16, _pos: BlockPos, _ctx: &PlaceCtx) -> Option<u16> {
+pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, _ctx: &PlaceCtx) -> Option<u16> {
     match beh(st) {
+        Beh::Leaves => Some(leaves::placement(l, st, pos)),
         _ => Some(st),
     }
 }
@@ -199,6 +206,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
     match beh(st) {
         Beh::None => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
+        Beh::Leaves => leaves::random_tick(rs, l, st, pos),
     }
 }
 
@@ -215,12 +223,14 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
     match beh(st) {
         Beh::None => st,
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Leaves => leaves::update_shape(rs, l, st, pos, nst),
     }
 }
 
 /// A scheduled tick came due for a block the engine does not know.
-pub fn tick<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos) {
+pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
+        Beh::Leaves => leaves::tick(rs, l, st, pos),
         _ => {}
     }
 }
