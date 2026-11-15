@@ -18,6 +18,7 @@
 //! - `on_place` / `neighbor_changed` likewise.
 //! Random ticks come from `random::tick`, once per game tick.
 
+pub mod copper;
 pub mod crops;
 pub mod grass;
 pub mod props;
@@ -88,6 +89,8 @@ pub enum Beh {
     Snowy,
     /// `NyliumBlock` (crimson, warped).
     Nylium,
+    /// `ChangeOverTimeBlock` copper classes (`WeatheringCopper`).
+    Copper,
 }
 
 struct Table {
@@ -116,6 +119,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = grass::classify(n) {
+        return b;
+    }
+    if let Some(b) = copper::classify(n) {
         return b;
     }
     Beh::None
@@ -266,6 +272,9 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
         Beh::Spreading | Beh::Nylium => grass::random_tick(rs, l, st, pos, rng),
         Beh::Snowy => {}
+        Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
+        #[allow(unreachable_patterns)]
+        _ => {}
     }
 }
 
@@ -284,6 +293,9 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Spreading | Beh::Snowy => grass::update_shape(st, dir, nst),
         Beh::Nylium => st,
+        Beh::Copper => st,
+        #[allow(unreachable_patterns)]
+        _ => st,
     }
 }
 
