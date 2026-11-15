@@ -150,11 +150,7 @@ impl Game {
 
     /// Op permission level of a player name (0 when not an operator).
     pub fn op_level_of(&self, name: &str) -> u8 {
-        if self.is_op(name) {
-            self.shared.config.op_permission_level.clamp(1, 4)
-        } else {
-            0
-        }
+        cmd::commands::players::op_level(self, name).unwrap_or(0)
     }
 
     pub fn is_op(&self, name: &str) -> bool {
@@ -204,7 +200,8 @@ impl Game {
                 let span = window.back().unwrap().duration_since(*window.front().unwrap()).as_secs_f64();
                 self.tps = ((window.len() - 1) as f64 / span).min(20.0);
             }
-            next += TICK;
+            cmd::commands::world::record_tick_time(&mut self, took.as_secs_f64() * 1000.0);
+            next += cmd::commands::world::tick_interval(&self);
             let now = Instant::now();
             if now - next > Duration::from_secs(2) {
                 next = now; // don't try to catch up after a long stall
@@ -242,7 +239,8 @@ impl Game {
         };
         let mut t = Instant::now();
         self.tick += 1;
-        self.day_time += 1;
+        // `/tick freeze`: world simulation pauses, players keep ticking
+        let runs = cmd::commands::world::tick_should_run(self);
 
         // 0. plugin actions from the previous tick
         plugins::tick(self);
@@ -268,12 +266,18 @@ impl Game {
 
         // 3b. data pack functions (`ServerFunctionManager.tick`), then the
         // level's scheduled functions (`ServerLevel.tickTime`)
-        cmd::commands::function::tick_functions(self);
-        cmd::commands::function::tick_schedule(self);
-        cmd::cmdblock::tick(self);
+        if runs {
+            cmd::commands::function::tick_functions(self);
+            cmd::commands::world::tick(self);
+            cmd::commands::function::tick_schedule(self);
+            cmd::cmdblock::tick(self);
+        }
+        cmd::commands::effect::tick(self);
 
         // 4. entities (items, TNT, falling blocks) + explosions
-        entity::tick(self);
+        if runs {
+            entity::tick(self);
+        }
         mark(1, &mut t);
 
         super::game::containers::tick(self);
@@ -292,7 +296,9 @@ impl Game {
         mark(4, &mut t);
 
         // 7. scheduled fluid ticks, then block changes this tick + acks
-        fluids::tick(self);
+        if runs {
+            fluids::tick(self);
+        }
         mark(5, &mut t);
         self.settle_outputs();
         mark(6, &mut t);
@@ -449,10 +455,18 @@ impl Game {
         }
         // unload chunks nobody watches
         let spawn = ChunkPos::of_block(self.spawn[0] as i32, self.spawn[2] as i32);
-        self.world.unload_idle(self.tick, |p| (p.x - spawn.x).abs() <= 4 && (p.z - spawn.z).abs() <= 4);
+        let forced = self.cs.world.forced.clone();
+        self.world.unload_idle(self.tick, |p| ((p.x - spawn.x).abs() <= 4 && (p.z - spawn.z).abs() <= 4) || forced.contains(&p.pack()));
     }
 
     fn join(&mut self, np: NewPlayer) {
+        // `PlayerList.canPlayerLogin`: bans and whitelist
+        if let Some(reason) = cmd::commands::players::check_login(self, &np.name, np.uuid, &np.addr.ip().to_string()) {
+            tracing::info!("Disconnecting {} ({}): {}", np.name, np.addr, cmd::render_plain(&reason));
+            let _ = np.outbound.send(crate::net::Out::Batch(vec![out::frame(out::disconnect(&reason))]));
+            let _ = np.outbound.send(crate::net::Out::Close);
+            return;
+        }
         let slot = match self.players.iter().position(|p| p.is_none()) {
             Some(s) => s,
             None => {
@@ -500,44 +514,20 @@ impl Game {
             b.w_bool(false);
         });
         p.send(login);
-        p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_CHANGE_DIFFICULTY, |b| {
-            use rine_protocol::Writer;
-            b.w_varint(2);
-            b.w_bool(false);
-        }));
+        p.send_frame(cmd::commands::world::difficulty_frame(self));
         let ab = p.abilities_packet();
         p.send(ab);
         p.send(out::set_held_slot(p.held as i32));
-        let (x, y, z) = (self.spawn[0], self.spawn[1], self.spawn[2]);
         let [px, py, pz] = p.pos;
         p.teleport(px, py, pz, p.yaw, p.pitch);
-        // border
-        p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_INITIALIZE_BORDER, |b| {
-            use rine_protocol::Writer;
-            b.w_f64(0.0);
-            b.w_f64(0.0);
-            b.w_f64(59_999_968.0);
-            b.w_f64(59_999_968.0);
-            b.w_varlong(0);
-            b.w_varint(29_999_984);
-            b.w_varint(5);
-            b.w_varint(15);
-        }));
+
         let ids = self.clock_ids.clone();
         p.send(out::set_time(self.tick as i64, self.day_time, &ids, 1.0));
-        p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_SET_DEFAULT_SPAWN_POSITION, |b| {
-            use rine_protocol::Writer;
-            b.w_str("minecraft:overworld");
-            b.w_pos(rine_protocol::BlockPos::new(x as i32, y as i32, z as i32));
-            b.w_f32(0.0);
-            b.w_f32(0.0);
-        }));
+        p.send_frame(cmd::commands::world::default_spawn_frame(self));
+
         p.send(out::game_event(13, 0.0));
-        p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_TICKING_STATE, |b| {
-            use rine_protocol::Writer;
-            b.w_f32(20.0);
-            b.w_bool(false);
-        }));
+        p.send_frame(cmd::commands::world::ticking_state_frame(self));
+
         p.send(rine_protocol::frame::packet(rine_protocol::ids::play::C_TICKING_STEP, |b| {
             use rine_protocol::Writer;
             b.w_varint(0);
@@ -581,7 +571,7 @@ impl Game {
         drop(entries);
         p.send(all);
         let me = out::frame(out::info_add(&[out::InfoEntry { uuid: p.uuid, name: &p.name, props: &p.props, gamemode: gm as i32, ping: 0 }]));
-        let joined = out::frame(out::system_chat(&Text::plain(format!("{} зашёл на сервер", p.name)).color("yellow"), false));
+        let joined = out::frame(out::system_chat(&Text::tr("multiplayer.player.joined", vec![Text::plain(p.name.clone()).insertion(p.name.clone())]).color("yellow"), false));
         for o in self.players.iter_mut().flatten() {
             o.out.push(me.clone());
             o.out.push(joined.clone());
@@ -594,6 +584,7 @@ impl Game {
         }
         self.by_eid.insert(eid, slot);
         self.players[slot] = Some(p);
+        cmd::commands::world::on_join(self, slot);
         self.stream(slot);
     }
 
@@ -606,6 +597,7 @@ impl Game {
         tracing::info!("{} left", p.name);
         plugins::post(self, rine_plugin::Event::Quit { name: p.name.clone() });
         self.by_eid.remove(&p.eid);
+        cmd::commands::effect::on_quit(self, p.eid);
         for c in &p.loaded {
             if let Some(s) = self.world.chunks.get_mut(c) {
                 s.viewers.retain(|v| *v != slot);
@@ -616,7 +608,7 @@ impl Game {
         }
         let rm = out::frame(out::info_remove(&[p.uuid]));
         let despawn = out::frame(out::remove_entities(&[p.eid]));
-        let left = out::frame(out::system_chat(&Text::plain(format!("{} вышел", p.name)).color("yellow"), false));
+        let left = out::frame(out::system_chat(&Text::tr("multiplayer.player.left", vec![Text::plain(p.name.clone()).insertion(p.name.clone())]).color("yellow"), false));
         for o in self.players.iter_mut().flatten() {
             o.out.push(rm.clone());
             if o.tracked.remove(&p.eid) {
