@@ -77,7 +77,11 @@ fn game_wire_lamp_piston_plate() {
     for x in 1..=16 {
         assert_eq!(get(get_at(&g, o.offset(x, 0, 0)), P::Power) as i32, 16 - x, "wire x={x}");
     }
-    assert!(super::has_neighbor_signal(&g, o.offset(1, 0, 1)));
+    // above the redstone block, and under the stone the wire strongly powers
+    assert!(super::has_neighbor_signal(&g, o.offset(0, 1, 0)));
+    assert!(super::has_neighbor_signal(&g, o.offset(2, -2, 0)));
+    // a straight line does not point sideways
+    assert!(!super::has_neighbor_signal(&g, o.offset(2, 0, 1)));
 
     // lamp next to a redstone block, off again 4 ticks after it goes
     let lamp = o.offset(1, 0, 2);
@@ -106,13 +110,14 @@ fn game_wire_lamp_piston_plate() {
     assert!(!on(get_at(&g, piston), P::Extended));
     assert!(is_air(get_at(&g, o.offset(2, 0, 4))), "plain piston leaves the block");
 
-    // an item dropped on a wooden plate presses it; the wire next to it lights
+    // an item lying on a wooden plate presses it; the wire next to it lights
+    // (entities do not move without players nearby, so it is put on the plate)
     let plate = o.offset(1, 0, 6);
     put(&mut g, plate, "oak_pressure_plate");
     put(&mut g, o.offset(2, 0, 6), "redstone_wire");
     ticks(&mut g, 1);
     let stick = crate::game::player::Stack { item: crate::game::items::id("stick").unwrap(), count: 1, ..crate::game::player::Stack::EMPTY };
-    entity::spawn_item(&mut g, [plate.x as f64 + 0.5, plate.y as f64 + 0.3, plate.z as f64 + 0.5], [0.0, 0.0, 0.0], stick, 0);
+    entity::spawn_item(&mut g, [plate.x as f64 + 0.5, plate.y as f64, plate.z as f64 + 0.5], [0.0, 0.0, 0.0], stick, 0);
     ticks(&mut g, 10);
     assert!(on(get_at(&g, plate), P::Powered), "plate pressed by the item");
     assert_eq!(get(get_at(&g, o.offset(2, 0, 6)), P::Power), 15);
