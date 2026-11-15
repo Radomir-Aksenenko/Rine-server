@@ -129,3 +129,14 @@ pub fn path_set(path: &rine_command::args::nbt_path::NbtPath, root: &mut Tag, va
     let _ = (path, root, value);
     false
 }
+
+/// `NbtPathArgument.NbtPath.get` (error `arguments.nbtpath.nothing_found`).
+pub fn path_get(path: &rine_command::args::nbt_path::NbtPath, root: &Tag) -> CmdResult<Vec<Tag>> {
+    let _ = (path, root);
+    Err(rine_command::CmdError::key("arguments.nbtpath.nothing_found"))
+}
+
+/// `Tag.toString()` (compact SNBT).
+pub fn to_snbt(t: &Tag) -> String {
+    format!("{t:?}")
+}

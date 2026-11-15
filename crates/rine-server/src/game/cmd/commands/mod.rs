@@ -5,6 +5,7 @@ pub mod blocks;
 pub mod bossbar;
 pub mod chat;
 pub mod data;
+pub mod datapack;
 pub mod effect;
 pub mod entities;
 pub mod execute;
@@ -40,6 +41,7 @@ pub fn register_all(c: &mut Commands) {
     execute::register(c);
     bossbar::register(c);
     function::register(c);
+    datapack::register(c);
     stopwatch::register(c);
     summon::register(c);
     blocks::register(c);

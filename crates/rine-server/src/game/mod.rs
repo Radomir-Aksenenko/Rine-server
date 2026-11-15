@@ -266,6 +266,11 @@ impl Game {
         }
         mark(0, &mut t);
 
+        // 3b. data pack functions (`ServerFunctionManager.tick`), then the
+        // level's scheduled functions (`ServerLevel.tickTime`)
+        cmd::commands::function::tick_functions(self);
+        cmd::commands::function::tick_schedule(self);
+
         // 4. entities (items, TNT, falling blocks) + explosions
         entity::tick(self);
         mark(1, &mut t);
