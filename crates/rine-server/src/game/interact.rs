@@ -287,7 +287,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
             }
             return;
         }
-        if super::place::interact_block(g, slot, pos, clicked, stack) {
+        if super::place::interact_block(g, slot, pos, clicked, stack, inv_slot) {
             if let Some(p) = g.player(slot) {
                 p.ack(seq);
             }

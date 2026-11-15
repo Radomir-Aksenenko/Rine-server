@@ -399,7 +399,7 @@ pub fn after_place(g: &mut Game, pos: BlockPos, state: u16) {
 }
 
 /// Right click on a block. Returns true when the click was handled (no placement follows).
-pub fn interact_block(g: &mut Game, _slot: usize, pos: BlockPos, state: u16, held: Stack) -> bool {
+pub fn interact_block(g: &mut Game, _slot: usize, pos: BlockPos, state: u16, held: Stack, inv_slot: usize) -> bool {
     let b = blocks();
     let name = short(&b.block_of(state).name);
 
@@ -413,12 +413,36 @@ pub fn interact_block(g: &mut Game, _slot: usize, pos: BlockPos, state: u16, hel
         if !igniters.contains(&Some(held.item)) {
             return false;
         }
+        // `TntBlock.useItemOn`: prime (entity + sound), remove the block,
+        // then wear the flint and steel or use up the fire charge
         g.world.set_block(pos, 0);
-        entity::spawn_tnt(g, [pos.x as f64 + 0.5, pos.y as f64, pos.z as f64 + 0.5], 80);
+        prime_tnt(g, pos);
+        if Some(held.item) == items::id("flint_and_steel") {
+            super::durability::wear(g, _slot, inv_slot, 1);
+        } else if let Some(p) = g.player(_slot) {
+            if p.gamemode != 1 {
+                let s = &mut p.inv.slots[inv_slot];
+                s.count -= 1;
+                if s.count <= 0 {
+                    *s = Stack::EMPTY;
+                }
+                let (sid, it) = (p.inv.state_id, p.inv.slots[inv_slot]);
+                p.send(crate::out::container_slot(0, sid, inv_slot as i16, &it));
+                super::track::equipment_changed(g, _slot);
+            }
+        }
         return true;
     }
 
     false
+}
+
+/// `TntBlock.prime`: the primed entity and `entity.tnt.primed` (blocks,
+/// volume 1, pitch 1) at the block centre.
+pub fn prime_tnt(g: &mut Game, pos: BlockPos) {
+    let at = [pos.x as f64 + 0.5, pos.y as f64, pos.z as f64 + 0.5];
+    entity::spawn_tnt(g, at, 80);
+    super::track::sound_near(g, "minecraft:entity.tnt.primed", 4, at, 1.0, 1.0, None);
 }
 
 #[cfg(test)]
