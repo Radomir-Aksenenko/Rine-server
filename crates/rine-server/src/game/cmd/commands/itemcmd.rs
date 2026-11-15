@@ -305,11 +305,17 @@ fn container_size_at(g: &Game, pos: [i32; 3], key: &'static str) -> CmdResult<us
     container_size(name).ok_or_else(|| CmdError::tr(key, vec![lit(pos[0]), lit(pos[1]), lit(pos[2])]))
 }
 
-/// Number of listed slot ids that exist in the container at `pos`.
-fn container_valid(g: &Game, pos: [i32; 3], key: &'static str, ids: &[i32]) -> CmdResult<usize> {
-    let size = container_size_at(g, pos, key)?;
-    Ok(ids.iter().filter(|&&i| i >= 0 && (i as usize) < size).count())
+/// Current slots of the container block at `pos` (`size` of them).
+fn block_slots(pos: [i32; 3], size: usize) -> Vec<Stack> {
+    let mut v = crate::game::containers::block_items(rine_protocol::BlockPos::new(pos[0], pos[1], pos[2])).unwrap_or_default();
+    v.resize(size, Stack::EMPTY);
+    v
 }
+
+fn set_block_slots(g: &mut Game, pos: [i32; 3], items: Vec<Stack>) {
+    crate::game::containers::set_block_items(g, rine_protocol::BlockPos::new(pos[0], pos[1], pos[2]), items);
+}
+
 
 // ---------------------------------------------------------------------------
 // Item stacks and display
@@ -643,9 +649,38 @@ fn item_set(x: &mut Ctx, verb: &str, kind: &str, from: Option<&str>) -> CmdResul
             }
         }
         Target::Block(pos) => {
-            if container_valid(x.g, pos, NOT_CONTAINER_TARGET, &slot.ids)? > 0 {
-                return Err(unmodelled("writing block container slots"));
+            // `BlockItemAccessor`: the slots of the block's container
+            let size = container_size_at(x.g, pos, NOT_CONTAINER_TARGET)?;
+            let mut items = block_slots(pos, size);
+            prov.restart();
+            let mut count = 0;
+            for &id in &slot.ids {
+                if id < 0 || id as usize >= size {
+                    continue;
+                }
+                if !prov.has_next() {
+                    break;
+                }
+                selected += 1;
+                items[id as usize] = prov.next();
+                count += 1;
             }
+            if selected == 0 {
+                return Err(no_such_slot_target(&slot));
+            }
+            if count == 0 {
+                return Err(match &known {
+                    Some(s) => CmdError::tr("commands.item.target.failed.known_item", vec![item_display(s)]),
+                    None => CmdError::key("commands.item.target.failed"),
+                });
+            }
+            set_block_slots(x.g, pos, items);
+            let text = match &known {
+                Some(s) => Text::tr("commands.item.block.replace.success.known_item", vec![lit(count), lit(pos[0]), lit(pos[1]), lit(pos[2]), item_display(s)]),
+                None => Text::tr("commands.item.block.replace.success", vec![lit(count), lit(pos[0]), lit(pos[1]), lit(pos[2])]),
+            };
+            x.success(text, true);
+            return Ok(count);
         }
     }
 
@@ -686,8 +721,12 @@ fn source_items(x: &mut Ctx, kind: &str, slot: &SlotName) -> CmdResult<Vec<Stack
         }
     } else {
         let pos = x.block_pos("source")?;
-        if container_valid(x.g, pos, NOT_CONTAINER_SOURCE, &slot.ids)? > 0 {
-            return Err(unmodelled("reading block container slots"));
+        let size = container_size_at(x.g, pos, NOT_CONTAINER_SOURCE)?;
+        let all = block_slots(pos, size);
+        for &id in &slot.ids {
+            if id >= 0 && (id as usize) < size {
+                items.push(all[id as usize]);
+            }
         }
     }
     if x.has("modifier") {
@@ -732,9 +771,29 @@ fn item_modify(x: &mut Ctx, kind: &str) -> CmdResult<i32> {
             }
         }
         Target::Block(pos) => {
-            if container_valid(x.g, pos, NOT_CONTAINER_TARGET, &slot.ids)? > 0 {
-                return Err(unmodelled("modifying block container slots"));
+            let size = container_size_at(x.g, pos, NOT_CONTAINER_TARGET)?;
+            let mut items = block_slots(pos, size);
+            let mut updated = 0;
+            for &id in &slot.ids {
+                if id < 0 || id as usize >= size || items[id as usize].is_empty() {
+                    continue;
+                }
+                selected += 1;
+                let new = apply_modifier(&m, items[id as usize], &mut rng);
+                if new != items[id as usize] {
+                    updated += 1;
+                }
+                items[id as usize] = new;
             }
+            if selected == 0 {
+                return Err(no_such_slot_target(&slot));
+            }
+            if updated == 0 {
+                return Err(CmdError::key("commands.item.target.failed"));
+            }
+            set_block_slots(x.g, pos, items);
+            x.success(Text::tr("commands.item.block.modify.success", vec![lit(updated), lit(pos[0]), lit(pos[1]), lit(pos[2])]), true);
+            return Ok(updated);
         }
     }
 
