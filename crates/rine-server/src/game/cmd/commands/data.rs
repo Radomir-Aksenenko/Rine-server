@@ -120,23 +120,20 @@ pub fn resolve_nbt_component(g: &Game, src: &Source, fields: &[(String, Tag)], e
 
 /// `NbtPathArgument.NbtPath.countMatching`.
 pub fn path_count(path: &rine_command::args::nbt_path::NbtPath, root: &Tag) -> i32 {
-    let _ = (path, root);
-    0
+    path.count_matching(root)
 }
 
 /// `NbtPathArgument.NbtPath.set` succeeded (changed at least one tag).
 pub fn path_set(path: &rine_command::args::nbt_path::NbtPath, root: &mut Tag, value: &Tag) -> bool {
-    let _ = (path, root, value);
-    false
+    path.set(root, value).is_ok_and(|n| n > 0)
 }
 
 /// `NbtPathArgument.NbtPath.get` (error `arguments.nbtpath.nothing_found`).
 pub fn path_get(path: &rine_command::args::nbt_path::NbtPath, root: &Tag) -> CmdResult<Vec<Tag>> {
-    let _ = (path, root);
-    Err(rine_command::CmdError::key("arguments.nbtpath.nothing_found"))
+    path.get(root)
 }
 
 /// `Tag.toString()` (compact SNBT).
 pub fn to_snbt(t: &Tag) -> String {
-    format!("{t:?}")
+    rine_command::args::snbt::to_snbt(t)
 }

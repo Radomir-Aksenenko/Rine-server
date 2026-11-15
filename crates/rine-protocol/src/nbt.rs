@@ -100,11 +100,23 @@ impl Tag {
             }
             Tag::String(s) => write_mutf8(w, s),
             Tag::List(l) => {
-                let ty = l.first().map(|t| t.id()).unwrap_or(END);
+                // `ListTag.identifyRawElementType`: mixed lists are written
+                // as compounds, wrapping elements as {"": tag}
+                // (`wrapIfNeeded`)
+                let first = l.first().map(|t| t.id()).unwrap_or(END);
+                let ty = if l.iter().all(|t| t.id() == first) { first } else { COMPOUND };
                 w.w_u8(ty);
                 w.w_i32(l.len() as i32);
                 for t in l {
-                    t.write_payload(w);
+                    let wrapper = matches!(t, Tag::Compound(c) if c.len() == 1 && c[0].0.is_empty());
+                    if ty == COMPOUND && (!matches!(t, Tag::Compound(_)) || wrapper) {
+                        w.w_u8(t.id());
+                        write_mutf8(w, "");
+                        t.write_payload(w);
+                        w.w_u8(END);
+                    } else {
+                        t.write_payload(w);
+                    }
                 }
             }
             Tag::Compound(c) => {
