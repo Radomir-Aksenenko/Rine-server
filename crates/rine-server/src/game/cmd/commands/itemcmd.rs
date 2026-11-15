@@ -15,6 +15,7 @@ use crate::game::loot;
 use crate::game::player::{max_stack, Player, Stack};
 use crate::game::track;
 use crate::game::Game;
+use crate::out;
 use rine_command::args::misc::{self, IdOrInline};
 use rine_command::args::Arg;
 use rine_command::reader::Reader;
@@ -227,13 +228,18 @@ fn set_slot(g: &mut Game, s: Slot, v: Stack) -> bool {
         Slot::Virtual => v.is_empty(),
         Slot::Contents { eid } => {
             let Some(i) = g.entities.slot_of(eid) else { return false };
-            match &mut g.entities.list[i].kind {
-                Kind::Item { stack, .. } => {
-                    *stack = v;
-                    true
-                }
-                _ => false,
+            let e = &mut g.entities.list[i];
+            let Kind::Item { stack, .. } = &mut e.kind else { return false };
+            *stack = v;
+            if v.is_empty() {
+                // ItemEntity with an empty stack is discarded on its next tick.
+                e.removed = true;
+            } else {
+                // Same metadata entry the spawn path sends (index 8).
+                let pkt = out::Meta::new(eid).item(8, &v).finish();
+                g.broadcast.push(out::frame(pkt));
             }
+            true
         }
     }
 }
@@ -318,7 +324,7 @@ fn item_display(s: &Stack) -> Text {
     if s.is_empty() {
         t
     } else {
-        t.color("white").on_hover(hover_item(name, 1, None))
+        t.color("white").on_hover(hover_item(name, s.count, None))
     }
 }
 
@@ -395,6 +401,16 @@ fn eval_i(n: &Num, rng: &mut u64) -> i32 {
     }
 }
 
+/// Path of a registry id in the `minecraft` namespace (the codec default).
+/// `None` for other namespaces.
+fn registry_name(id: &str) -> Option<&str> {
+    match id.split_once(':') {
+        Some(("minecraft", n)) => Some(n),
+        None => Some(id),
+        _ => None,
+    }
+}
+
 fn num_of(t: &Tag) -> Option<f64> {
     Some(match t {
         Tag::Byte(v) => f64::from(*v),
@@ -417,10 +433,18 @@ fn parse_num(t: &Tag) -> CmdResult<Num> {
         _ => return Err(unmodelled("number provider without a type")),
     };
     let field = |k: &str| t.get(k).and_then(num_of).ok_or_else(|| unmodelled(&format!("number provider field {k}")));
-    match ty {
-        "minecraft:constant" | "constant" => Ok(Num::Const(field("value")?)),
-        "minecraft:uniform" | "uniform" => Ok(Num::Uniform(field("min")?, field("max")?)),
-        other => Err(unmodelled(&format!("number provider {other}"))),
+    match registry_name(ty) {
+        Some("constant") => Ok(Num::Const(field("value")?)),
+        // Int uniform is inclusive on both ends; float uniform ends exclusive.
+        Some("uniform") => {
+            let lo = field("min_inclusive")?;
+            let hi = match t.get("max_inclusive").or_else(|| t.get("max_exclusive")).and_then(num_of) {
+                Some(v) => v,
+                None => return Err(unmodelled("uniform provider without a maximum")),
+            };
+            Ok(Num::Uniform(lo, hi))
+        }
+        _ => Err(unmodelled(&format!("number provider {ty}"))),
     }
 }
 
@@ -449,7 +473,7 @@ fn parse_func(t: &Tag) -> CmdResult<Func> {
                 Some(Tag::String(s)) => s.as_str(),
                 _ => return Err(unmodelled("item modifier without a function")),
             };
-            let name = match ty.strip_prefix("minecraft:") {
+            let name = match registry_name(ty) {
                 Some(n) => n,
                 None => return Err(unmodelled(&format!("item modifier {ty}"))),
             };
@@ -931,5 +955,29 @@ fn spawn_drops(x: &mut Ctx, drops: &[Stack], tr: &mut Tracker<Stack>) {
         let vel = [rnd(&mut rng) * 0.2 - 0.1, 0.2, rnd(&mut rng) * 0.2 - 0.1];
         entity::spawn_item(x.g, pos, vel, *d, 10);
         tr.track(*d, 1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::game::cmd::Commands;
+
+    /// Grammar: single slot names and inline item modifiers parse at level 4.
+    /// Multi-slot names (`hotbar.*`) are left out: rine-command rejects them.
+    #[test]
+    fn item_forms_parse() {
+        rine_data::init();
+        let mut c = Commands::new();
+        let lines = [
+            "item replace entity @s hotbar.0 with stone 5",
+            "item replace block 0 64 0 contents with stone",
+            "item modify entity @s hotbar.0 {function:\"minecraft:set_count\",count:3}",
+            "item modify entity @s hotbar.0 {function:\"set_count\",count:3}",
+            "item replace entity @s hotbar.1 from entity @p hotbar.2 {function:\"minecraft:discard\"}",
+            "loot give @s loot minecraft:blocks/stone",
+        ];
+        for l in lines {
+            assert!(c.parse(l, 4).is_ok(), "does not parse: {l}");
+        }
     }
 }
