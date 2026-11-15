@@ -90,8 +90,57 @@ pub fn block_entity_nbt(g: &Game, pos: [i32; 3]) -> Option<Tag> {
         v.push(("y".into(), Tag::Int(pos[1])));
         v.push(("z".into(), Tag::Int(pos[2])));
         v.push(("id".into(), Tag::String(ty)));
+        if let Some(items) = crate::game::containers::chest_items(rine_protocol::buf::BlockPos::new(pos[0], pos[1], pos[2])) {
+            v.retain(|(k, _)| k != "Items");
+            v.push(("Items".into(), items_tag(&items)));
+        }
     }
     Some(t)
+}
+
+/// `ContainerHelper.saveAllItems`: non-empty stacks with their `Slot`.
+fn items_tag(items: &[crate::game::player::Stack]) -> Tag {
+    let reg = rine_data::get().registries.reg("minecraft:item");
+    let mut v = Vec::new();
+    for (i, st) in items.iter().enumerate() {
+        if st.count <= 0 || st.item == 0 {
+            continue;
+        }
+        let mut c = Tag::compound().with("Slot", Tag::Byte(i as i8)).with("id", Tag::String(reg.name(st.item).unwrap_or("minecraft:air").to_string())).with("count", Tag::Int(st.count));
+        if st.damage > 0 {
+            c = c.with("components", Tag::compound().with("minecraft:damage", Tag::Int(i32::from(st.damage))));
+        }
+        v.push(c);
+    }
+    Tag::List(v)
+}
+
+/// `ContainerHelper.loadAllItems` into an inventory of `size` slots.
+fn items_from_tag(t: &Tag, size: usize) -> Vec<crate::game::player::Stack> {
+    let reg = rine_data::get().registries.reg("minecraft:item");
+    let mut out = vec![crate::game::player::Stack::default(); size];
+    let Tag::List(l) = t else { return out };
+    for e in l {
+        let slot = match e.get("Slot") {
+            Some(Tag::Byte(b)) => (*b as u8) as usize,
+            _ => continue,
+        };
+        let Some(Tag::String(id)) = e.get("id") else { continue };
+        let Some(item) = reg.id(id) else { continue };
+        let count = match e.get("count") {
+            Some(Tag::Int(c)) => *c,
+            Some(Tag::Byte(c)) => i32::from(*c),
+            _ => 1,
+        };
+        let damage = match e.get("components").and_then(|c| c.get("minecraft:damage")) {
+            Some(Tag::Int(d)) => (*d).clamp(0, u16::MAX as i32) as u16,
+            _ => 0,
+        };
+        if slot < size {
+            out[slot] = crate::game::player::Stack { item, count, damage };
+        }
+    }
+    out
 }
 
 /// `EntityDataAccessor.getData` = `NbtPredicate.getEntityTagToCompare`:
@@ -806,6 +855,12 @@ fn set_entity(g: &mut Game, eid: i32, tag: Tag) -> CmdResult<()> {
 fn set_block(g: &mut Game, pos: [i32; 3], tag: Tag) {
     let Tag::Compound(mut fields) = tag else { return };
     fields.retain(|(k, _)| !matches!(k.as_str(), "x" | "y" | "z" | "id"));
+    let bp = rine_protocol::buf::BlockPos::new(pos[0], pos[1], pos[2]);
+    if let Some(old) = crate::game::containers::chest_items(bp) {
+        let items = fields.iter().find(|(k, _)| k == "Items").map(|(_, v)| items_from_tag(v, old.len())).unwrap_or_else(|| vec![Default::default(); old.len()]);
+        crate::game::containers::set_chest_items(bp, items);
+        fields.retain(|(k, _)| k != "Items");
+    }
     let Some(slot) = g.world.chunks.get_mut(&ChunkPos::new(pos[0] >> 4, pos[2] >> 4)) else { return };
     let (lx, lz) = ((pos[0] & 15) as u8, (pos[2] & 15) as u8);
     let Some(be) = slot.chunk.block_entities.iter_mut().find(|b| b.x == lx && b.z == lz && b.y as i32 == pos[1]) else { return };

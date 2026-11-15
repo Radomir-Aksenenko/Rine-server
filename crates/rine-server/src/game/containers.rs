@@ -1753,3 +1753,14 @@ mod tests {
         assert_eq!(fuel_time(id("minecraft:stone")), 0);
     }
 }
+
+/// Chest / barrel contents at `pos` (`None` when no inventory is kept),
+/// for `/data` and other commands.
+pub fn chest_items(pos: BlockPos) -> Option<Vec<Stack>> {
+    lock_state().chests.get(&pos).cloned()
+}
+
+/// Replace chest / barrel contents (`/data merge block`, `/item`).
+pub fn set_chest_items(pos: BlockPos, items: Vec<Stack>) {
+    lock_state().chests.insert(pos, items);
+}
