@@ -22,6 +22,7 @@ pub mod actions;
 pub mod durability;
 pub mod playerdata;
 pub mod fluids;
+pub mod redstone;
 #[cfg(test)]
 mod bench;
 
@@ -298,10 +299,15 @@ impl Game {
         track::tick(self);
         mark(4, &mut t);
 
-        // 7. scheduled fluid ticks, then block changes this tick + acks
+        // 7. scheduled block ticks (redstone), fluid ticks, then block events,
+        // pressure plates and block entity tickers (pistons), then block
+        // changes this tick + acks. All of it stops under /tick freeze.
         if runs {
+            redstone::tick_scheduled(self);
             fluids::tick(self);
+            redstone::tick_late(self);
         }
+
         mark(5, &mut t);
         self.settle_outputs();
         mark(6, &mut t);
@@ -366,7 +372,9 @@ impl Game {
     /// their viewers, then send pending block acks after those updates.
     fn settle_outputs(&mut self) {
         let t = Instant::now();
+        redstone::process(self);
         neighbors::settle(self);
+        redstone::process(self);
         let changes = self.world.drain_changes();
         if t.elapsed().as_millis() > 20 {
             tracing::info!("block changes + relight took {:?}", t.elapsed());
