@@ -47,7 +47,18 @@ pub fn register(c: &mut Commands) {
         frame.return_failure(g);
         frame.discard(g);
     });
-    c.modifier_custom("return run", false, |g, original, sources, chain, stage, mods, frame| {
+    // `return run` shares its node with `execute run` in the tree: the
+    // return modifier applies when the stage is exactly `return run`,
+    // otherwise sources pass through like a plain redirect
+    c.modifier_custom("execute run", false, |g, original, sources, chain, stage, mods, frame| {
+        let ctx = &chain.modifiers[stage];
+        let tree = g.cmds.tree.clone();
+        let is_return = ctx.nodes.len() == 2 && tree.node(ctx.nodes[0].0).name == "return";
+        let input = chain.executable.input.clone();
+        if !is_return {
+            g.exec.queue_next(Entry { frame, action: Action::Build { input, chain, stage: stage + 1, mods, original, sources } });
+            return;
+        }
         if sources.is_empty() {
             if mods.is_return() {
                 g.exec.queue_next(Entry { frame, action: Action::Fallthrough });
@@ -55,7 +66,6 @@ pub fn register(c: &mut Commands) {
             return;
         }
         frame.discard(g);
-        let input = chain.executable.input.clone();
         g.exec.queue_next(Entry { frame, action: Action::Build { input, chain, stage: stage + 1, mods: mods.set_return(), original, sources } });
     });
     for p in ["schedule function function time", "schedule function function time append", "schedule function function time replace"] {
