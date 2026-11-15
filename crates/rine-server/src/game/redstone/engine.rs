@@ -91,6 +91,38 @@ pub trait Lvl {
     fn has_hooks(&self, _block: u16) -> bool {
         false
     }
+    /// Block light at a position (`getBrightness(LightLayer.BLOCK, pos)`).
+    fn block_light(&self, _p: BlockPos) -> u8 {
+        0
+    }
+    /// `Level.skyDarken`: how much the sky light is dimmed now (time, weather).
+    fn sky_darken(&self) -> u8 {
+        0
+    }
+    fn raining(&self) -> bool {
+        false
+    }
+    fn thundering(&self) -> bool {
+        false
+    }
+    /// Synced biome registry id at a position.
+    fn biome(&self, _p: BlockPos) -> u8 {
+        0
+    }
+    /// Highest Y+1 of a motion-blocking block in the column (`MOTION_BLOCKING` heightmap).
+    fn height_motion_blocking(&self, _x: i32, _z: i32) -> i32 {
+        rine_world::MIN_Y
+    }
+    /// Game rules; None in tests (callers use vanilla defaults).
+    fn rules(&self) -> Option<&crate::game::cmd::rules::GameRules> {
+        None
+    }
+    /// `Block.popResource`: drop an item stack at the block.
+    fn pop_resource(&mut self, _p: BlockPos, _item: u32, _count: i32) {}
+    /// Escape hatch to the whole game for behaviour the trait does not cover.
+    fn game(&mut self) -> Option<&mut crate::game::Game> {
+        None
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -186,6 +218,8 @@ pub struct Rs {
     pub handling_tick: bool,
     /// Scratch buffers reused by the piston code.
     pub scratch: piston::Scratch,
+    /// Random source for block behaviour in scheduled ticks (`level.random`).
+    pub rng: crate::game::blocks::Rng,
     /// Due ticks in unloaded chunks, by chunk; they run when it loads again
     /// (vanilla keeps them in the chunk's tick container).
     parked: AHashMap<(i32, i32), Vec<Tick>>,
@@ -213,6 +247,7 @@ impl Default for Rs {
             torch_toggles: VecDeque::new(),
             handling_tick: false,
             scratch: Default::default(),
+            rng: Default::default(),
             parked: AHashMap::new(),
         }
     }
@@ -925,6 +960,8 @@ pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, 
         K::None => {
             if l.has_hooks(block(st)) {
                 l.hook_neighbor(rs, pos, st);
+            } else {
+                crate::game::blocks::neighbor_changed(rs, l, st, pos, from);
             }
         }
         K::Wire => {
@@ -1055,6 +1092,8 @@ fn tick_block<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
         K::None => {
             if l.has_hooks(block(st)) {
                 l.hook_tick(rs, pos, st);
+            } else {
+                crate::game::blocks::tick(rs, l, st, pos);
             }
         }
         K::Repeater => repeater_tick(rs, l, pos, st),
@@ -1159,7 +1198,7 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
                 super::rails::on_place(rs, l, st, pos);
             }
         }
-        _ => {}
+        _ => crate::game::blocks::on_place(rs, l, st, pos, old),
     }
 }
 
@@ -1217,8 +1256,16 @@ pub fn after_removal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, pis
 
 /// `BlockState.updateShape`: the state `st` at `pos` after its neighbor at
 /// `npos` (side `dir`) became `nst`. Air means the block breaks.
-pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir: u8, _npos: BlockPos, nst: u16) -> u16 {
+pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir: u8, npos: BlockPos, nst: u16) -> u16 {
     let air = t().ids.air_state;
+    let s = update_shape_redstone(rs, l, st, pos, dir, nst, air);
+    if s != st || is_air(s) {
+        return s;
+    }
+    crate::game::blocks::update_shape(rs, l, st, pos, dir, npos, nst)
+}
+
+fn update_shape_redstone<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir: u8, nst: u16, air: u16) -> u16 {
     match kind(st) {
         K::Wire => wire_update_shape(rs, l, st, pos, dir, nst),
         K::Repeater => {

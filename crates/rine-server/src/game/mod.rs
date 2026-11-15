@@ -25,6 +25,7 @@ pub mod durability;
 pub mod playerdata;
 pub mod fluids;
 pub mod redstone;
+pub mod blocks;
 #[cfg(test)]
 mod bench;
 
@@ -87,6 +88,8 @@ pub struct Game {
     pub default_gamemode: u8,
     /// Console lines from stdin.
     pub console_rx: Option<crossbeam_channel::Receiver<String>>,
+    /// Block behaviour state (random ticks).
+    pub blocks: blocks::State,
 }
 
 impl Game {
@@ -148,6 +151,7 @@ impl Game {
             cs: Default::default(),
             default_gamemode,
             console_rx: None,
+            blocks: Default::default(),
         }
     }
 
@@ -304,12 +308,13 @@ impl Game {
         track::tick(self);
         mark(4, &mut t);
 
-        // 7. scheduled block ticks (redstone), fluid ticks, then block events,
+        // 7. scheduled block ticks (redstone), fluid ticks, random ticks, then block events,
         // pressure plates and block entity tickers (pistons), then block
         // changes this tick + acks. All of it stops under /tick freeze.
         if runs {
             redstone::tick_scheduled(self);
             fluids::tick(self);
+            blocks::random::tick(self);
             redstone::tick_late(self);
         }
 

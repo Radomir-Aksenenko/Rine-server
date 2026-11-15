@@ -267,6 +267,36 @@ fn chunks_loaded(g: &mut Game) {
     });
 }
 
+/// Run random ticks for sampled positions (see `blocks::random`), in order.
+/// A position is skipped when its block changed since it was sampled
+/// (vanilla reads the state at the moment of the tick).
+pub fn random_ticks(g: &mut Game, hits: &[crate::game::blocks::random::Hit], rng: &mut crate::game::blocks::Rng) {
+    use crate::game::blocks::{self, random::Hit};
+    let lava = rine_data::blocks::flag::LAVA;
+    with_engine(g, None, |rs, l| {
+        for h in hits {
+            match *h {
+                Hit::Block(p, sampled) => {
+                    let st = l.get(p);
+                    if st != sampled {
+                        // changed earlier this pass: vanilla would tick what is there now
+                        if !rine_data::get().blocks.has(st, rine_data::blocks::flag::RANDOM_TICK) {
+                            continue;
+                        }
+                    }
+                    blocks::random_tick(rs, l, st, p, rng);
+                    // `tickChunk` then ticks the fluid of the state it read
+                    // (lava blocks are ticked twice in total: MC-224294)
+                    if rine_data::get().blocks.has(st, lava) {
+                        blocks::fluid_random_tick(rs, l, st, p, rng);
+                    }
+                }
+                Hit::Precip(x, z) => blocks::precipitation(rs, l, x, z, rng),
+            }
+        }
+    });
+}
+
 /// Block events (pistons, note blocks), entities on pressure plates and
 /// the block entity tickers (moving pistons, daylight detectors).
 pub fn tick_late(g: &mut Game) {
@@ -401,6 +431,22 @@ fn read_sky(g: &Game, p: BlockPos) -> u8 {
     }
 }
 
+fn read_block_light(g: &Game, p: BlockPos) -> u8 {
+    if !(MIN_Y..=MAX_Y).contains(&p.y) {
+        return 0;
+    }
+    let Some(slot) = g.world.chunks.get(&chunk_of(p)) else { return 0 };
+    let si = ((p.y - MIN_Y) >> 4) as usize;
+    let Some(sec) = slot.chunk.sections.get(si) else { return 0 };
+    match &sec.block_light {
+        Some(arr) => {
+            let i = rine_world::chunk::idx((p.x & 15) as usize, (p.y & 15) as usize, (p.z & 15) as usize);
+            (arr[i >> 1] >> ((i & 1) * 4)) & 15
+        }
+        None => 0,
+    }
+}
+
 fn count_in(g: &Game, min: [f64; 3], max: [f64; 3], living_only: bool) -> usize {
     let mut n = g.players.iter().flatten().filter(|p| p.gamemode != 3 && intersects(player_box(p), min, max)).count();
     if !living_only {
@@ -505,6 +551,54 @@ impl Lvl for GameLvl<'_> {
 
     fn has_hooks(&self, blk: u16) -> bool {
         hooks_of(blk).is_some()
+    }
+
+    fn block_light(&self, p: BlockPos) -> u8 {
+        read_block_light(self.g, p)
+    }
+
+    fn raining(&self) -> bool {
+        self.g.cs.world.weather.raining
+    }
+
+    fn thundering(&self) -> bool {
+        self.g.cs.world.weather.thundering
+    }
+
+    fn biome(&self, p: BlockPos) -> u8 {
+        match self.g.world.chunks.get(&chunk_of(p)) {
+            Some(s) => s.chunk.biome_at(p.x, p.y, p.z),
+            None => 0,
+        }
+    }
+
+    fn height_motion_blocking(&self, x: i32, z: i32) -> i32 {
+        match self.g.world.chunks.get(&ChunkPos::new(x >> 4, z >> 4)) {
+            Some(s) => s.chunk.motion_blocking[(x & 15) as usize + (z & 15) as usize * 16] as i32 + MIN_Y,
+            None => MIN_Y,
+        }
+    }
+
+    fn rules(&self) -> Option<&crate::game::cmd::rules::GameRules> {
+        Some(&self.g.rules)
+    }
+
+    fn pop_resource(&mut self, p: BlockPos, item: u32, count: i32) {
+        // `Block.popResource`: random offset of +-0.25, random small velocity
+        let r = |s: u64| entity::rand_f64(s);
+        let k = (p.x as u64) ^ ((p.z as u64) << 21) ^ ((p.y as u64) << 42) ^ self.g.tick.wrapping_mul(31) ^ item as u64;
+        let (ox, oy, oz) = (r(k) - 0.5, r(k ^ 1) - 0.5, r(k ^ 2) - 0.5);
+        entity::spawn_item(
+            self.g,
+            [p.x as f64 + 0.5 + ox * 0.5, p.y as f64 + 0.5 + oy * 0.5 - 0.125, p.z as f64 + 0.5 + oz * 0.5],
+            [(r(k ^ 3) - 0.5) * 0.2, 0.2, (r(k ^ 4) - 0.5) * 0.2],
+            crate::game::player::Stack::new(item, count),
+            10,
+        );
+    }
+
+    fn game(&mut self) -> Option<&mut Game> {
+        Some(self.g)
     }
 
     fn hook_neighbor(&mut self, rs: &mut Rs, p: BlockPos, st: u16) -> bool {

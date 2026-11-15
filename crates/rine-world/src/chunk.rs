@@ -41,6 +41,9 @@ pub struct Section {
     pub non_air: u16,
     /// Count of blocks with a fluid (vanilla fluidCount).
     pub fluids: u16,
+    /// Count of randomly ticking states (vanilla tickingBlockCount); random
+    /// ticks skip sections where it is zero.
+    pub ticking: u16,
     /// Biome ids (index into synced worldgen/biome registry), 4x4x4 quarts,
     /// index `(qy << 4) | (qz << 2) | qx`.
     pub biomes: [u8; 64],
@@ -51,7 +54,7 @@ pub struct Section {
 
 impl Default for Section {
     fn default() -> Self {
-        Self { blocks: None, single: 0, non_air: 0, fluids: 0, biomes: [0; 64], sky: None, block_light: None }
+        Self { blocks: None, single: 0, non_air: 0, fluids: 0, ticking: 0, biomes: [0; 64], sky: None, block_light: None }
     }
 }
 
@@ -93,6 +96,13 @@ impl Section {
         if b.has(state, fl) {
             self.fluids += 1;
         }
+        let rt = rine_data::blocks::flag::RANDOM_TICK;
+        if b.has(old, rt) {
+            self.ticking -= 1;
+        }
+        if b.has(state, rt) {
+            self.ticking += 1;
+        }
         old
     }
 
@@ -104,6 +114,7 @@ impl Section {
         self.non_air = if b.is_air(state) { 0 } else { 4096 };
         let fl = rine_data::blocks::flag::WATER | rine_data::blocks::flag::LAVA;
         self.fluids = if b.has(state, fl) { 4096 } else { 0 };
+        self.ticking = if b.has(state, rine_data::blocks::flag::RANDOM_TICK) { 4096 } else { 0 };
     }
 
     pub fn is_empty(&self) -> bool {
@@ -119,6 +130,8 @@ impl Section {
             let mut uniform = true;
             let mut na = 0u16;
             let mut fc = 0u16;
+            let mut tc = 0u16;
+            let rt = rine_data::blocks::flag::RANDOM_TICK;
             for &s in arr.iter() {
                 uniform &= s == first;
                 if !b.is_air(s) {
@@ -127,9 +140,13 @@ impl Section {
                 if b.has(s, fl) {
                     fc += 1;
                 }
+                if b.has(s, rt) {
+                    tc += 1;
+                }
             }
             self.non_air = na;
             self.fluids = fc;
+            self.ticking = tc;
             if uniform {
                 self.blocks = None;
                 self.single = first;
