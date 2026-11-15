@@ -21,6 +21,7 @@
 pub mod copper;
 pub mod crops;
 pub mod grass;
+pub mod leaves;
 pub mod props;
 pub mod random;
 pub mod rng;
@@ -108,6 +109,8 @@ pub enum Beh {
     Chorus,
     /// `HugeMushroomBlock` (side connections).
     HugeMushroom,
+    /// `LeavesBlock` and subclasses (distance, decay).
+    Leaves,
 }
 
 struct Table {
@@ -142,6 +145,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = shape::classify(n) {
+        return b;
+    }
+    if let Some(b) = leaves::classify(n) {
         return b;
     }
     Beh::None
@@ -281,6 +287,7 @@ pub struct PlaceCtx {
 pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Option<u16> {
     match beh(st) {
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Door | Beh::Chorus | Beh::HugeMushroom => shape::placement(l, st, pos, ctx),
+        Beh::Leaves => Some(leaves::placement(l, st, pos)),
         _ => Some(st),
     }
 }
@@ -294,6 +301,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::Spreading | Beh::Nylium => grass::random_tick(rs, l, st, pos, rng),
         Beh::Snowy => {}
         Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
+        Beh::Leaves => leaves::random_tick(rs, l, st, pos),
         #[allow(unreachable_patterns)]
         _ => {}
     }
@@ -316,6 +324,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Nylium => st,
         Beh::Copper => st,
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Leaves => leaves::update_shape(rs, l, st, pos, nst),
         #[allow(unreachable_patterns)]
         _ => st,
     }
@@ -325,6 +334,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
 pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
         Beh::Chorus => shape::tick(rs, l, st, pos),
+        Beh::Leaves => leaves::tick(rs, l, st, pos),
         _ => {}
     }
 }
