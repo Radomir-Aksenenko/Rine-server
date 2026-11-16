@@ -291,28 +291,77 @@ fn two_by_two<L: Lvl>(l: &L, pos: BlockPos, blk: u16) -> Option<(i32, i32)> {
     None
 }
 
-/// Live copy of the box around `origin` in the nine-chunk layout of `Region::for_growers`.
-/// Cells outside the box are air.
-fn copy_box<L: Lvl>(l: &L, origin: BlockPos, air: u16) -> Vec<Vec<u16>> {
+/// Box of live blocks copied around `origin` (inclusive bounds), clipped to the nine chunks.
+fn box_bounds(origin: BlockPos) -> (i32, i32, i32, i32, i32, i32) {
     let (cx, cz) = (origin.x.div_euclid(16), origin.z.div_euclid(16));
-    let n = WORLD_HEIGHT as usize * 256;
-    let mut blocks: Vec<Vec<u16>> = (0..9).map(|_| vec![air; n]).collect();
     let (x0, x1) = ((cx - 1) * 16, (cx + 2) * 16 - 1);
     let (z0, z1) = ((cz - 1) * 16, (cz + 2) * 16 - 1);
     let (xa, xb) = ((origin.x - BOX_RADIUS).max(x0), (origin.x + BOX_RADIUS).min(x1));
     let (za, zb) = ((origin.z - BOX_RADIUS).max(z0), (origin.z + BOX_RADIUS).min(z1));
     let ya = (origin.y - BOX_DOWN).max(MIN_Y);
     let yb = (origin.y + BOX_UP).min(MIN_Y + WORLD_HEIGHT - 1);
+    (xa, xb, ya, yb, za, zb)
+}
+
+#[inline]
+fn cell(cx: i32, cz: i32, x: i32, y: i32, z: i32) -> (usize, usize) {
+    let c = ((z.div_euclid(16) - cz + 1) * 3 + (x.div_euclid(16) - cx + 1)) as usize;
+    let i = ((y - MIN_Y) as usize * 16 + (z & 15) as usize) * 16 + (x & 15) as usize;
+    (c, i)
+}
+
+/// Nine all-air chunk arrays, reused between growths: a growth used to
+/// allocate and fill about 1.8 MB; now it only touches the copied box and
+/// the cells the feature wrote, and puts the arrays back clean.
+static POOL: std::sync::Mutex<Option<Vec<Vec<u16>>>> = std::sync::Mutex::new(None);
+
+fn take_buffers(air: u16) -> Vec<Vec<u16>> {
+    let pooled = POOL.lock().ok().and_then(|mut p| p.take());
+    pooled.unwrap_or_else(|| {
+        let n = WORLD_HEIGHT as usize * 256;
+        (0..9).map(|_| vec![air; n]).collect()
+    })
+}
+
+fn give_back(blocks: Vec<Vec<u16>>) {
+    if let Ok(mut p) = POOL.lock() {
+        *p = Some(blocks);
+    }
+}
+
+/// Live copy of the box around `origin` in the nine-chunk layout of
+/// `Region::for_growers`, into all-air arrays. Cells outside the box are air.
+fn copy_box<L: Lvl>(l: &L, origin: BlockPos, blocks: &mut [Vec<u16>]) {
+    let (cx, cz) = (origin.x.div_euclid(16), origin.z.div_euclid(16));
+    let (xa, xb, ya, yb, za, zb) = box_bounds(origin);
     for y in ya..=yb {
         for z in za..=zb {
             for x in xa..=xb {
-                let c = ((z.div_euclid(16) - cz + 1) * 3 + (x.div_euclid(16) - cx + 1)) as usize;
-                let i = ((y - MIN_Y) as usize * 16 + (z & 15) as usize) * 16 + (x & 15) as usize;
+                let (c, i) = cell(cx, cz, x, y, z);
                 blocks[c][i] = l.get(BlockPos { x, y, z });
             }
         }
     }
-    blocks
+}
+
+/// Back to all air: the copied box and every cell in `log`.
+fn clear_box(origin: BlockPos, blocks: &mut [Vec<u16>], log: &[(i32, i32, i32, u16)], air: u16) {
+    let (cx, cz) = (origin.x.div_euclid(16), origin.z.div_euclid(16));
+    let (xa, xb, ya, yb, za, zb) = box_bounds(origin);
+    for y in ya..=yb {
+        for z in za..=zb {
+            for x in xa..=xb {
+                let (c, i) = cell(cx, cz, x, y, z);
+                blocks[c][i] = air;
+            }
+        }
+    }
+    for &(x, y, z, _) in log {
+        let (c, i) = cell(cx, cz, x, y, z);
+        if let Some(b) = blocks.get_mut(c).and_then(|v| v.get_mut(i)) {
+            *b = air;
+        }
+    }
 }
 
 /// `TreeGrower.growTree` for the grower `g` of the sapling at `pos` (state `st`).
@@ -358,13 +407,18 @@ fn remove_sapling<L: Lvl>(rs: &mut Rs, l: &mut L, p: BlockPos) {
 /// Places the feature into the live copy and replays its writes on the live world, in order.
 /// Writes that happen before a failed placement are kept, as in vanilla.
 fn place_and_replay<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, feature: &str, origin: BlockPos, rng: &mut Rng) -> bool {
-    let blocks = copy_box(&*l, origin, t().air);
+    let air = t().air;
+    let mut blocks = take_buffers(air);
+    copy_box(&*l, origin, &mut blocks);
     let (cx, cz) = (origin.x.div_euclid(16), origin.z.div_euclid(16));
     let mut region = gr.dec.grower_region(cx, cz, blocks);
     let mut wrng = WorldgenRng::new(rng.next_i64());
     region.start_log();
     let placed = gr.dec.place_grower(feature, &mut region, &mut wrng, (origin.x, origin.y, origin.z)).unwrap_or(false);
     let log = region.take_log();
+    let mut blocks = region.into_blocks();
+    clear_box(origin, &mut blocks, &log, air);
+    give_back(blocks);
     // `TreeFeature.setBlockKnownShape` and the setters: UPDATE_ALL | UPDATE_KNOWN_SHAPE.
     for (x, y, z, pal) in log {
         engine::set_block(rs, l, BlockPos { x, y, z }, live_id(gr, pal), fl::ALL | fl::KNOWN_SHAPE, UPDATE_LIMIT);
@@ -478,6 +532,11 @@ mod tests {
         for (k, v) in &w.cells {
             assert_eq!(a.cells.get(k), Some(v), "cell {k:?}");
         }
+        // the pooled arrays come back all air
+        let air = t().air;
+        let b = take_buffers(air);
+        assert!(b.iter().all(|c| c.iter().all(|&x| x == air)));
+        give_back(b);
     }
 
     #[test]

@@ -148,7 +148,7 @@ impl<'a> Region<'a> {
         }
     }
 
-    /// Starts recording every block write (`set_block_in_section`) in order.
+    /// Starts recording every block write (`set_block` and `set_block_in_section`) in order.
     pub fn start_log(&mut self) {
         self.log = Some(Vec::new());
     }
@@ -191,7 +191,7 @@ impl<'a> Region<'a> {
     }
 
     /// Consumes the region and returns the nine (mutated) block arrays in raster order.
-    pub(crate) fn into_blocks(self) -> Vec<Vec<u16>> {
+    pub fn into_blocks(self) -> Vec<Vec<u16>> {
         self.blocks
     }
 
@@ -261,6 +261,9 @@ impl<'a> Region<'a> {
                 self.blocks[c][i] = blk;
                 if old != blk {
                     self.update_heights(c, x, y, z, blk);
+                }
+                if let Some(log) = self.log.as_mut() {
+                    log.push((x, y, z, blk));
                 }
                 true
             }
