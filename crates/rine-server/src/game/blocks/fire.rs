@@ -485,14 +485,13 @@ pub fn can_spread<L: Lvl>(l: &mut L, p: BlockPos) -> bool {
         return true;
     }
     let Some(g) = l.game() else { return true };
-    let (x, y, z) = (p.x as f64, p.y as f64, p.z as f64);
-    g.players.iter().flatten().any(|pl| {
-        if pl.gamemode == 3 {
-            return false;
-        }
-        let (dx, dy, dz) = (pl.pos[0] - x, pl.pos[1] - y, pl.pos[2] - z);
-        (dx * dx + dy * dy + dz * dz).sqrt() < radius as f64
-    })
+    if radius <= 0 {
+        // distance is never < 0, and < 0 never holds for distance 0 either
+        return false;
+    }
+    // per-tick player grid instead of a scan of every player (`blocks::near`)
+    g.blocks.near.ensure(g.tick, radius, g.players.iter().flatten().filter(|pl| pl.gamemode != 3).map(|pl| &pl.pos));
+    g.blocks.near.any_within([p.x as f64, p.y as f64, p.z as f64], radius)
 }
 
 /// `Level.getDifficulty().getId()`: peaceful 0 .. hard 3. No game (tests): normal.

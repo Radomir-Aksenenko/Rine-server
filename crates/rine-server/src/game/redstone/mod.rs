@@ -410,7 +410,7 @@ fn with_engine(g: &mut Game, actor: Option<usize>, f: impl FnOnce(&mut Rs, &mut 
     let mut rs = std::mem::take(&mut g.world.redstone);
     {
         let seed = g.tick.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
-        let mut l = GameLvl { g, actor, rng: seed };
+        let mut l = GameLvl { g, actor, rng: seed, cache: std::cell::Cell::new(NO_CHUNK) };
         f(&mut rs, &mut l);
     }
     // anything scheduled from hooks while the state was out
@@ -422,7 +422,13 @@ struct GameLvl<'a> {
     g: &'a mut Game,
     actor: Option<usize>,
     rng: u64,
+    /// Last chunk read by `get` (most reads of a block tick hit the same
+    /// chunk; skips the map lookup, about 2x per read). Cleared by every
+    /// `&mut self` method, since those may change the chunk map.
+    cache: std::cell::Cell<(rine_world::ChunkPos, *const rine_world::Chunk)>,
 }
+
+const NO_CHUNK: (rine_world::ChunkPos, *const rine_world::Chunk) = (rine_world::ChunkPos { x: i32::MIN, z: i32::MIN }, std::ptr::null());
 
 /// Sound event id by short name, cached so repeated sounds do not allocate.
 fn sound_id(name: &str) -> Option<u32> {
@@ -495,7 +501,22 @@ fn count_in(g: &Game, min: [f64; 3], max: [f64; 3], living_only: bool) -> usize 
 
 impl Lvl for GameLvl<'_> {
     fn get(&self, p: BlockPos) -> u16 {
-        self.g.world.get_block(p.x, p.y, p.z)
+        if !(MIN_Y..=MAX_Y).contains(&p.y) {
+            return 0;
+        }
+        let cp = rine_world::ChunkPos::new(p.x >> 4, p.z >> 4);
+        let (cpos, mut ptr) = self.cache.get();
+        if cpos != cp || ptr.is_null() {
+            ptr = self.g.world.chunks.get(&cp).map_or(std::ptr::null(), |s| &*s.chunk as *const rine_world::Chunk);
+            if ptr.is_null() {
+                return 0;
+            }
+            self.cache.set((cp, ptr));
+        }
+        // SAFETY: `ptr` points into `self.g.world.chunks`, which only changes
+        // through `&mut self` (every such method clears the cache first), so
+        // the slot is still there and nothing mutable aliases it now.
+        unsafe { &*ptr }.get(p.x & 15, p.y, p.z & 15)
     }
 
     fn loaded(&self, p: BlockPos) -> bool {
@@ -503,6 +524,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn raw_set(&mut self, p: BlockPos, st: u16) -> u16 {
+        self.cache.set(NO_CHUNK);
         let w = &mut self.g.world;
         w.rs_mute = true;
         let old = w.set_block(p, st);
@@ -523,11 +545,13 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn level_event(&mut self, ev: i32, p: BlockPos, data: i32) {
+        self.cache.set(NO_CHUNK);
         let f = out::frame(out::level_event(ev, p, data));
         self.g.send_chunk_viewers(chunk_of(p), &f);
     }
 
     fn sound(&mut self, name: &str, p: BlockPos, vol: f32, pitch: f32, cat: i32, skip_actor: bool) {
+        self.cache.set(NO_CHUNK);
         let Some(id) = sound_id(name) else { return };
         self.rng = self.rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         let f = out::frame(out::sound(id, cat, p.x as f64 + 0.5, p.y as f64 + 0.5, p.z as f64 + 0.5, vol, pitch, self.rng as i64));
@@ -536,6 +560,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn block_event_packet(&mut self, p: BlockPos, blk: u16, a: u8, b: u8) {
+        self.cache.set(NO_CHUNK);
         use rine_protocol::Writer;
         let f = out::frame(rine_protocol::frame::packet(rine_protocol::ids::play::C_BLOCK_EVENT, |w| {
             w.w_pos(p);
@@ -547,6 +572,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn drop_block(&mut self, p: BlockPos, st: u16) {
+        self.cache.set(NO_CHUNK);
         for d in super::loot::block_drops(st, 0) {
             let off = entity::rand_f64((p.x as u64) ^ ((p.z as u64) << 20) ^ ((p.y as u64) << 40) ^ self.g.tick);
             entity::spawn_item(
@@ -560,6 +586,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn prime_tnt(&mut self, p: BlockPos) {
+        self.cache.set(NO_CHUNK);
         entity::spawn_tnt(self.g, [p.x as f64 + 0.5, p.y as f64, p.z as f64 + 0.5], 80);
         self.sound("entity.tnt.primed", p, 1.0, 1.0, engine::CAT_BLOCKS, false);
     }
@@ -577,10 +604,12 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn dispense(&mut self, p: BlockPos, st: u16) {
+        self.cache.set(NO_CHUNK);
         super::blockinv::dispense(self.g, p, st);
     }
 
     fn rand(&mut self) -> f32 {
+        self.cache.set(NO_CHUNK);
         self.rng ^= self.rng << 13;
         self.rng ^= self.rng >> 7;
         self.rng ^= self.rng << 17;
@@ -635,6 +664,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn pop_resource(&mut self, p: BlockPos, item: u32, count: i32) {
+        self.cache.set(NO_CHUNK);
         // `Block.popResource`: random offset of +-0.25, random small velocity
         let r = |s: u64| entity::rand_f64(s);
         let k = (p.x as u64) ^ ((p.z as u64) << 21) ^ ((p.y as u64) << 42) ^ self.g.tick.wrapping_mul(31) ^ item as u64;
@@ -649,10 +679,12 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn game(&mut self) -> Option<&mut Game> {
+        self.cache.set(NO_CHUNK);
         Some(self.g)
     }
 
     fn hook_neighbor(&mut self, rs: &mut Rs, p: BlockPos, st: u16) -> bool {
+        self.cache.set(NO_CHUNK);
         let Some(f) = hooks_of(block(st)).and_then(|h| h.neighbor_changed) else { return false };
         std::mem::swap(rs, &mut self.g.world.redstone);
         f(self.g, p, st);
@@ -661,6 +693,7 @@ impl Lvl for GameLvl<'_> {
     }
 
     fn hook_tick(&mut self, rs: &mut Rs, p: BlockPos, st: u16) -> bool {
+        self.cache.set(NO_CHUNK);
         let Some(f) = hooks_of(block(st)).and_then(|h| h.tick) else { return false };
         std::mem::swap(rs, &mut self.g.world.redstone);
         f(self.g, p, st);

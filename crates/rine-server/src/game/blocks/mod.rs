@@ -24,6 +24,7 @@ pub mod grass;
 pub mod interact;
 pub mod leaves;
 pub mod misc;
+pub mod near;
 pub mod fire;
 pub mod plants;
 pub mod props;
@@ -63,6 +64,8 @@ use std::sync::OnceLock;
 /// Block behaviour state kept on the game.
 pub struct State {
     pub random: random::State,
+    /// Players by grid cell for fire's player-distance check.
+    pub near: near::Grid,
     /// Base seed of the random streams (clock-seeded, as vanilla's level random).
     pub seed: u64,
 }
@@ -70,7 +73,7 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
-        Self { random: Default::default(), seed: t ^ 0x5DEE_CE66_D1CE_4E5B }
+        Self { random: Default::default(), near: Default::default(), seed: t ^ 0x5DEE_CE66_D1CE_4E5B }
     }
 }
 
@@ -471,3 +474,5 @@ pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, 
         _ => {}
     }
 }
+#[cfg(test)]
+mod getbench;
