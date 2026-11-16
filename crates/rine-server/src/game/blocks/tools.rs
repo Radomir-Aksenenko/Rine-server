@@ -26,6 +26,7 @@
 use super::crops;
 use super::fire;
 use super::bonemeal;
+use super::growth;
 use super::sapling;
 use super::interact::{ItemOp, Res, UseCtx, UseOut};
 use super::plants;
@@ -463,16 +464,15 @@ fn wax_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx) 
 
 /// `BoneMealItem.useOn` through `growCrop`. The water branch is not ported.
 ///
-/// Saplings (`sapling.rs`) are routed here. Not reached here (vanilla
-/// `BonemealableBlock` that needs a placed feature or a spread, all TODO):
-/// grass_block, short and tall grass, fern, large fern, propagule, azalea,
-/// moss blocks and pale moss, huge mushroom blocks, mycelium, crimson and
-/// warped nylium, nether fungus.
-/// Simple ones not ported yet: tall flowers, flower bed, glow lichen, hanging
-/// moss, mossy carpet, dripleaf, sea pickle, seagrass, rooted dirt,
-/// netherrack, shelf mushroom, mangrove leaves, dry grass, firefly bush, bush.
+/// Saplings (`sapling.rs`), mushroom plants (`growth.rs`) and the simple targets
+/// of `bonemeal.rs` are routed here. Not reached here (vanilla
+/// `BonemealableBlock` that is not ported yet): grass_block (its biome bone meal
+/// features), mycelium, crimson and warped nylium, nether fungus, moss blocks and
+/// pale moss, standing mangrove propagule, azalea, small and big dripleaf,
+/// hanging moss, mossy carpet, rooted dirt, netherrack, shelf mushroom,
+/// mangrove leaves, dry grass, firefly bush, bush.
 fn bone_meal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
-    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng) || bonemeal::bonemeal(rs, l, st, pos)) {
+    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng) || growth::bonemeal(rs, l, st, pos, rng) || bonemeal::bonemeal(rs, l, st, pos, rng)) {
         return Res::Pass;
     }
     l.level_event(EV_PLANT_GROWTH, pos, 15);

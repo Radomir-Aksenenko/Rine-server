@@ -174,8 +174,8 @@ pub fn classify(n: &str) -> Option<super::Beh> {
 
 /// Palette of the grower decorator: the live state ids in order, then the states
 /// that the trees intern (parsed back to live ids).
-struct Growth {
-    dec: Decorator,
+pub(super) struct Growth {
+    pub(super) dec: Decorator,
     n_live: usize,
     extra: Vec<u16>,
 }
@@ -205,23 +205,25 @@ fn canonical(b: &rine_data::blocks::Blocks, st: u16) -> String {
 /// (saplings then do nothing, which is logged once).
 fn growth() -> Option<&'static Growth> {
     static G: OnceLock<Option<Growth>> = OnceLock::new();
-    G.get_or_init(build).as_ref()
+    G.get_or_init(|| build(&GROWER_FEATURES)).as_ref()
 }
 
-fn build() -> Option<Growth> {
+/// A decorator with the configured features `growers` (`Decorator::new_growers`) over the live palette.
+/// Logged and `None` when it does not compile.
+pub(super) fn build(growers: &[&str]) -> Option<Growth> {
     let b = &rine_data::get().blocks;
     let names: Vec<String> = (0..b.states.len()).map(|s| canonical(b, s as u16)).collect();
     let defaults: HashMap<String, String> = b.blocks.iter().map(|blk| (blk.name.clone(), canonical(b, blk.default_state as u16))).collect();
-    let dec = match Decorator::new_growers(&names, defaults, &GROWER_FEATURES) {
+    let dec = match Decorator::new_growers(&names, defaults, growers) {
         Ok(d) => d,
         Err(e) => {
-            tracing::error!("sapling growth disabled: {e}");
+            tracing::error!("block growth disabled: {e}");
             return None;
         }
     };
     let pal = dec.palette();
     if pal.len() < names.len() || pal[..names.len()] != names[..] {
-        tracing::error!("sapling growth disabled: palette does not match the live state ids");
+        tracing::error!("block growth disabled: palette does not match the live state ids");
         return None;
     }
     let extra = pal[names.len()..].iter().map(|s| b.parse_state(s).unwrap_or(0)).collect();
@@ -230,7 +232,7 @@ fn build() -> Option<Growth> {
 
 /// Live state id of a palette id of the grower decorator.
 #[inline]
-fn live_id(g: &Growth, pal: u16) -> u16 {
+pub(super) fn live_id(g: &Growth, pal: u16) -> u16 {
     let i = pal as usize;
     if i < g.n_live {
         pal
@@ -378,7 +380,7 @@ fn grow_tree<L: Lvl>(rs: &mut Rs, l: &mut L, pos: BlockPos, st: u16, g: &Grower,
             for c in cells {
                 remove_sapling(rs, l, c);
             }
-            if place_and_replay(rs, l, gr, mega, origin, rng) {
+            if place_tree(rs, l, gr, mega, origin, rng) {
                 return true;
             }
             for (c, s) in cells.iter().zip(saved) {
@@ -391,7 +393,7 @@ fn grow_tree<L: Lvl>(rs: &mut Rs, l: &mut L, pos: BlockPos, st: u16, g: &Grower,
     let list = if has_flowers(&*l, pos) && !g.flowers.is_empty() { g.flowers } else { g.trees };
     let Some(feature) = pick(list, rng) else { return false };
     remove_sapling(rs, l, pos);
-    if place_and_replay(rs, l, gr, feature, pos, rng) {
+    if place_tree(rs, l, gr, feature, pos, rng) {
         return true;
     }
     engine::set_block(rs, l, pos, st, fl::NONE, UPDATE_LIMIT);
@@ -404,9 +406,16 @@ fn remove_sapling<L: Lvl>(rs: &mut Rs, l: &mut L, p: BlockPos) {
     engine::set_block(rs, l, p, t().air, flags, UPDATE_LIMIT);
 }
 
-/// Places the feature into the live copy and replays its writes on the live world, in order.
-/// Writes that happen before a failed placement are kept, as in vanilla.
-fn place_and_replay<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, feature: &str, origin: BlockPos, rng: &mut Rng) -> bool {
+/// `TreeFeature` placement: the writes are replayed with `UPDATE_ALL | UPDATE_KNOWN_SHAPE`.
+fn place_tree<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, feature: &str, origin: BlockPos, rng: &mut Rng) -> bool {
+    let Some(index) = gr.dec.grower_index(feature) else { return false };
+    place_and_replay(rs, l, gr, index, origin, rng, fl::ALL | fl::KNOWN_SHAPE)
+}
+
+/// Places the configured feature `index` (`Decorator::grower_index`) into the live copy and replays its
+/// writes on the live world, in order, with `flags` (`Feature.setBlock` writes `UPDATE_ALL`, `TreeFeature`
+/// writes `UPDATE_ALL | UPDATE_KNOWN_SHAPE`). Writes that happen before a failed placement are kept, as in vanilla.
+pub(super) fn place_and_replay<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, index: usize, origin: BlockPos, rng: &mut Rng, flags: u32) -> bool {
     let air = t().air;
     let mut blocks = take_buffers(air);
     copy_box(&*l, origin, &mut blocks);
@@ -414,14 +423,13 @@ fn place_and_replay<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, feature: &str, 
     let mut region = gr.dec.grower_region(cx, cz, blocks);
     let mut wrng = WorldgenRng::new(rng.next_i64());
     region.start_log();
-    let placed = gr.dec.place_grower(feature, &mut region, &mut wrng, (origin.x, origin.y, origin.z)).unwrap_or(false);
+    let placed = gr.dec.place_grower_at(index, &mut region, &mut wrng, (origin.x, origin.y, origin.z));
     let log = region.take_log();
     let mut blocks = region.into_blocks();
     clear_box(origin, &mut blocks, &log, air);
     give_back(blocks);
-    // `TreeFeature.setBlockKnownShape` and the setters: UPDATE_ALL | UPDATE_KNOWN_SHAPE.
     for (x, y, z, pal) in log {
-        engine::set_block(rs, l, BlockPos { x, y, z }, live_id(gr, pal), fl::ALL | fl::KNOWN_SHAPE, UPDATE_LIMIT);
+        engine::set_block(rs, l, BlockPos { x, y, z }, live_id(gr, pal), flags, UPDATE_LIMIT);
     }
     placed
 }

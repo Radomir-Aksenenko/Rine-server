@@ -126,6 +126,13 @@ for (const f of fs.readdirSync(path.join(DATA, 'feature'))) {
     if (!configured[ref]) configured[ref] = json;
 }
 
+// Configured features that the block code places by name (`blocks/growth.rs`, bone meal and growth of the
+// huge mushrooms). Only the configured entries: no biome list reaches them.
+const BLOCK_FEATURES = ['minecraft:huge_red_mushroom', 'minecraft:huge_brown_mushroom'];
+for (const ref of BLOCK_FEATURES) {
+    if (!configured[ref]) configured[ref] = read(path.join(DATA, 'feature', ref.replace('minecraft:', '') + '.json'));
+}
+
 // Block tags referenced by the bundled predicates (`"tag": "minecraft:x"` and `"#minecraft:x"`),
 // flattened to block ids: tags/block/*.json with nested `#` references resolved.
 const TAGS = path.join(VANILLA_GENERATED, 'data', 'minecraft', 'tags', 'block');
@@ -201,7 +208,8 @@ collectTags(blockStateProviders);
  'minecraft:cannot_replace_below_tree_trunk', 'minecraft:beneath_tree_podzol_replaceable',
  'minecraft:blocks_motion_no_leaves', 'minecraft:snow', 'minecraft:supports_vegetation', 'minecraft:supports_mangrove_propagule', 'minecraft:supports_hanging_mangrove_propagule',
  // Vegetation survival (crates/rine-worldgen/src/feature/vegetation.rs): dry vegetation and seagrass support.
- 'minecraft:supports_dry_vegetation', 'minecraft:cannot_support_seagrass'].forEach((t) => tagRefs.add(t));
+ 'minecraft:supports_dry_vegetation', 'minecraft:cannot_support_seagrass',
+ 'minecraft:replaceable_by_mushrooms'].forEach((t) => tagRefs.add(t));
 for (const t of tagRefs) flattenTag(t);
 
 // Block property tables from the 26.3 block report: ordered property values and the default state, for

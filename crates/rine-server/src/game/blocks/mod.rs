@@ -40,6 +40,7 @@ pub mod uses;
 pub mod sponge;
 pub mod sapling;
 pub mod bonemeal;
+pub mod growth;
 #[cfg(test)]
 pub mod testw;
 

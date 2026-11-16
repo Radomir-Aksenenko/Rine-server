@@ -9,7 +9,7 @@
 //! (selectors, sequences), which are compiled into the same table. Every configured type and placement
 //! modifier outside the ported set is an error, so an unported feature is never skipped silently.
 //!
-//! Ported configured features: `ore`, `disk`, `spring_feature`, `block_column`, `blue_ice`,
+//! Ported configured features: `ore`, `disk`, `spring_feature`, `block_column`, `blue_ice`, `huge_*_mushroom`,
 //! `random_boolean_selector`, `simple_random_selector`, `weighted_random_selector`, `sequence`.
 //!
 //! Ordering: `sorter` reproduces `FeatureSorter`; within a chunk the features of each step run in the
@@ -19,6 +19,7 @@ pub mod allow;
 pub mod column;
 pub mod disk;
 pub mod heightmap;
+pub mod huge_mushroom;
 pub mod ice;
 pub mod ore;
 pub mod placement;
@@ -74,6 +75,8 @@ enum Configured {
     Tree(tree::TreeFeature),
     /// `minecraft:fallen_tree`.
     FallenTree(tree::fallen::FallenTree),
+    /// `minecraft:huge_red_mushroom` / `minecraft:huge_brown_mushroom`.
+    HugeMushroom(huge_mushroom::HugeMushroom),
 }
 
 struct PlacedFeature {
@@ -306,6 +309,18 @@ impl<'a> Compiler<'a> {
                 }
                 Ok(Configured::Sequence(list))
             }
+            "minecraft:huge_red_mushroom" => Ok(Configured::HugeMushroom(huge_mushroom::HugeMushroom::compile(
+                huge_mushroom::Kind::Red,
+                cfg,
+                tn,
+                &mut self.pal,
+            )?)),
+            "minecraft:huge_brown_mushroom" => Ok(Configured::HugeMushroom(huge_mushroom::HugeMushroom::compile(
+                huge_mushroom::Kind::Brown,
+                cfg,
+                tn,
+                &mut self.pal,
+            )?)),
             "minecraft:tree" | "minecraft:fallen_tree" => {
                 self.ensure_tree_states()?;
                 let states = self.tree_states.as_ref().expect("tree states");
@@ -437,6 +452,19 @@ impl Decorator {
         self.grower_ids.contains_key(name)
     }
 
+    /// Index of a compiled grower, for `place_grower_at` (resolve once, place many times).
+    pub fn grower_index(&self, name: &str) -> Option<usize> {
+        self.grower_ids.get(name).copied()
+    }
+
+    /// `foliageRadius()` of a compiled huge mushroom grower.
+    pub fn grower_mushroom_radius(&self, name: &str) -> Option<i32> {
+        match &self.placed[*self.grower_ids.get(name)?].feature {
+            Configured::HugeMushroom(m) => Some(m.foliage_radius()),
+            _ => None,
+        }
+    }
+
     /// `TreeGrower.getMinimumHeight` input: the trunk base height of a compiled tree grower.
     pub fn grower_base_height(&self, name: &str) -> Option<i32> {
         match &self.placed[*self.grower_ids.get(name)?].feature {
@@ -462,6 +490,11 @@ impl Decorator {
     pub fn place_grower(&self, name: &str, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> Option<bool> {
         let p = *self.grower_ids.get(name)?;
         Some(self.place_configured(p, region, rng, pos))
+    }
+
+    /// `place_grower` by the index from `grower_index`: no name lookup per call.
+    pub fn place_grower_at(&self, index: usize, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
+        self.place_configured(index, region, rng, pos)
     }
 
 
@@ -576,6 +609,7 @@ impl Decorator {
                 let mut ctx = tree::Ctx::new(region, env, rng);
                 t.place(&mut ctx, pos)
             }
+            Configured::HugeMushroom(f) => f.place(region, rng, pos),
             Configured::SimpleBlock(f) => f.place(region, rng, pos),
             Configured::Sequence(list) => {
                 for &q in list {
