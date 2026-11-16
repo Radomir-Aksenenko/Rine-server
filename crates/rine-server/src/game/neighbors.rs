@@ -1,5 +1,5 @@
 //! Neighbor updates after block changes (vanilla `updateShape` / `canSurvive`
-//! for the common cases): grass/podzol/mycelium `snowy`, plants, torches,
+//! for the common cases): plants, torches,
 //! carpets, rails, snow layers and other blocks that need support.
 //!
 //! Every changed position of the tick is collected by `World::set_block`;
@@ -63,19 +63,7 @@ fn check(g: &mut Game, pos: BlockPos) -> bool {
         g.world.set_block(pos, ns);
         return true;
     }
-    // grass_block / podzol / mycelium: snowy follows the block above
-    if let Some(cur) = b.get_prop(st, "snowy") {
-        let above = g.world.get_block(pos.x, pos.y + 1, pos.z);
-        let an = b.block_of(above).name.as_str();
-        let want = matches!(an, "minecraft:snow" | "minecraft:snow_block" | "minecraft:powder_snow");
-        if (cur == "true") != want {
-            if let Some(ns) = b.with_prop(st, "snowy", if want { "true" } else { "false" }) {
-                g.world.set_block(pos, ns);
-                return true;
-            }
-        }
-        return false;
-    }
+    // grass/podzol/mycelium `snowy` is vanilla `updateShape` in `blocks::grass`
     let name = b.block_of(st).name.as_str();
     let short = name.strip_prefix("minecraft:").unwrap_or(name);
     let sup = support(short, st);
