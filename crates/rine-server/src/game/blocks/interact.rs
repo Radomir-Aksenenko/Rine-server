@@ -13,7 +13,7 @@
 //! extra items, food) are returned in `UseOut` and applied by the caller
 //! (`redstone::blocks_use`), so families stay testable on `testw::World`.
 
-use super::Rng;
+use super::{Beh, Rng};
 use crate::game::redstone::engine::Lvl;
 use crate::game::redstone::Rs;
 use rine_protocol::BlockPos;
@@ -91,15 +91,17 @@ pub enum ItemOp {
 }
 
 /// Step 1a: `BlockState.useItemOn` with the held stack.
-pub fn use_item_on<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _ctx: &UseCtx, _rng: &mut Rng) -> Res {
+pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
+        Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::Candle | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_item_on(rs, l, st, pos, ctx, rng),
         _ => Res::TryEmptyHand,
     }
 }
 
 /// Step 1b: `BlockState.useWithoutItem` (main hand only).
-pub fn use_without_item<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _ctx: &UseCtx, _rng: &mut Rng) -> Res {
+pub fn use_without_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
+        Beh::Bell | Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_without_item(rs, l, st, pos, ctx, rng),
         _ => Res::Pass,
     }
 }
