@@ -114,6 +114,16 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             let _ = (yaw, pitch);
             super::survival::use_item(g, slot, hand, seq);
         }
+        S_SIGN_UPDATE => {
+            // ServerboundSignUpdatePacket: pos, four lines, SignTextSlot id
+            let pos = r.block_pos()?;
+            let mut lines = Vec::with_capacity(4);
+            for _ in 0..4 {
+                lines.push(r.string(384)?.to_string());
+            }
+            let side = r.varint()?;
+            super::blocks::signs::handle_update(g, slot, pos, lines, side);
+        }
         S_SET_CARRIED_ITEM => {
             let s = r.i16()?;
             if (0..9).contains(&s) {

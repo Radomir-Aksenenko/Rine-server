@@ -277,6 +277,13 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
 
     // block families: `useItemOn` / `useWithoutItem`, then `ItemStack.useOn`
     let can_eat = g.player(slot).map(|p| super::survival::can_eat(p)).unwrap_or(false);
+    // a sign's block entity, read for the family (`SignBlockEntity` at the click)
+    let sign = match g.player(slot).map(|p| (p.uuid, p.gamemode)) {
+        Some((uuid, gm)) if super::blocks::beh(clicked) == super::blocks::Beh::Sign => {
+            super::blocks::signs::snapshot(g, pos, uuid, gm == 0 || gm == 1)
+        }
+        _ => Default::default(),
+    };
     let uctx = super::blocks::interact::UseCtx {
         item: stack.item,
         count: stack.count,
@@ -290,6 +297,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         pos: g.player(slot).map(|p| p.pos).unwrap_or_default(),
         can_eat,
         other: g.player(slot).map(|p| p.inv.slots[if hand == 1 { 36 + p.held as usize } else { 45 }].item).unwrap_or(0),
+        sign,
     };
     {
         use super::blocks::interact::Res;
@@ -363,6 +371,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     }
     g.world.set_block(target, st);
     super::place::after_place(g, target, st);
+    super::blocks::signs::on_placed(g, slot, target);
     super::redstone::placed(g, target);
     let p = g.player(slot).unwrap();
     if gm != 1 {
@@ -439,6 +448,9 @@ fn apply_use(g: &mut Game, slot: usize, inv_slot: usize, o: super::blocks::inter
     }
     if let Some((n, m)) = o.food {
         super::survival::eat_block(g, slot, n, m);
+    }
+    if let Some(op) = o.sign {
+        super::blocks::signs::apply(g, slot, op);
     }
     if o.item != ItemOp::Keep || o.give.is_some() {
         if let Some(p) = g.player(slot) {

@@ -34,6 +34,7 @@ pub mod props;
 pub mod random;
 pub mod rng;
 pub mod shape;
+pub mod signs;
 pub mod snow;
 pub mod tools;
 pub mod uses;
@@ -213,6 +214,8 @@ pub enum Beh {
     Sapling,
     /// `BedBlock` and `AbstractBedBlock` of the 16 colours (`bed.rs`).
     Bed,
+    /// `SignBlock` and its subclasses (standing, wall, hanging, wall hanging).
+    Sign,
 }
 
 struct Table {
@@ -280,6 +283,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = uses::classify(n) {
+        return b;
+    }
+    if let Some(b) = signs::classify(n) {
         return b;
     }
     Beh::None
@@ -446,6 +452,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
         Beh::Leaves => Some(leaves::placement(l, st, pos)),
         Beh::ChorusPlant => Some(misc::chorus_placement(l, st, pos)),
         Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Vine | Beh::AmethystCluster => plants::placement(l, st, pos, ctx),
+        Beh::Sign => signs::placement(l, st, pos, ctx),
         Beh::ConcretePowder => Some(falling::placement(l, st, pos)),
         _ => Some(st),
     }

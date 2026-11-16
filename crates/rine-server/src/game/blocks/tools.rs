@@ -560,7 +560,7 @@ mod tests {
     }
 
     fn held(name: &str, count: i32, face: u8) -> UseCtx {
-        UseCtx { item: item_id(name), count, damage: 0, main_hand: true, creative: false, sneaking: false, face, cursor: (0.5, 0.5, 0.5), yaw: 0.0, pos: [0.0; 3], can_eat: false, other: 0 }
+        UseCtx { item: item_id(name), count, damage: 0, main_hand: true, creative: false, sneaking: false, face, cursor: (0.5, 0.5, 0.5), yaw: 0.0, pos: [0.0; 3], can_eat: false, other: 0, sign: Default::default() }
     }
 
     fn run(w: &mut TW, rs: &mut Rs, p: BlockPos, name: &str, face: u8) -> Res {

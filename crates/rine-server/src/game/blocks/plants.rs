@@ -799,7 +799,7 @@ fn vine_random<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut
 }
 
 /// `Direction.orderedByNearest(entity)` for the placing player's view.
-fn ordered_by_nearest(yaw: f32, pitch: f32) -> [u8; 6] {
+pub(super) fn ordered_by_nearest(yaw: f32, pitch: f32) -> [u8; 6] {
     let deg = std::f32::consts::PI / 180.0;
     let pitch = pitch * deg;
     let yaw = -yaw * deg;

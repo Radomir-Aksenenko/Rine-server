@@ -190,6 +190,7 @@ mod tests {
             pos: [0.0; 3],
             can_eat: false,
             other: 0,
+            sign: Default::default(),
         }
     }
 

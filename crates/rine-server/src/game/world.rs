@@ -246,7 +246,7 @@ impl World {
                         y: p.y as i16,
                         z: (p.z & 15) as u8,
                         type_id: ty,
-                        nbt: None,
+                        nbt: super::blocks::signs::fresh_nbt(state),
                     });
                     slot.chunk.dirty = true;
                     self.be_added.push(p);

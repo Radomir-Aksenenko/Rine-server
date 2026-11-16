@@ -107,6 +107,11 @@ pub fn block_entity_nbt(g: &Game, pos: [i32; 3]) -> Option<Tag> {
                 ("lit_time_remaining", || Tag::Int(0)),
                 ("RecipesUsed", Tag::compound),
             ],
+            "sign" | "hanging_sign" => &[
+                ("front_text", crate::game::blocks::signs::fresh_side_tag),
+                ("back_text", crate::game::blocks::signs::fresh_side_tag),
+                ("is_waxed", || Tag::Byte(0)),
+            ],
             "brewing_stand" => &[
                 ("Fuel", || Tag::Int(0)),
                 ("speed_multiplier", || Tag::Float(1.0)),
