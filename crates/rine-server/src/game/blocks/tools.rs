@@ -14,7 +14,7 @@
 //!   has no adventure flag.
 //! - honeycomb on signs (`SignApplicator`): the sign family.
 //! - bone meal on water (`growWaterPlant`) and on the blocks listed in the
-//!   doc of `bone_meal` (grass, saplings, moss, mushrooms, nylium, ...).
+//!   doc of `bone_meal` (grass, moss, mushrooms, nylium, ...).
 //! - nether portal ignition in `BaseFireBlock.canBePlacedAt` (`isPortal`).
 //! - game events and criteria triggers.
 //! - the `popResourceFromFace` drop position (rooted dirt pops from the middle).
@@ -25,6 +25,8 @@
 
 use super::crops;
 use super::fire;
+use super::bonemeal;
+use super::sapling;
 use super::interact::{ItemOp, Res, UseCtx, UseOut};
 use super::plants;
 use super::props::{getb, getv, has, setb, vid, Pr};
@@ -461,15 +463,16 @@ fn wax_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx) 
 
 /// `BoneMealItem.useOn` through `growCrop`. The water branch is not ported.
 ///
-/// Not reached here (vanilla `BonemealableBlock` that needs a placed feature
-/// or a spread, all TODO): grass_block, short and tall grass, fern, large
-/// fern, saplings and propagule, azalea, moss blocks and pale moss, huge
-/// mushroom blocks, mycelium, crimson and warped nylium, nether fungus.
+/// Saplings (`sapling.rs`) are routed here. Not reached here (vanilla
+/// `BonemealableBlock` that needs a placed feature or a spread, all TODO):
+/// grass_block, short and tall grass, fern, large fern, propagule, azalea,
+/// moss blocks and pale moss, huge mushroom blocks, mycelium, crimson and
+/// warped nylium, nether fungus.
 /// Simple ones not ported yet: tall flowers, flower bed, glow lichen, hanging
 /// moss, mossy carpet, dripleaf, sea pickle, seagrass, rooted dirt,
 /// netherrack, shelf mushroom, mangrove leaves, dry grass, firefly bush, bush.
 fn bone_meal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
-    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng)) {
+    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng) || bonemeal::bonemeal(rs, l, st, pos)) {
         return Res::Pass;
     }
     l.level_event(EV_PLANT_GROWTH, pos, 15);

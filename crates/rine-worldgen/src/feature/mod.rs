@@ -96,6 +96,8 @@ pub struct Decorator {
     height: i32,
     /// Block states, tags and special ids of the tree port; `Some` when a tree was compiled.
     tree_env: Option<tree::TreeEnv>,
+    /// Grower decorators (`Decorator::new_growers`): configured feature name -> placed index.
+    grower_ids: HashMap<String, usize>,
 }
 
 fn bundle() -> &'static Value {
@@ -396,33 +398,72 @@ impl Decorator {
             }
         }
 
-        // The tree tables and the tag and fluid tables cover the final palette.
-        if let Some(ts) = c.tree_states.as_mut() {
-            ts.finish(&c.pal);
-        }
-        // Vegetation survival tables read the final palette (both half variants of the double plants included).
-        let veg = vegetation::VegTable::build(&mut c.pal, &c.tag_names)?;
-        let mut tags = Tags::new(&c.pal, &block_tags);
-        tags.set_vegetation(veg);
-        let tree_env = match c.tree_states.take() {
-            Some(states) => {
-                let air = c.pal.intern("minecraft:air");
-                Some(tree::TreeEnv { states, tags: tree::TreeTags::new(&tags)?, air })
-            }
-            None => None,
-        };
-        Ok(Decorator {
-            palette: c.pal.states().to_vec(),
-            tags,
-            placed: c.placed,
-            steps,
-            placed_in_biome,
-            in_step,
-            min_y: o.min_y(),
-            height: o.height(),
-            tree_env,
-        })
+        finish(c, &block_tags, o.min_y(), o.height(), steps, placed_in_biome, in_step, HashMap::new())
     }
+
+    /// Compiles only the named configured features (`minecraft:oak`, ...) for single-feature placement on
+    /// the live world. The palette is `palette_names` in the given order (the live state ids, so a live
+    /// state id is a palette index), `defaults` maps block names to their default state strings.
+    /// Features are placed with `place_grower`; they run in the overworld height range.
+    pub fn new_growers(palette_names: &[String], defaults: HashMap<String, String>, growers: &[&str]) -> Result<Self, String> {
+        let bundle = bundle();
+        let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
+            .as_object()
+            .ok_or("blockTags")?
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_array().unwrap().iter().map(|b| b.as_str().unwrap().to_string()).collect()))
+            .collect();
+        let mut c = Compiler {
+            bundle,
+            pal: Palette::new(palette_names, defaults),
+            tag_names: region::tag_names(&block_tags),
+            sea_level: 63,
+            placed: Vec::new(),
+            named: HashMap::new(),
+            inline: HashMap::new(),
+            tree_states: None,
+        };
+        let mut grower_ids = HashMap::new();
+        for &g in growers {
+            let feature = c.configured(&Value::String(g.to_string())).map_err(|e| format!("grower {g}: {e}"))?;
+            c.placed.push(PlacedFeature { modifiers: Vec::new(), feature });
+            grower_ids.insert(g.to_string(), c.placed.len() - 1);
+        }
+        finish(c, &block_tags, OVERWORLD_MIN_Y, OVERWORLD_HEIGHT, Vec::new(), Vec::new(), Vec::new(), grower_ids)
+    }
+
+    /// Whether a grower of that name was compiled.
+    pub fn has_grower(&self, name: &str) -> bool {
+        self.grower_ids.contains_key(name)
+    }
+
+    /// `TreeGrower.getMinimumHeight` input: the trunk base height of a compiled tree grower.
+    pub fn grower_base_height(&self, name: &str) -> Option<i32> {
+        match &self.placed[*self.grower_ids.get(name)?].feature {
+            Configured::Tree(t) => Some(t.trunk.base_height),
+            _ => None,
+        }
+    }
+
+    /// Block tags and block-state predicates of this palette.
+    pub fn tags(&self) -> &Tags {
+        &self.tags
+    }
+
+    /// A region for `place_grower` over the nine chunks around `(cx, cz)` in raster order (see
+    /// `Region::for_growers`). Blocks are palette ids of this decorator's palette.
+    pub fn grower_region(&self, cx: i32, cz: i32, blocks: Vec<Vec<u16>>) -> Region<'_> {
+        Region::for_growers(&self.tags, self.min_y, self.height, cx, cz, blocks)
+    }
+
+    /// Places a compiled grower (`ConfiguredFeature.place`) at `pos`, returns the result of `TreeFeature.place`
+    /// (or the feature's result). Writes go to the region; start a log first to read them back.
+    /// `None` when the grower is not compiled.
+    pub fn place_grower(&self, name: &str, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> Option<bool> {
+        let p = *self.grower_ids.get(name)?;
+        Some(self.place_configured(p, region, rng, pos))
+    }
+
 
     /// Output palette (overworld palette followed by the feature states).
     pub fn palette(&self) -> &[String] {
@@ -546,6 +587,50 @@ impl Decorator {
             }
         }
     }
+}
+
+const OVERWORLD_MIN_Y: i32 = -64;
+const OVERWORLD_HEIGHT: i32 = 384;
+
+/// Second half of the compile: tree tables, tags and fluid tables over the final palette.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    mut c: Compiler<'_>,
+    block_tags: &HashMap<String, Vec<String>>,
+    min_y: i32,
+    height: i32,
+    steps: Vec<Vec<usize>>,
+    placed_in_biome: Vec<Vec<bool>>,
+    in_step: Vec<Vec<Vec<bool>>>,
+    grower_ids: HashMap<String, usize>,
+) -> Result<Decorator, String> {
+    // The tree tables and the tag and fluid tables cover the final palette.
+    if let Some(ts) = c.tree_states.as_mut() {
+        ts.finish(&c.pal);
+    }
+    // Vegetation survival tables read the final palette (both half variants of the double plants included).
+    let veg = vegetation::VegTable::build(&mut c.pal, &c.tag_names)?;
+    let mut tags = Tags::new(&c.pal, block_tags);
+    tags.set_vegetation(veg);
+    let tree_env = match c.tree_states.take() {
+        Some(states) => {
+            let air = c.pal.intern("minecraft:air");
+            Some(tree::TreeEnv { states, tags: tree::TreeTags::new(&tags)?, air })
+        }
+        None => None,
+    };
+    Ok(Decorator {
+        palette: c.pal.states().to_vec(),
+        tags,
+        placed: c.placed,
+        steps,
+        placed_in_biome,
+        in_step,
+        min_y,
+        height,
+        tree_env,
+        grower_ids,
+    })
 }
 
 /// Biomes present in the 3x3 chunks: the biome palettes that `addVanillaDecorations` collects.
