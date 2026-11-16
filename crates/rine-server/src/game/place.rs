@@ -260,28 +260,10 @@ fn placed(g: &Game, default: u16, pos: BlockPos, face: u8, cursor: (f32, f32, f3
         return solid(g, pos.offset(0, -1, 0)).then_some(default);
     }
 
-    // hanging signs: ceiling under the clicked underside, wall variant on the side
-    if let Some(wood) = name.strip_suffix("_hanging_sign") {
-        return match face {
-            1 => None,
-            0 => solid(g, support).then(|| set(b, default, "rotation", &rotation16(yaw).to_string())),
-            _ => {
-                let w = b.block(&format!("{wood}_wall_hanging_sign"))?;
-                solid(g, support).then(|| set(b, w.default_state as u16, "facing", face_name(face)))
-            }
-        };
-    }
-
-    // standing and wall signs
-    if let Some(wood) = name.strip_suffix("_sign") {
-        return match face {
-            0 => None,
-            1 => solid(g, support).then(|| set(b, default, "rotation", &rotation16(yaw).to_string())),
-            _ => {
-                let w = b.block(&format!("{wood}_wall_sign"))?;
-                solid(g, support).then(|| set(b, w.default_state as u16, "facing", face_name(face)))
-            }
-        };
+    // signs (standing, wall, hanging, wall hanging): the item's placement
+    // rules (`StandingAndWallBlockItem`) run in `blocks::signs::placement`
+    if name.ends_with("_sign") || name.ends_with("_hanging_sign") {
+        return Some(default);
     }
 
     // banners, heads and skulls: standing (rotation) or wall variant

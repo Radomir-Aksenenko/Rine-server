@@ -202,7 +202,7 @@ fn build_tables() -> Tables {
     t
 }
 
-fn fluid_of(st: u16) -> Option<Fluid> {
+pub(crate) fn fluid_of(st: u16) -> Option<Fluid> {
     tables().fluid[st as usize]
 }
 

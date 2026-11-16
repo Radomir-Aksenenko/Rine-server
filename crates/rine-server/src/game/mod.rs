@@ -294,6 +294,7 @@ impl Game {
         mark(1, &mut t);
 
         super::game::containers::tick(self, runs);
+        super::game::blocks::signs::tick(self);
         super::game::survival::tick(self);
         interact::dig_tick(self);
         mark(2, &mut t);

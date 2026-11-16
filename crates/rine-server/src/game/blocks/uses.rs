@@ -671,6 +671,7 @@ mod tests {
             pos: [0.0; 3],
             can_eat: true,
             other: 0,
+            sign: Default::default(),
         }
     }
 

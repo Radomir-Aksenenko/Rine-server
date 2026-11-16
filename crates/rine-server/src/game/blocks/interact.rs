@@ -39,6 +39,8 @@ pub struct UseCtx {
     pub can_eat: bool,
     /// Item id in the other hand (offhand when using the main hand), 0 = empty.
     pub other: u32,
+    /// The clicked sign's block entity, read by the caller (empty otherwise).
+    pub sign: super::signs::SignSnap,
 }
 
 /// `InteractionResult` of a use.
@@ -73,6 +75,8 @@ pub struct UseOut {
     pub give: Option<(u32, i32)>,
     /// `FoodData.eat(nutrition, saturationModifier)` (cake slice).
     pub food: Option<(i32, f32)>,
+    /// Block entity change of a sign (dye, glow, wax, open the editor).
+    pub sign: Option<super::signs::SignOp>,
 }
 
 /// What happens to the held stack.
@@ -97,6 +101,7 @@ pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: 
     match super::beh(st) {
         Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::Candle | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_item_on(rs, l, st, pos, ctx, rng),
         super::Beh::Cauldron => super::cauldron::use_item_on(rs, l, st, pos, ctx, rng),
+        Beh::Sign => super::signs::use_item_on(rs, l, st, pos, ctx, rng),
         _ => Res::TryEmptyHand,
     }
 }
@@ -109,6 +114,7 @@ pub fn use_without_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, 
             super::falling::dragon_teleport(rs, l, st, pos, rng);
             Res::swing()
         }
+        Beh::Sign => super::signs::use_without_item(rs, l, st, pos, ctx, rng),
         _ => Res::Pass,
     }
 }
