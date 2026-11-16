@@ -25,6 +25,9 @@ enum Support {
     UpperHalf,
     /// Attached to the block on the given side (dx, dy, dz).
     Side(i32, i32, i32),
+    /// The block above has a sturdy center on its bottom face
+    /// (`CeilingHangingSignBlock.canSurvive`).
+    CeilingCenter,
 }
 
 pub fn settle(g: &mut Game) {
@@ -80,6 +83,7 @@ fn check(g: &mut Game, pos: BlockPos) -> bool {
             b.block_of(below).id == b.block_of(st).id && b.get_prop(below, "half") == Some("lower")
         }
         Support::Side(dx, dy, dz) => has_collision(g.world.get_block(pos.x + dx, pos.y + dy, pos.z + dz)),
+        Support::CeilingCenter => super::redstone::data::sturdy_center(g.world.get_block(pos.x, pos.y + 1, pos.z), super::redstone::data::DOWN),
         Support::None => true,
     };
     if ok {
@@ -140,7 +144,7 @@ fn facing_back(st: u16) -> Option<(i32, i32, i32)> {
 fn support(short: &str, st: u16) -> Support {
     let b = &rine_data::get().blocks;
     // attached to a wall
-    if short.ends_with("wall_torch") || short.ends_with("_wall_sign") || short.ends_with("_wall_banner") || short == "ladder" || short.ends_with("_wall_hanging_sign") {
+    if short.ends_with("wall_torch") || short.ends_with("_wall_sign") || short.ends_with("_wall_banner") || short == "ladder" {
         return facing_back(st).map(|(x, y, z)| Support::Side(x, y, z)).unwrap_or(Support::None);
     }
     // buttons, levers, grindstones: `face` = floor / wall / ceiling
@@ -155,8 +159,12 @@ fn support(short: &str, st: u16) -> Support {
     if short == "lantern" || short == "soul_lantern" || short == "copper_lantern" || short.ends_with("_copper_lantern") {
         return if b.get_prop(st, "hanging") == Some("true") { Support::Side(0, 1, 0) } else { Support::Floor };
     }
+    // wall hanging signs keep the default canSurvive (always true)
+    if short.ends_with("_wall_hanging_sign") {
+        return Support::None;
+    }
     if short.ends_with("_hanging_sign") {
-        return Support::Side(0, 1, 0);
+        return Support::CeilingCenter;
     }
     // two-block plants and doors
     if matches!(short, "tall_grass" | "large_fern" | "sunflower" | "lilac" | "rose_bush" | "peony" | "pitcher_plant" | "tall_dry_grass" | "tall_seagrass" | "small_dripleaf")
