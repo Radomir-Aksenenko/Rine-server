@@ -295,6 +295,47 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         }
     }
 
+    // block families: `useItemOn` / `useWithoutItem`, then `ItemStack.useOn`
+    let can_eat = g.player(slot).map(|p| super::survival::can_eat(p)).unwrap_or(false);
+    let uctx = super::blocks::interact::UseCtx {
+        item: stack.item,
+        count: stack.count,
+        damage: stack.damage,
+        main_hand: hand != 1,
+        creative: gm == 1,
+        sneaking,
+        face,
+        cursor,
+        yaw,
+        pos: g.player(slot).map(|p| p.pos).unwrap_or_default(),
+        can_eat,
+    };
+    {
+        use super::blocks::interact::Res;
+        use super::redstone::UseStep;
+        let mut res = Res::Pass;
+        if !sneaking || stack.is_empty() {
+            res = super::redstone::blocks_use(g, slot, pos, &uctx, UseStep::Block);
+        }
+        if res == Res::Pass && !stack.is_empty() {
+            res = super::redstone::blocks_use(g, slot, pos, &uctx, UseStep::Item);
+        }
+        match res {
+            Res::Pass | Res::TryEmptyHand => {}
+            Res::Fail => {
+                resync(g, slot, pos, seq);
+                return;
+            }
+            Res::Done(o) => {
+                apply_use(g, slot, inv_slot, o);
+                if let Some(p) = g.player(slot) {
+                    p.ack(seq);
+                }
+                return;
+            }
+        }
+    }
+
     let place_state = super::items::places(stack.item);
     if stack.is_empty() || place_state == 0 {
         if let Some(p) = g.player(slot) {
@@ -348,6 +389,78 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     }
     if let Some(p) = g.player(slot) {
         p.ack(seq);
+    }
+}
+
+/// Effects of a block use on the player (`blocks::interact::UseOut`).
+fn apply_use(g: &mut Game, slot: usize, inv_slot: usize, o: super::blocks::interact::UseOut) {
+    use super::blocks::interact::ItemOp;
+    let mut drop: Vec<Stack> = Vec::new();
+    match o.item {
+        ItemOp::Keep => {}
+        ItemOp::Damage(n) => super::durability::wear(g, slot, inv_slot, n),
+        ItemOp::Shrink(n) => {
+            if let Some(p) = g.player(slot) {
+                if p.gamemode != 1 {
+                    let s = &mut p.inv.slots[inv_slot];
+                    s.count -= n;
+                    if s.count <= 0 {
+                        *s = Stack::EMPTY;
+                    }
+                }
+            }
+        }
+        ItemOp::Fill(item) => {
+            if let Some(p) = g.player(slot) {
+                let result = Stack::new(item, 1);
+                if p.gamemode == 1 {
+                    if !p.inv.slots.iter().any(|s| s.item == item && !s.is_empty()) {
+                        let left = p.inv.add(result);
+                        if left > 0 {
+                            drop.push(result.with_count(left));
+                        }
+                    }
+                } else {
+                    let s = &mut p.inv.slots[inv_slot];
+                    s.count -= 1;
+                    if s.count <= 0 {
+                        *s = result;
+                    } else {
+                        let left = p.inv.add(result);
+                        if left > 0 {
+                            drop.push(result.with_count(left));
+                        }
+                    }
+                }
+            }
+        }
+        ItemOp::Set(item, count) => {
+            if let Some(p) = g.player(slot) {
+                p.inv.slots[inv_slot] = Stack::new(item, count);
+            }
+        }
+    }
+    if let Some((item, count)) = o.give {
+        if let Some(p) = g.player(slot) {
+            let st = Stack::new(item, count);
+            let left = p.inv.add(st);
+            if left > 0 {
+                drop.push(st.with_count(left));
+            }
+        }
+    }
+    if let Some((n, m)) = o.food {
+        super::survival::eat_block(g, slot, n, m);
+    }
+    if o.item != ItemOp::Keep || o.give.is_some() {
+        if let Some(p) = g.player(slot) {
+            let inv = p.inventory_packet();
+            p.send(inv);
+        }
+        super::track::equipment_changed(g, slot);
+    }
+    for s in drop {
+        super::entity::drop_from_player(g, slot, s, false);
     }
 }
 

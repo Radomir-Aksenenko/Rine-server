@@ -21,6 +21,7 @@
 pub mod copper;
 pub mod crops;
 pub mod grass;
+pub mod interact;
 pub mod leaves;
 pub mod misc;
 pub mod fire;

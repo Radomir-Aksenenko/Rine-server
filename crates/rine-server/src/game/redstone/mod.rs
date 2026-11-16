@@ -142,6 +142,37 @@ pub fn use_block(g: &mut Game, slot: usize, pos: BlockPos, st: u16) -> bool {
     done
 }
 
+/// Which step of a right click on a block (see `blocks::interact`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UseStep {
+    /// `useItemOn`, then `useWithoutItem` on `TryEmptyHand` (main hand).
+    Block,
+    /// `ItemStack.useOn`.
+    Item,
+}
+
+/// Run one step of a right click on the block at `pos` through the block
+/// families. Effects on the player come back in the result.
+pub fn blocks_use(g: &mut Game, slot: usize, pos: BlockPos, ctx: &crate::game::blocks::interact::UseCtx, step: UseStep) -> crate::game::blocks::interact::Res {
+    use crate::game::blocks::interact::{self as bi, Res};
+    process(g);
+    let seed = g.blocks.seed ^ g.tick.wrapping_mul(0x2545_F491_4F6C_DD1D);
+    let mut rng = crate::game::blocks::Rng::derive(seed, pos.x as i64, ((pos.y as i64) << 32) ^ pos.z as i64);
+    let mut res = Res::Pass;
+    with_engine(g, Some(slot), |rs, l| {
+        let st = l.get(pos);
+        res = match step {
+            UseStep::Block => match bi::use_item_on(rs, l, st, pos, ctx, &mut rng) {
+                Res::TryEmptyHand if ctx.main_hand => bi::use_without_item(rs, l, st, pos, ctx, &mut rng),
+                Res::TryEmptyHand => Res::Pass,
+                r => r,
+            },
+            UseStep::Item => bi::item_use_on(rs, l, st, pos, ctx, &mut rng),
+        };
+    });
+    res
+}
+
 /// Placement corrections (`getStateForPlacement`) for a block about to be
 /// placed by a player.
 pub fn placement_state(g: &Game, pos: BlockPos, st: u16) -> u16 {

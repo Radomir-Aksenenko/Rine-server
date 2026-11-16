@@ -519,6 +519,29 @@ fn tick_player(g: &mut Game, slot: usize, st: &mut PlayerSurvival) {
     }
 }
 
+/// `FoodData.eat(nutrition, saturationModifier)` from a block (cake slice):
+/// saturation gained is `nutrition * modifier * 2`.
+pub fn eat_block(g: &mut Game, slot: usize, nutrition: i32, modifier: f32) {
+    let Some(eid) = g.player(slot).map(|p| p.eid) else { return };
+    let mut st = take_state(slot, eid);
+    if let Some(p) = g.player(slot) {
+        let mut s = Stats { health: p.health, food: p.food, saturation: p.saturation, exhaustion: st.exhaustion, timer: st.timer };
+        apply_food(&mut s, nutrition, nutrition as f32 * modifier * 2.0);
+        p.health = s.health;
+        p.food = s.food;
+        p.saturation = s.saturation;
+        st.exhaustion = s.exhaustion;
+        st.timer = s.timer;
+        p.send(out::set_health(s.health, s.food, s.saturation));
+    }
+    put_state(slot, st);
+}
+
+/// `Player.canEat(false)`: hungry, or invulnerable (creative).
+pub fn can_eat(p: &super::player::Player) -> bool {
+    p.gamemode == 1 || p.food < MAX_FOOD
+}
+
 /// Finishes the eaten item: applies nutrition, consumes one item (not in
 /// creative), and sends the use-complete event.
 fn complete_meal(g: &mut Game, slot: usize, st: &mut PlayerSurvival) {
