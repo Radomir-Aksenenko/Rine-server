@@ -383,11 +383,10 @@ fn chest_is_double(t: &Tables, st: u16) -> bool {
     getv(st, Pr::Type) != t.ids.v_single
 }
 
-/// Held stack shrinks by one as in vanilla `stack.shrink(1)`, which ignores
-/// creative. `Shrink` would respect creative, so set the stack to count - 1
-/// (`Stack::new` turns 0 into empty).
-fn shrink_always(ctx: &UseCtx) -> ItemOp {
-    ItemOp::Set(ctx.item, ctx.count - 1)
+/// `stack.shrink(1)`. Creative keeps the stack: `ServerPlayerGameMode.useItemOn`
+/// restores the count after `useOn` for players with infinite materials.
+fn shrink_always(_ctx: &UseCtx) -> ItemOp {
+    ItemOp::Shrink(1)
 }
 
 /// The face's neighbour, `BlockPos.relative(face)`.
@@ -817,7 +816,7 @@ mod tests {
         let st = b_set(s("exposed_cut_copper_stairs"), "half", "bottom");
         w.put(p, st);
         let r = run(&mut w, &mut rs, p, "honeycomb", 1);
-        assert_eq!(done_item(r), ItemOp::Set(item_id("honeycomb"), 2));
+        assert_eq!(done_item(r), ItemOp::Shrink(1));
         assert_eq!(block_of(w.get(p)), block_id("waxed_exposed_cut_copper_stairs"));
         assert_eq!(rine_data::get().blocks.get_prop(w.get(p), "half"), Some("bottom"));
         assert_eq!(w.events, vec![(EV_WAX_ON, p, 0)]);
@@ -860,8 +859,8 @@ mod tests {
         ctx.creative = true;
         let st = w.get(p);
         let r = use_on(&mut rs, &mut w, st, p, &ctx, &mut Rng::new(2));
-        // one honeycomb: count - 1 = 0, which is an empty stack
-        assert_eq!(done_item(r), ItemOp::Set(item_id("honeycomb"), 0));
+        // creative: the caller keeps the stack (count restored after useOn)
+        assert_eq!(done_item(r), ItemOp::Shrink(1));
     }
 
     #[test]
@@ -873,7 +872,7 @@ mod tests {
         w.put(p, seti(s("wheat"), Pr::Age, 1));
         w.light = 15;
         let r = run(&mut w, &mut rs, p, "bone_meal", 1);
-        assert_eq!(done_item(r), ItemOp::Set(item_id("bone_meal"), 2));
+        assert_eq!(done_item(r), ItemOp::Shrink(1));
         let age = geti(w.get(p), Pr::Age);
         // age 1 + range(2, 5)
         assert!((3..=6).contains(&age), "{age}");
@@ -992,7 +991,7 @@ mod tests {
         let mut w = TW::new();
         w.put(p, b_set(s("candle_cake"), "lit", "false"));
         let r = run(&mut w, &mut rs, p, "fire_charge", 1);
-        assert_eq!(done_item(r), ItemOp::Set(item_id("fire_charge"), 2));
+        assert_eq!(done_item(r), ItemOp::Shrink(1));
         assert_eq!(rine_data::get().blocks.get_prop(w.get(p), "lit"), Some("true"));
         assert!(w.sounds.iter().any(|(n, _)| n.as_str() == "item.firecharge.use"));
         // fire on the clicked face
@@ -1016,7 +1015,7 @@ mod tests {
         let mut rng = Rng::new(3);
         let st = w.get(p);
         let r = use_on(&mut rs, &mut w, st, p, &held("fire_charge", 1, 1), &mut rng);
-        assert_eq!(done_item(r), ItemOp::Set(item_id("fire_charge"), 0));
+        assert_eq!(done_item(r), ItemOp::Shrink(1));
     }
 
     #[test]

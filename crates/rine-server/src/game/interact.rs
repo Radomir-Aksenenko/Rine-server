@@ -317,7 +317,8 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         if !sneaking || stack.is_empty() {
             res = super::redstone::blocks_use(g, slot, pos, &uctx, UseStep::Block);
         }
-        if res == Res::Pass && !stack.is_empty() {
+        // `ItemStack.useOn` passes in adventure (`!mayBuild`; no `can_place_on` yet)
+        if res == Res::Pass && !stack.is_empty() && gm != 2 {
             res = super::redstone::blocks_use(g, slot, pos, &uctx, UseStep::Item);
         }
         match res {
