@@ -20,6 +20,7 @@
 
 pub mod crops;
 pub mod grass;
+pub mod plants;
 pub mod props;
 pub mod random;
 pub mod rng;
@@ -88,6 +89,28 @@ pub enum Beh {
     Snowy,
     /// `NyliumBlock` (crimson, warped).
     Nylium,
+    /// `CactusBlock`.
+    Cactus,
+    /// `SugarCaneBlock`.
+    SugarCane,
+    /// `BambooStalkBlock`.
+    Bamboo,
+    /// `BambooSaplingBlock`.
+    BambooSapling,
+    /// `GrowingPlantHeadBlock` (kelp, weeping, twisting, cave vines).
+    GrowHead,
+    /// `GrowingPlantBodyBlock` (the body blocks of the same plants).
+    GrowBody,
+    /// `MushroomBlock` (spread).
+    Mushroom,
+    /// `BuddingAmethystBlock`.
+    BuddingAmethyst,
+    /// `AmethystClusterBlock` (cluster and buds).
+    AmethystCluster,
+    /// `EyeblossomBlock`.
+    Eyeblossom,
+    /// `VineBlock`.
+    Vine,
 }
 
 struct Table {
@@ -116,6 +139,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = grass::classify(n) {
+        return b;
+    }
+    if let Some(b) = plants::classify(n) {
         return b;
     }
     Beh::None
@@ -252,8 +278,9 @@ pub struct PlaceCtx {
 /// `Block.getStateForPlacement` corrections for this family's blocks, run
 /// after the generic placement in `place.rs` and the redstone engine's.
 /// Read-only. None means the block cannot be placed.
-pub fn placement<L: Lvl>(_l: &L, st: u16, _pos: BlockPos, _ctx: &PlaceCtx) -> Option<u16> {
+pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Option<u16> {
     match beh(st) {
+        Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Vine | Beh::AmethystCluster => plants::placement(l, st, pos, ctx),
         _ => Some(st),
     }
 }
@@ -265,7 +292,8 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::None => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
         Beh::Spreading | Beh::Nylium => grass::random_tick(rs, l, st, pos, rng),
-        Beh::Snowy => {}
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::Mushroom | Beh::BuddingAmethyst | Beh::Eyeblossom | Beh::Vine => plants::random_tick(rs, l, st, pos, rng),
+        Beh::Snowy | Beh::GrowBody | Beh::AmethystCluster => {}
     }
 }
 
@@ -283,13 +311,16 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::None => st,
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Spreading | Beh::Snowy => grass::update_shape(st, dir, nst),
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::GrowBody | Beh::Mushroom | Beh::AmethystCluster | Beh::Vine => plants::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::BuddingAmethyst | Beh::Eyeblossom => st,
         Beh::Nylium => st,
     }
 }
 
 /// A scheduled tick came due for a block the engine does not know.
-pub fn tick<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos) {
+pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Eyeblossom => plants::tick(rs, l, st, pos),
         _ => {}
     }
 }
