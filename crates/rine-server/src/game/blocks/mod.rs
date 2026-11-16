@@ -22,6 +22,7 @@ pub mod copper;
 pub mod crops;
 pub mod grass;
 pub mod leaves;
+pub mod fire;
 pub mod props;
 pub mod random;
 pub mod rng;
@@ -111,6 +112,10 @@ pub enum Beh {
     HugeMushroom,
     /// `LeavesBlock` and subclasses (distance, decay).
     Leaves,
+    /// `FireBlock`.
+    Fire,
+    /// `SoulFireBlock`.
+    SoulFire,
 }
 
 struct Table {
@@ -148,6 +153,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = leaves::classify(n) {
+        return b;
+    }
+    if let Some(b) = fire::classify(n) {
         return b;
     }
     Beh::None
@@ -297,6 +305,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
 pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
     match beh(st) {
         Beh::None | Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Door | Beh::Chorus | Beh::HugeMushroom => {}
+        Beh::None | Beh::Fire | Beh::SoulFire => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
         Beh::Spreading | Beh::Nylium => grass::random_tick(rs, l, st, pos, rng),
         Beh::Snowy => {}
@@ -308,7 +317,9 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
 }
 
 /// `FluidState.randomTick` (only lava ticks randomly): fire from lava.
-pub fn fluid_random_tick<L: Lvl>(_rs: &mut Rs, _l: &mut L, _st: u16, _pos: BlockPos, _rng: &mut Rng) {}
+pub fn fluid_random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, _st: u16, pos: BlockPos, rng: &mut Rng) {
+    fire::lava_random_tick(rs, l, pos, rng);
+}
 
 /// `ServerLevel.tickPrecipitation` at column (x, z): ice, snow layers,
 /// `handlePrecipitation` of the block below the top.
@@ -325,6 +336,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Copper => st,
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Leaves => leaves::update_shape(rs, l, st, pos, nst),
+        Beh::Fire | Beh::SoulFire => fire::update_shape(rs, l, st, pos, dir, npos, nst),
         #[allow(unreachable_patterns)]
         _ => st,
     }
@@ -335,13 +347,15 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
         Beh::Chorus => shape::tick(rs, l, st, pos),
         Beh::Leaves => leaves::tick(rs, l, st, pos),
+        Beh::Fire => fire::tick(rs, l, st, pos),
         _ => {}
     }
 }
 
 /// `BlockState.onPlace` for blocks the engine does not know.
-pub fn on_place<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _old: u16) {
+pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16) {
     match beh(st) {
+        Beh::Fire | Beh::SoulFire => fire::on_place(rs, l, st, pos, old),
         _ => {}
     }
 }
