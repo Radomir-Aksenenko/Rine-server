@@ -96,6 +96,7 @@ pub enum ItemOp {
 pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
         Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::Candle | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_item_on(rs, l, st, pos, ctx, rng),
+        super::Beh::Cauldron => super::cauldron::use_item_on(rs, l, st, pos, ctx, rng),
         _ => Res::TryEmptyHand,
     }
 }
@@ -104,6 +105,10 @@ pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: 
 pub fn use_without_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
         Beh::Bell | Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_without_item(rs, l, st, pos, ctx, rng),
+        super::Beh::DragonEgg => {
+            super::falling::dragon_teleport(rs, l, st, pos, rng);
+            Res::swing()
+        }
         _ => Res::Pass,
     }
 }

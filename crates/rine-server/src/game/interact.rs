@@ -230,26 +230,6 @@ pub fn break_block(g: &mut Game, slot: usize, pos: BlockPos, drops: bool) {
     // wear is applied after the drops, which use the tool as it was
     let name = b.block_of(st).name.clone();
     super::durability::on_mine(g, slot, &name, b.state(st).hardness);
-    gravity_check(g, pos.offset(0, 1, 0));
-}
-
-/// Sand/gravel/concrete powder above a removed block start falling.
-pub fn gravity_check(g: &mut Game, pos: BlockPos) {
-    let st = g.world.get_block(pos.x, pos.y, pos.z);
-    let name = &rine_data::get().blocks.block_of(st).name;
-    let falls = matches!(name.as_str(), "minecraft:sand" | "minecraft:red_sand" | "minecraft:gravel" | "minecraft:suspicious_sand" | "minecraft:suspicious_gravel")
-        || name.ends_with("_concrete_powder")
-        || name.ends_with("anvil");
-    if !falls {
-        return;
-    }
-    let below = g.world.get_block(pos.x, pos.y - 1, pos.z);
-    let b = &rine_data::get().blocks;
-    if b.is_air(below) || b.has(below, rine_data::blocks::flag::REPLACEABLE) {
-        g.world.set_block(pos, 0);
-        entity::spawn_falling(g, [pos.x as f64 + 0.5, pos.y as f64, pos.z as f64 + 0.5], st);
-        gravity_check(g, pos.offset(0, 1, 0));
-    }
 }
 
 pub fn other_half(st: u16, pos: BlockPos) -> Option<BlockPos> {
@@ -377,7 +357,6 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
     g.world.set_block(target, st);
     super::place::after_place(g, target, st);
     super::redstone::placed(g, target);
-    gravity_check(g, target);
     let p = g.player(slot).unwrap();
     if gm != 1 {
         p.inv.slots[inv_slot].count -= 1;

@@ -127,7 +127,6 @@ pub fn classify(n: &str) -> Option<Beh> {
         "pointed_dripstone" | "sulfur_spike" => Beh::Speleothem,
         "mangrove_propagule" => Beh::Propagule,
         "spore_blossom" => Beh::SporeBlossom,
-        "cauldron" | "water_cauldron" => Beh::Cauldron,
         _ => return None,
     })
 }

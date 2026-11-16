@@ -7,7 +7,7 @@
 
 use crate::game::cmd::commands::execute::block_test;
 use crate::game::cmd::{lit, Commands, Ctx};
-use crate::game::{containers, entity, interact, loot, Game};
+use crate::game::{containers, entity, loot, Game};
 use crate::out;
 use rine_command::args::block::BlockPredicate;
 use rine_command::args::Arg;
@@ -177,7 +177,6 @@ fn destroy_block(g: &mut Game, p: [i32; 3]) -> bool {
             10,
         );
     }
-    interact::gravity_check(g, bp([p[0], p[1] + 1, p[2]]));
     true
 }
 
