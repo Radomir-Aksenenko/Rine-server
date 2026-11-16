@@ -37,6 +37,8 @@ pub struct UseCtx {
     pub pos: [f64; 3],
     /// `Player.canEat(false)`: food bar not full (creative counts as yes).
     pub can_eat: bool,
+    /// Item id in the other hand (offhand when using the main hand), 0 = empty.
+    pub other: u32,
 }
 
 /// `InteractionResult` of a use.

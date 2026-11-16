@@ -309,6 +309,7 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
         yaw,
         pos: g.player(slot).map(|p| p.pos).unwrap_or_default(),
         can_eat,
+        other: g.player(slot).map(|p| p.inv.slots[if hand == 1 { 36 + p.held as usize } else { 45 }].item).unwrap_or(0),
     };
     {
         use super::blocks::interact::Res;

@@ -322,6 +322,7 @@ struct Tables {
     candle: Vec<bool>,
     candle_cake: Vec<bool>,
     items: AHashMap<u32, Kind>,
+    shield: u32,
     ids: Ids,
 }
 
@@ -356,6 +357,7 @@ fn build() -> Tables {
         candle: block_tag("candles"),
         candle_cake: block_tag("candle_cakes"),
         items,
+        shield: item_id("shield"),
         ids: Ids {
             hanging_roots: item_id("hanging_roots"),
             flint_and_steel: item_id("flint_and_steel"),
@@ -521,6 +523,9 @@ pub fn use_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseC
     let t = tables();
     let Some(kind) = t.items.get(&ctx.item).copied() else { return Res::Pass };
     match kind {
+        // `BlockTransformer.playerHasBlockingItemUseIntent`: main hand, a shield
+        // (the only `blocks_attacks` item) in the offhand, not sneaking
+        Kind::Shovel | Kind::Hoe | Kind::Axe if ctx.main_hand && ctx.other == t.shield && !ctx.sneaking => Res::Pass,
         Kind::Shovel => transform(rs, l, &t.shovel, st, pos, ctx.face),
         Kind::Hoe => transform(rs, l, &t.hoe, st, pos, ctx.face),
         Kind::Axe => transform(rs, l, &t.axe, st, pos, ctx.face),
@@ -552,7 +557,7 @@ mod tests {
     }
 
     fn held(name: &str, count: i32, face: u8) -> UseCtx {
-        UseCtx { item: item_id(name), count, damage: 0, main_hand: true, creative: false, sneaking: false, face, cursor: (0.5, 0.5, 0.5), yaw: 0.0, pos: [0.0; 3], can_eat: false }
+        UseCtx { item: item_id(name), count, damage: 0, main_hand: true, creative: false, sneaking: false, face, cursor: (0.5, 0.5, 0.5), yaw: 0.0, pos: [0.0; 3], can_eat: false, other: 0 }
     }
 
     fn run(w: &mut TW, rs: &mut Rs, p: BlockPos, name: &str, face: u8) -> Res {
@@ -1050,5 +1055,22 @@ mod tests {
         w.put(p.offset(0, 1, 0), b_set(s("exposed_copper_door"), "half", "upper"));
         run(&mut w, &mut rs, p, "iron_axe", 1);
         assert_eq!(block_of(w.get(p)), block_id("copper_door"));
+    }
+
+    #[test]
+    fn shield_in_offhand_blocks_tool_transforms() {
+        // `BlockTransformer.playerHasBlockingItemUseIntent`
+        let mut rs = Rs::default();
+        let p = base();
+        let mut w = TW::new();
+        w.put(p, s("dirt"));
+        let mut ctx = held("iron_hoe", 1, 1);
+        ctx.other = item_id("shield");
+        assert_eq!(use_on(&mut rs, &mut w, s("dirt"), p, &ctx, &mut Rng::new(1)), Res::Pass);
+        assert_eq!(w.get(p), s("dirt"));
+        // sneaking (secondary use) lets the hoe work
+        ctx.sneaking = true;
+        assert!(matches!(use_on(&mut rs, &mut w, s("dirt"), p, &ctx, &mut Rng::new(1)), Res::Done(_)));
+        assert_eq!(block_of(w.get(p)), block_id("farmland"));
     }
 }

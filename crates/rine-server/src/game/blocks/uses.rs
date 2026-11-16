@@ -622,6 +622,10 @@ fn anchor_use_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: 
         l.sound("block.respawn_anchor.charge", pos, 1.0, 1.0, CAT_BLOCKS, false);
         return shrink_one();
     }
+    // glowstone in the offhand will charge it: do not explode with the main hand
+    if ctx.main_hand && ctx.other == t().glowstone && charges < 4 {
+        return Res::Pass;
+    }
     Res::TryEmptyHand
 }
 
@@ -666,6 +670,7 @@ mod tests {
             yaw: 0.0,
             pos: [0.0; 3],
             can_eat: true,
+            other: 0,
         }
     }
 
@@ -1064,5 +1069,20 @@ mod tests {
         c.creative = true;
         assert_eq!(use_item_on(&mut rs, &mut w, s("flower_pot"), p, &c, &mut rng), shrink_one());
         assert_eq!(w.get(p), s("potted_dandelion"));
+    }
+
+    #[test]
+    fn anchor_waits_for_glowstone_in_the_offhand() {
+        let p = at();
+        let mut rs = Rs::default();
+        let mut rng = Rng::new(3);
+        let mut w = TW::new();
+        let st = seti(super::super::default_state("respawn_anchor"), Pr::Charges, 2);
+        w.put(p, st);
+        let mut c = ctx("");
+        c.other = super::super::item_id("glowstone");
+        // empty main hand, glowstone in the offhand: PASS, no explosion
+        assert_eq!(super::super::interact::use_item_on(&mut rs, &mut w, st, p, &c, &mut rng), Res::Pass);
+        assert_eq!(w.get(p), st);
     }
 }
