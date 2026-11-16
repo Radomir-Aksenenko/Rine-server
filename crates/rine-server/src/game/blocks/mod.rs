@@ -32,6 +32,7 @@ pub mod random;
 pub mod rng;
 pub mod shape;
 pub mod snow;
+pub mod tools;
 #[cfg(test)]
 pub mod testw;
 
