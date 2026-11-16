@@ -31,6 +31,7 @@ pub mod random;
 pub mod rng;
 pub mod shape;
 pub mod snow;
+pub mod uses;
 #[cfg(test)]
 pub mod testw;
 
@@ -170,6 +171,20 @@ pub enum Beh {
     Eyeblossom,
     /// `VineBlock`.
     Vine,
+    /// `BellBlock` (ring on use and on a rising redstone edge).
+    Bell,
+    /// `ComposterBlock` (layers, ripening, bone meal).
+    Composter,
+    /// `FlowerPotBlock` and the potted plants.
+    FlowerPot,
+    /// `CakeBlock`.
+    Cake,
+    /// `CandleCakeBlock`.
+    CandleCake,
+    /// `CandleBlock`.
+    Candle,
+    /// `RespawnAnchorBlock`.
+    RespawnAnchor,
 }
 
 struct Table {
@@ -219,6 +234,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = misc::classify(n) {
+        return b;
+    }
+    if let Some(b) = uses::classify(n) {
         return b;
     }
     Beh::None
@@ -450,6 +468,7 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
         Beh::FrostedIce => snow::tick(rs, l, st, pos),
+        Beh::Composter => uses::tick(rs, l, st, pos),
         _ => misc::tick(rs, l, st, pos),
     }
 }
@@ -460,6 +479,7 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
         Beh::Fire | Beh::SoulFire => fire::on_place(rs, l, st, pos, old),
         Beh::FrostedIce => snow::on_place(rs, l, pos),
         Beh::SnifferEgg => misc::on_place(rs, l, st, pos),
+        Beh::Composter => uses::on_place(rs, l, st, pos),
         _ => {}
     }
 }
@@ -468,6 +488,7 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
 pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, from: u16) {
     match beh(st) {
         Beh::FrostedIce => snow::neighbor_changed(rs, l, pos, from),
+        Beh::Bell => uses::neighbor_changed(rs, l, st, pos),
         _ => {}
     }
 }
