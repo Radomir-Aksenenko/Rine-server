@@ -401,6 +401,11 @@ impl Overworld {
         self.sea_level
     }
 
+    /// `Biome.getTemperature(pos, seaLevel)` for a bundle biome index (`biome_names` order).
+    pub fn biome_temperature(&self, biome: u16, x: i32, y: i32, z: i32) -> f32 {
+        self.biomes.temperature(biome, x, y, z, self.sea_level)
+    }
+
     /// Biome name of quart cell `(qx, qy, qz)` in stored (unfiddled) chunk biomes.
     pub fn biome_at(&self, qx: i32, qy: i32, qz: i32) -> &str {
         let cx = qx.div_euclid(4);

@@ -18,6 +18,10 @@ pub struct World {
     pub raining: bool,
     pub thundering: bool,
     pub biome: u8,
+    /// Temperature of every biome (`Lvl::temperature`).
+    pub temp: f32,
+    /// Whether the biome has precipitation (`Lvl::has_precipitation`).
+    pub precip: bool,
     /// Items popped by `pop_resource`: (pos, item, count).
     pub popped: Vec<(BlockPos, u32, i32)>,
     /// Blocks destroyed with drops: (pos, state).
@@ -29,7 +33,7 @@ pub struct World {
 impl World {
     pub fn new() -> Self {
         rine_data::init();
-        Self { light: 15, day_time: 6000, ..Default::default() }
+        Self { light: 15, day_time: 6000, temp: 0.8, precip: true, ..Default::default() }
     }
 
     pub fn put(&mut self, p: BlockPos, st: u16) {
@@ -103,6 +107,12 @@ impl Lvl for World {
     }
     fn biome(&self, _p: BlockPos) -> u8 {
         self.biome
+    }
+    fn temperature(&self, _biome: u8, _p: BlockPos) -> f32 {
+        self.temp
+    }
+    fn has_precipitation(&self, _biome: u8) -> bool {
+        self.precip
     }
     fn height_motion_blocking(&self, x: i32, z: i32) -> i32 {
         let b = &rine_data::get().blocks;

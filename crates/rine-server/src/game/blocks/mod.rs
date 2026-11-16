@@ -27,6 +27,7 @@ pub mod props;
 pub mod random;
 pub mod rng;
 pub mod shape;
+pub mod snow;
 #[cfg(test)]
 pub mod testw;
 
@@ -116,6 +117,12 @@ pub enum Beh {
     Fire,
     /// `SoulFireBlock`.
     SoulFire,
+    /// `IceBlock` (melts in light).
+    Ice,
+    /// `FrostedIceBlock` (ages, then melts).
+    FrostedIce,
+    /// `SnowLayerBlock`.
+    Snow,
 }
 
 struct Table {
@@ -158,6 +165,9 @@ fn classify(n: &str) -> Beh {
     if let Some(b) = fire::classify(n) {
         return b;
     }
+    if let Some(b) = snow::classify(n) {
+        return b;
+    }
     Beh::None
 }
 
@@ -196,6 +206,30 @@ pub fn block_tag(tag: &str) -> Vec<bool> {
 pub fn item_id(name: &str) -> u32 {
     let n = if name.contains(':') { name.to_string() } else { format!("minecraft:{name}") };
     rine_data::get().registries.id("minecraft:item", &n).unwrap_or(0)
+}
+
+/// `Block.isFaceFull(state.getCollisionShape(..), Direction.UP)`: the top
+/// face of the collision shape covers the whole block. Precomputed per
+/// collision shape; exact for boxes on the 1/16 grid.
+#[inline]
+pub fn collision_top_full(st: u16) -> bool {
+    static T: OnceLock<Vec<bool>> = OnceLock::new();
+    let t = T.get_or_init(|| {
+        rine_data::get()
+            .blocks
+            .shapes
+            .iter()
+            .map(|boxes| {
+                (0..16).all(|i| {
+                    (0..16).all(|j| {
+                        let (x, z) = ((i as f32 + 0.5) / 16.0, (j as f32 + 0.5) / 16.0);
+                        boxes.iter().any(|b| b[4] >= 1.0 - 1e-6 && b[0] <= x && x <= b[3] && b[2] <= z && z <= b[5])
+                    })
+                })
+            })
+            .collect()
+    });
+    t[rine_data::get().blocks.state(st).shape as usize]
 }
 
 #[inline]
@@ -305,12 +339,13 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
 pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
     match beh(st) {
         Beh::None | Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Door | Beh::Chorus | Beh::HugeMushroom => {}
-        Beh::None | Beh::Fire | Beh::SoulFire => {}
+        Beh::Fire | Beh::SoulFire => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
         Beh::Spreading | Beh::Nylium => grass::random_tick(rs, l, st, pos, rng),
         Beh::Snowy => {}
         Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
         Beh::Leaves => leaves::random_tick(rs, l, st, pos),
+        Beh::Ice | Beh::FrostedIce | Beh::Snow => snow::random_tick(rs, l, st, pos),
         #[allow(unreachable_patterns)]
         _ => {}
     }
@@ -323,7 +358,9 @@ pub fn fluid_random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, _st: u16, pos: BlockPos
 
 /// `ServerLevel.tickPrecipitation` at column (x, z): ice, snow layers,
 /// `handlePrecipitation` of the block below the top.
-pub fn precipitation<L: Lvl>(_rs: &mut Rs, _l: &mut L, _x: i32, _z: i32, _rng: &mut Rng) {}
+pub fn precipitation<L: Lvl>(rs: &mut Rs, l: &mut L, x: i32, z: i32, rng: &mut Rng) {
+    snow::precipitation(rs, l, x, z, rng);
+}
 
 /// `BlockState.updateShape` for blocks the redstone engine does not handle.
 /// `dir` points from `pos` to the changed neighbor `npos`, now `nst`.
@@ -337,6 +374,8 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Leaves => leaves::update_shape(rs, l, st, pos, nst),
         Beh::Fire | Beh::SoulFire => fire::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Snow => snow::update_shape(l, st, pos),
+        Beh::Ice | Beh::FrostedIce => st,
         #[allow(unreachable_patterns)]
         _ => st,
     }
@@ -348,6 +387,7 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
         Beh::Chorus => shape::tick(rs, l, st, pos),
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
+        Beh::FrostedIce => snow::tick(rs, l, st, pos),
         _ => {}
     }
 }
@@ -356,13 +396,15 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
 pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16) {
     match beh(st) {
         Beh::Fire | Beh::SoulFire => fire::on_place(rs, l, st, pos, old),
+        Beh::FrostedIce => snow::on_place(rs, l, pos),
         _ => {}
     }
 }
 
 /// `BlockState.handleNeighborChanged` for blocks the engine does not know.
-pub fn neighbor_changed<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _from: u16) {
+pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, from: u16) {
     match beh(st) {
+        Beh::FrostedIce => snow::neighbor_changed(rs, l, pos, from),
         _ => {}
     }
 }
