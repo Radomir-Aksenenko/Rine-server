@@ -614,6 +614,31 @@ fn eye_try<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng
     Some(should_open)
 }
 
+/// `FlowerPotBlock.randomTick` for potted eyeblossoms: swap open/closed by the
+/// same `eyeblossom_open` attribute, long switch sound (transform particles
+/// are not sent, as for the planted blossom).
+pub fn potted_eye_random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
+    let (open, closed) = potted_eyes();
+    let blk = block_of(st);
+    if blk != open && blk != closed {
+        return;
+    }
+    let is_open = blk == open;
+    let clock = l.day_time().rem_euclid(24000);
+    let should_open = (12600..23401).contains(&clock);
+    if is_open == should_open {
+        return;
+    }
+    let to = if is_open { super::default_state("potted_closed_eyeblossom") } else { super::default_state("potted_open_eyeblossom") };
+    set_all(rs, l, pos, to);
+    eye_sound(l, pos, !is_open, true);
+}
+
+fn potted_eyes() -> (u16, u16) {
+    static P: OnceLock<(u16, u16)> = OnceLock::new();
+    *P.get_or_init(|| (super::block_id("potted_open_eyeblossom"), super::block_id("potted_closed_eyeblossom")))
+}
+
 fn eye_sound<L: Lvl>(l: &mut L, pos: BlockPos, open: bool, long: bool) {
     let name = match (open, long) {
         (true, true) => "block.eyeblossom.open_long",
@@ -1442,5 +1467,21 @@ mod tests {
             w.tick(&mut rs);
         }
         assert_eq!(w.get(q), s("closed_eyeblossom"));
+    }
+
+    #[test]
+    fn potted_eyeblossom_follows_the_clock() {
+        let mut rs = Rs::default();
+        let p = BlockPos::new(0, 64, 0);
+        let mut w = TW::new();
+        let closed = super::super::default_state("potted_closed_eyeblossom");
+        w.put(p, closed);
+        assert!(rine_data::get().blocks.has(closed, rine_data::blocks::flag::RANDOM_TICK), "sampled by random ticks");
+        w.day_time = 6000;
+        potted_eye_random_tick(&mut rs, &mut w, closed, p);
+        assert_eq!(w.get(p), closed, "day: stays closed");
+        w.day_time = 13000;
+        potted_eye_random_tick(&mut rs, &mut w, closed, p);
+        assert_eq!(w.get(p), super::super::default_state("potted_open_eyeblossom"));
     }
 }

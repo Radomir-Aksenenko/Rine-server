@@ -453,6 +453,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::RedstoneOre | Beh::Farmland | Beh::TurtleEgg | Beh::DriedGhast | Beh::ChorusFlower | Beh::Speleothem | Beh::Propagule => misc::random_tick(rs, l, st, pos, rng),
         Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::Mushroom | Beh::BuddingAmethyst | Beh::Eyeblossom | Beh::Vine => plants::random_tick(rs, l, st, pos, rng),
         Beh::GrowBody | Beh::AmethystCluster => {}
+        Beh::FlowerPot => plants::potted_eye_random_tick(rs, l, st, pos),
         #[allow(unreachable_patterns)]
         _ => {}
     }
