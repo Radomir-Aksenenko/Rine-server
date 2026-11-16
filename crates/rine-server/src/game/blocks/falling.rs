@@ -9,9 +9,9 @@
 //! `FallingBlockEntity.fall` leaves the fluid behind and spawns the entity.
 //! The landing is in `game/entity.rs`, which calls `solidify_after_land`.
 //!
-//! Not modelled: anvil falling damage (`setHurtsEntities`) and the brushable
-//! entity's `disableDrop` (a suspicious block that cannot land still drops),
-//! block entity data of the falling block, and the stuck-in-water clip.
+//! Not modelled: anvil falling damage (`setHurtsEntities`), block entity data
+//! of the falling block, the suspicious block's `checkReset`, and the
+//! fast-motion clip of concrete powder.
 
 use super::props::{setb, has as has_prop, Pr};
 use super::{block_id, block_of, block_tag, default_state, is_air, Beh, Rng};
