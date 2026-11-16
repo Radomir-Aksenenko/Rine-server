@@ -22,6 +22,7 @@ pub mod copper;
 pub mod crops;
 pub mod grass;
 pub mod leaves;
+pub mod misc;
 pub mod fire;
 pub mod props;
 pub mod random;
@@ -75,6 +76,28 @@ impl Default for State {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Beh {
     None,
+    /// `RedStoneOreBlock` (lit ore, random tick off).
+    RedstoneOre,
+    /// `FarmlandBlock` (moisture, trampling, shape).
+    Farmland,
+    /// `TurtleEggBlock` (hatch on sand at night).
+    TurtleEgg,
+    /// `SnifferEggBlock` (scheduled hatch stages).
+    SnifferEgg,
+    /// `DriedGhastBlock` (hydration, scheduled).
+    DriedGhast,
+    /// `ChorusFlowerBlock` (growth, survival).
+    ChorusFlower,
+    /// `ChorusPlantBlock` as claimed by misc (shape.rs claims it first: `Chorus`).
+    ChorusPlant,
+    /// `SpeleothemBlock` (pointed dripstone, sulfur spike).
+    Speleothem,
+    /// `MangrovePropaguleBlock` (hanging stage).
+    Propagule,
+    /// `SporeBlossomBlock` (ceiling support).
+    SporeBlossom,
+    /// Cauldrons that take stalactite drips (`AbstractCauldronBlock.tick`).
+    Cauldron,
     /// `CropBlock` and subclasses (wheat, carrots, potatoes, beetroots, torchflower crop).
     Crop,
     /// `StemBlock` (pumpkin, melon).
@@ -166,6 +189,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = snow::classify(n) {
+        return b;
+    }
+    if let Some(b) = misc::classify(n) {
         return b;
     }
     Beh::None
@@ -330,6 +356,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
     match beh(st) {
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Door | Beh::Chorus | Beh::HugeMushroom => shape::placement(l, st, pos, ctx),
         Beh::Leaves => Some(leaves::placement(l, st, pos)),
+        Beh::ChorusPlant => Some(misc::chorus_placement(l, st, pos)),
         _ => Some(st),
     }
 }
@@ -346,6 +373,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
         Beh::Leaves => leaves::random_tick(rs, l, st, pos),
         Beh::Ice | Beh::FrostedIce | Beh::Snow => snow::random_tick(rs, l, st, pos),
+        Beh::RedstoneOre | Beh::Farmland | Beh::TurtleEgg | Beh::DriedGhast | Beh::ChorusFlower | Beh::Speleothem | Beh::Propagule => misc::random_tick(rs, l, st, pos, rng),
         #[allow(unreachable_patterns)]
         _ => {}
     }
@@ -376,6 +404,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Fire | Beh::SoulFire => fire::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Snow => snow::update_shape(l, st, pos),
         Beh::Ice | Beh::FrostedIce => st,
+        Beh::Farmland | Beh::DriedGhast | Beh::ChorusFlower | Beh::ChorusPlant | Beh::Speleothem | Beh::SporeBlossom => misc::update_shape(rs, l, st, pos, dir, nst),
         #[allow(unreachable_patterns)]
         _ => st,
     }
@@ -388,7 +417,7 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
         Beh::FrostedIce => snow::tick(rs, l, st, pos),
-        _ => {}
+        _ => misc::tick(rs, l, st, pos),
     }
 }
 
@@ -397,6 +426,7 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
     match beh(st) {
         Beh::Fire | Beh::SoulFire => fire::on_place(rs, l, st, pos, old),
         Beh::FrostedIce => snow::on_place(rs, l, pos),
+        Beh::SnifferEgg => misc::on_place(rs, l, st, pos),
         _ => {}
     }
 }
