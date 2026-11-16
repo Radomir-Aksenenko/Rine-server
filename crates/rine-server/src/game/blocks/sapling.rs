@@ -16,7 +16,7 @@
 //!   port; the edge pass is not done.
 //! - the copy box is `BOX_RADIUS` blocks sideways and `BOX_UP` blocks up.
 //!   A tree that reaches outside it reads air there.
-//! - `AzaleaBlock`, `MangrovePropaguleBlock` and fungi: other families.
+//! - fungi: other families. `AzaleaBlock` is in growth.rs (it uses `TreeGrower.AZALEA`).
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -122,6 +122,13 @@ pub(super) const MANGROVE: Grower = Grower {
     mega: &[],
     flowers: &[],
     shortest: Some("minecraft:mangrove"),
+};
+/// `TreeGrower.AZALEA`: the azalea bush (`AzaleaBlock`) grows one `azalea_tree`, no mega or flower trees.
+pub(super) const AZALEA: Grower = Grower {
+    trees: &[("minecraft:azalea_tree", 1)],
+    mega: &[],
+    flowers: &[],
+    shortest: Some("minecraft:azalea_tree"),
 };
 const PALE_OAK: Grower = Grower {
     trees: &[],

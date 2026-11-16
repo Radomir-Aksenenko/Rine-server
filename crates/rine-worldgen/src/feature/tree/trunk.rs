@@ -1,6 +1,5 @@
 //! Trunk placers (`levelgen/feature/trunkplacers/*`): straight, forking, giant, mega_jungle, dark_oak,
-//! fancy, upwards_branching and cherry. `bending` and `poplar` are not reached by the overworld biomes and
-//! are rejected at compile time.
+//! fancy, upwards_branching, cherry and bending. `poplar` is not ported yet and is rejected at compile time.
 
 use std::sync::OnceLock;
 
@@ -97,6 +96,11 @@ pub enum TrunkKind {
         branch_start_offset_from_top: (i32, i32),
         branch_end_offset_from_top: IntProvider,
     },
+    /// `BendingTrunkPlacer`: a horizontal bend after the vertical part, with leaves along both.
+    Bending {
+        min_height_for_leaves: i32,
+        bend_length: IntProvider,
+    },
 }
 
 pub struct TrunkPlacer {
@@ -143,6 +147,10 @@ impl TrunkPlacer {
                     branch_end_offset_from_top: parse_int_provider(&v["branch_end_offset_from_top"])?,
                 }
             }
+            "minecraft:bending_trunk_placer" => TrunkKind::Bending {
+                min_height_for_leaves: v["min_height_for_leaves"].as_i64().unwrap_or(1) as i32,
+                bend_length: parse_int_provider(&v["bend_length"])?,
+            },
             other => return Err(format!("unsupported trunk placer {other}")),
         };
         Ok(TrunkPlacer { base_height, height_rand_a, height_rand_b, kind })
@@ -214,7 +222,53 @@ impl TrunkPlacer {
             TrunkKind::Fancy => self.fancy(tree, ctx, tree_height, origin),
             TrunkKind::UpwardsBranching { .. } => self.upwards(tree, ctx, tree_height, origin),
             TrunkKind::Cherry { .. } => self.cherry(tree, ctx, tree_height, origin),
+            TrunkKind::Bending { min_height_for_leaves, bend_length } => {
+                self.bending(tree, ctx, tree_height, origin, *min_height_for_leaves, bend_length)
+            }
         }
+    }
+
+    /// `BendingTrunkPlacer.placeTrunk`: the first `treeHeight` logs go up, the trunk steps one block sideways
+    /// near its top, then `bend_length + 1` logs run along the bend direction. Attachments follow the trunk
+    /// from `min_height_for_leaves` on and along the bend.
+    fn bending(
+        &self,
+        tree: &TreeFeature,
+        ctx: &mut Ctx,
+        tree_height: i32,
+        origin: Pos,
+        min_height_for_leaves: i32,
+        bend_length: &IntProvider,
+    ) -> Vec<Attachment> {
+        let direction = HORIZONTAL[ctx.rng.next_int_bound(4) as usize];
+        let log_height = tree_height - 1;
+        let mut pos = origin;
+        self.place_below_trunk_block(tree, ctx, offset(pos, 0, -1, 0));
+        let mut attachments = Vec::new();
+
+        for i in 0..=log_height {
+            // `i + 1 >= logHeight + random.nextInt(2)`: the draw happens on every iteration.
+            if i + 1 >= log_height + ctx.rng.next_int_bound(2) {
+                pos = relative(pos, direction, 1);
+            }
+            if self.valid_tree_pos(ctx, pos) {
+                self.place_log(tree, ctx, pos, None);
+            }
+            if i >= min_height_for_leaves {
+                attachments.push(Attachment::new(pos, 0, false));
+            }
+            pos = offset(pos, 0, 1, 0);
+        }
+
+        let dir_length = sample_int(bend_length, ctx.rng);
+        for _ in 0..=dir_length {
+            if self.valid_tree_pos(ctx, pos) {
+                self.place_log(tree, ctx, pos, None);
+            }
+            attachments.push(Attachment::new(pos, 0, false));
+            pos = relative(pos, direction, 1);
+        }
+        attachments
     }
 
     fn forking(&self, tree: &TreeFeature, ctx: &mut Ctx, tree_height: i32, origin: Pos) -> Vec<Attachment> {

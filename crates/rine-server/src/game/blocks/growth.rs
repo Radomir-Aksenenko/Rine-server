@@ -6,14 +6,14 @@
 //! `UPDATE_ALL` (`Feature.setBlock`). The compiled decorator has its own `OnceLock`, so a
 //! failure here does not disable the saplings.
 //!
-//! Not ported: the bone meal of the nylium, fungus, moss and azalea targets (their features
-//! are not in the bundle yet).
+//! Azalea bushes (`AzaleaBlock`) grow `TreeGrower.AZALEA` (`azalea_tree`) the same way.
+//! Not ported: the bone meal of the nylium, fungus and moss targets (their features are not in the bundle yet).
 
 use std::sync::OnceLock;
 
 use rine_protocol::BlockPos;
 
-use super::props::{geti, seti, Pr};
+use super::props::{geti, getb, seti, Pr};
 use super::sapling::{self, Growth};
 use super::{block_id, block_of, Rng};
 use crate::game::redstone::engine::{self, fl, Lvl, UPDATE_LIMIT};
@@ -31,6 +31,9 @@ const SAPLING_BONEMEAL_SUCCESS: f32 = 0.45;
 
 /// `MushroomBlock.isBonemealSuccess`: `nextFloat() < 0.4`.
 const MUSHROOM_SUCCESS: f32 = 0.4;
+
+/// `AzaleaBlock.isBonemealSuccess`: `level.getRandom().nextFloat() < 0.45`.
+const AZALEA_BONEMEAL_SUCCESS: f32 = 0.45;
 
 struct Mushroom {
     /// Block id of the plant and the index of its feature in the growth decorator.
@@ -70,6 +73,55 @@ fn mangrove() -> Option<&'static Growth> {
     M.get_or_init(|| sapling::build(&["minecraft:mangrove", "minecraft:tall_mangrove"])).as_ref()
 }
 
+const AZALEA_TREE: &str = "minecraft:azalea_tree";
+
+/// Azalea growth: `TreeGrower.AZALEA` over `azalea_tree`, and the blocks and minimum height it reads.
+struct Azalea {
+    growth: Growth,
+    /// `azalea` and `flowering_azalea` (`AzaleaBlock` subclasses).
+    blocks: [u16; 2],
+    /// `TreeGrower.getMinimumHeight`: the trunk base height of `azalea_tree`.
+    min_height: i32,
+}
+
+fn azalea() -> Option<&'static Azalea> {
+    static A: OnceLock<Option<Azalea>> = OnceLock::new();
+    A.get_or_init(|| {
+        let growth = sapling::build(&[AZALEA_TREE])?;
+        let min_height = growth.dec.grower_base_height(AZALEA_TREE)?;
+        Some(Azalea { growth, blocks: [block_id("azalea"), block_id("flowering_azalea")], min_height })
+    })
+    .as_ref()
+}
+
+/// `AzaleaBlock.isValidBonemealTarget` and `performBonemeal`. Returns false when the bush is not a valid target.
+/// `isBonemealSuccess` is `level.getRandom().nextFloat() < 0.45`, the same level random as the growth.
+pub fn azalea_bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) -> bool {
+    let Some(a) = azalea() else { return false };
+    if !a.blocks.contains(&block_of(st)) {
+        return false;
+    }
+    // `isInsideBuildHeight(pos.above(minHeight + 2))` and `getFluidState(pos.above()).isEmpty()`.
+    let top = pos.y + a.min_height + 2;
+    if top < MIN_Y || top >= MIN_Y + WORLD_HEIGHT {
+        return false;
+    }
+    let above = l.get(pos.offset(0, 1, 0));
+    if getb(above, Pr::Waterlogged) || is_fluid_block(block_of(above)) {
+        return false;
+    }
+    if rng.next_float() < AZALEA_BONEMEAL_SUCCESS {
+        sapling::grow_tree(rs, l, &a.growth, pos, st, &sapling::AZALEA, rng);
+    }
+    true
+}
+
+/// A block whose fluid state is not empty: water or lava (`Block.getFluidState`).
+fn is_fluid_block(blk: u16) -> bool {
+    static F: OnceLock<[u16; 2]> = OnceLock::new();
+    F.get_or_init(|| [block_id("water"), block_id("lava")]).contains(&blk)
+}
+
 /// `SaplingBlock.advanceTree` for the standing mangrove propagule: stage 0 becomes stage 1
 /// (`UPDATE_NONE`), stage 1 grows `TreeGrower.MANGROVE`.
 pub fn propagule_advance<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
@@ -92,6 +144,9 @@ pub fn propagule_bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos
 /// Bone meal on a mushroom plant (`MushroomBlock.isValidBonemealTarget`, `isBonemealSuccess`,
 /// `performBonemeal`). Returns false when it is not a valid target.
 pub fn bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) -> bool {
+    if azalea_bonemeal(rs, l, st, pos, rng) {
+        return true;
+    }
     let t = t();
     let blk = block_of(st);
     let Some(m) = t.mushrooms.iter().find(|m| m.block == blk) else { return false };
@@ -216,6 +271,57 @@ mod tests {
             logs += count(&w, "mangrove_log");
         }
         assert!(logs > 0, "some mangrove trees grow in 16 seeds");
+    }
+
+    #[test]
+    fn azalea_bone_meal_grows_a_bending_tree_on_dirt() {
+        rine_data::init();
+        let p = BlockPos { x: 0, y: 64, z: 0 };
+        let az = default_state("azalea");
+        let mut grew = 0;
+        for seed in 0..32u64 {
+            let mut rs = Rs::default();
+            let mut w = World::new();
+            floor(&mut w);
+            w.put(p, az);
+            let mut rng = Rng::new(seed);
+            assert!(bonemeal(&mut rs, &mut w, az, p, &mut rng), "seed {seed}: valid target");
+            if count(&w, "oak_log") > 0 {
+                grew += 1;
+                assert!(count(&w, "azalea_leaves") + count(&w, "flowering_azalea_leaves") > 0, "seed {seed}: leaves");
+            } else {
+                // a failed growth puts the bush back (`resetSaplings`)
+                assert_eq!(block_of(w.get(p)), block_id("azalea"), "seed {seed}");
+            }
+        }
+        assert!(grew > 0, "some azalea trees grow in 32 seeds");
+    }
+
+    #[test]
+    fn azalea_with_water_above_or_no_height_is_not_a_target() {
+        rine_data::init();
+        let p = BlockPos { x: 0, y: 64, z: 0 };
+        let az = default_state("azalea");
+        let mut rs = Rs::default();
+        let mut rng = Rng::new(1);
+
+        // `getFluidState(pos.above()).isEmpty()` fails with water above
+        let mut w = World::new();
+        floor(&mut w);
+        w.put(p, az);
+        w.put(p.offset(0, 1, 0), default_state("water"));
+        assert!(!bonemeal(&mut rs, &mut w, az, p, &mut rng));
+        assert_eq!(block_of(w.get(p)), block_id("azalea"));
+
+        // `isInsideBuildHeight(pos.above(minHeight + 2))`: base height 4, so y + 6 must stay below 320
+        let top_ok = BlockPos { x: 0, y: 313, z: 0 };
+        let top_out = BlockPos { x: 0, y: 314, z: 0 };
+        let mut w = World::new();
+        w.put(top_ok, az);
+        assert!(bonemeal(&mut rs, &mut w, az, top_ok, &mut rng));
+        let mut w = World::new();
+        w.put(top_out, az);
+        assert!(!bonemeal(&mut rs, &mut w, az, top_out, &mut rng));
     }
 
     #[test]
