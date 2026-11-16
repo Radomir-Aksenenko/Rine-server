@@ -37,6 +37,7 @@ pub mod snow;
 pub mod tools;
 pub mod uses;
 pub mod sponge;
+pub mod sapling;
 #[cfg(test)]
 pub mod testw;
 
@@ -206,6 +207,8 @@ pub enum Beh {
     Candle,
     /// `RespawnAnchorBlock`.
     RespawnAnchor,
+    /// `SaplingBlock` (stage, random tick growth, bone meal).
+    Sapling,
 }
 
 struct Table {
@@ -261,6 +264,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = plants::classify(n) {
+        return b;
+    }
+    if let Some(b) = sapling::classify(n) {
         return b;
     }
     if let Some(b) = misc::classify(n) {
@@ -450,6 +456,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::Copper => copper::random_tick(rs, l, st, pos, rng),
         Beh::Leaves => leaves::random_tick(rs, l, st, pos),
         Beh::Ice | Beh::FrostedIce | Beh::Snow => snow::random_tick(rs, l, st, pos),
+        Beh::Sapling => sapling::random_tick(rs, l, st, pos, rng),
         Beh::RedstoneOre | Beh::Farmland | Beh::TurtleEgg | Beh::DriedGhast | Beh::ChorusFlower | Beh::Speleothem | Beh::Propagule => misc::random_tick(rs, l, st, pos, rng),
         Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::Mushroom | Beh::BuddingAmethyst | Beh::Eyeblossom | Beh::Vine => plants::random_tick(rs, l, st, pos, rng),
         Beh::GrowBody | Beh::AmethystCluster => {}
@@ -477,6 +484,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Spreading | Beh::Snowy => grass::update_shape(st, dir, nst),
         Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::GrowBody | Beh::Mushroom | Beh::AmethystCluster | Beh::Vine => plants::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Sapling => sapling::update_shape(&*l, st, pos),
         Beh::BuddingAmethyst | Beh::Eyeblossom => st,
         Beh::Nylium => st,
         Beh::Copper => st,

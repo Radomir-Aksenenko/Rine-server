@@ -576,6 +576,7 @@ dependencies = [
  "rine-plugin",
  "rine-protocol",
  "rine-world",
+ "rine-worldgen",
  "serde",
  "serde_json",
  "tokio",

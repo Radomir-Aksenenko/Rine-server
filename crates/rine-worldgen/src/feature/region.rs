@@ -109,7 +109,8 @@ pub struct Region<'a> {
     pub tags: &'a Tags,
     /// `placed_in_biome[biome][placed]`: `Biome.hasFeature` over the biome's full feature lists.
     placed_in_biome: &'a [Vec<bool>],
-    biomes: BiomeMap<'a>,
+    /// `None` for the grower views (`grower_region`), which have no overworld biomes.
+    biomes: Option<BiomeMap<'a>>,
     min_y: i32,
     height: i32,
     cx: i32,
@@ -120,9 +121,43 @@ pub struct Region<'a> {
     wg: Vec<i32>,
     /// Maintained final heights, `[(chunk * 4 + kind) * 256 + column]`, kind in `heightmap::FINAL` order.
     fin: Vec<i32>,
+    /// Ordered writes `(x, y, z, state)` since `start_log`, every write counted (`None`: not recording).
+    log: Option<Vec<(i32, i32, i32, u16)>>,
 }
 
 impl<'a> Region<'a> {
+    /// A region for single-feature placement on the live world (saplings): `blocks` are the nine chunks in
+    /// raster order, the caller fills the cells it needs and leaves the rest as air (palette id 0 in the live
+    /// palette). Heightmaps are not primed: tree placement reads no heights.
+    pub fn for_growers(tags: &'a Tags, min_y: i32, height: i32, cx: i32, cz: i32, blocks: Vec<Vec<u16>>) -> Self {
+        assert_eq!(blocks.len(), 9, "region needs the 3x3 chunks");
+        let n = (height as usize) * 256;
+        assert!(blocks.iter().all(|b| b.len() == n), "chunk arrays must be full height");
+        Region {
+            tags,
+            placed_in_biome: &[],
+            biomes: None,
+            min_y,
+            height,
+            cx,
+            cz,
+            blocks,
+            wg: vec![0; 9 * 2 * 256],
+            fin: vec![0; 9 * 4 * 256],
+            log: None,
+        }
+    }
+
+    /// Starts recording every block write (`set_block_in_section`) in order.
+    pub fn start_log(&mut self) {
+        self.log = Some(Vec::new());
+    }
+
+    /// Stops recording and returns the writes in the order they happened.
+    pub fn take_log(&mut self) -> Vec<(i32, i32, i32, u16)> {
+        self.log.take().unwrap_or_default()
+    }
+
     /// `chunks` are the current blocks of the nine chunks; `wg` their terrain-end worldgen heights.
     pub(crate) fn new(
         tags: &'a Tags,
@@ -152,7 +187,7 @@ impl<'a> Region<'a> {
                 }
             }
         }
-        Region { tags, placed_in_biome, biomes, min_y, height, cx, cz, blocks, wg: wg_flat, fin }
+        Region { tags, placed_in_biome, biomes: Some(biomes), min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
     }
 
     /// Consumes the region and returns the nine (mutated) block arrays in raster order.
@@ -259,6 +294,9 @@ impl<'a> Region<'a> {
     pub fn set_block_in_section(&mut self, x: i32, y: i32, z: i32, blk: u16) {
         let (c, i) = self.slot(x, y, z).expect("write outside the 3x3 region or build height");
         self.blocks[c][i] = blk;
+        if let Some(log) = self.log.as_mut() {
+            log.push((x, y, z, blk));
+        }
     }
 
     /// `WorldGenRegion.getHeight(kind, x, z)`: the first-available height of the column (top + 1).
@@ -283,7 +321,9 @@ impl<'a> Region<'a> {
 
     /// `level.getBiome(pos).hasFeature(top)`.
     pub fn biome_has_feature(&self, x: i32, y: i32, z: i32, placed: usize) -> bool {
-        let biome = self.biomes.fiddled(x, y, z) as usize;
-        self.placed_in_biome[biome][placed]
+        match &self.biomes {
+            Some(b) => self.placed_in_biome[b.fiddled(x, y, z) as usize][placed],
+            None => false,
+        }
     }
 }
