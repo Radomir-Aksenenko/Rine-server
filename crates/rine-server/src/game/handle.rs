@@ -164,6 +164,10 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
             let _eid = r.varint()?;
             let action = r.varint()?;
             let _data = r.varint()?;
+            if action == super::sleep::ACTION_STOP_SLEEPING {
+                super::sleep::leave_bed(g, slot);
+                return Ok(());
+            }
             let p = g.player(slot).unwrap();
             let before = p.sprinting;
             match action {
@@ -250,6 +254,9 @@ fn on_move(g: &mut Game, slot: usize, pos: Option<(f64, f64, f64)>, rot: Option<
     let p = g.player(slot).unwrap();
     if p.tp_pending {
         return; // ignore until the client confirmed our teleport
+    }
+    if p.sleep.is_some() {
+        return; // asleep: the bed holds the position
     }
     if let Some((x, y, z)) = pos {
         if !(x.is_finite() && y.is_finite() && z.is_finite()) || x.abs() > 3.0e7 || z.abs() > 3.0e7 {

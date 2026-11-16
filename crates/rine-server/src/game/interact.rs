@@ -308,6 +308,13 @@ pub fn use_item_on(g: &mut Game, slot: usize, hand: i32, pos: BlockPos, face: u8
                 resync(g, slot, pos, seq);
                 return;
             }
+            Res::Bed(b) => {
+                super::sleep::bed_use(g, slot, b);
+                if let Some(p) = g.player(slot) {
+                    p.ack(seq);
+                }
+                return;
+            }
             Res::Done(o) => {
                 apply_use(g, slot, inv_slot, o);
                 if let Some(p) = g.player(slot) {
@@ -701,6 +708,11 @@ fn hurt(g: &mut Game, slot: usize, amount: f32, cause: &str, attacker: Option<(i
     if dmg <= 0.0 {
         return false;
     }
+    // LivingEntity.hurtServer: a sleeper wakes up when hurt
+    if p.sleep.is_some() {
+        super::sleep::stop_sleep(g, slot, true, true);
+    }
+    let Some(p) = g.player(slot) else { return true };
     p.health = (p.health - dmg).max(0.0);
     if let Some((_, from)) = attacker {
         // dealDefaultKnockback: away from the attacker's position
@@ -764,7 +776,8 @@ fn hurt(g: &mut Game, slot: usize, amount: f32, cause: &str, attacker: Option<(i
 }
 
 pub fn respawn(g: &mut Game, slot: usize) {
-    let spawn = g.spawn;
+    // a bed or `/spawnpoint` point of the player, else the world spawn
+    let (spawn, spawn_yaw, spawn_pitch) = if g.player(slot).is_some_and(|p| p.dead) { super::sleep::spawn_for(g, slot) } else { (g.spawn, 0.0, 0.0) };
     let dim = g.dim_type_id;
     let seed = g.shared.config.seed;
     let Some(p) = g.player(slot) else { return };
@@ -795,7 +808,7 @@ pub fn respawn(g: &mut Game, slot: usize) {
     p.tracked.clear();
     p.unacked = 0;
     p.max_unacked = 1;
-    p.teleport(spawn[0], spawn[1], spawn[2], 0.0, 0.0);
+    p.teleport(spawn[0], spawn[1], spawn[2], spawn_yaw, spawn_pitch);
     p.send(out::game_event(13, 0.0));
     let c = p.chunk();
     p.center = c;

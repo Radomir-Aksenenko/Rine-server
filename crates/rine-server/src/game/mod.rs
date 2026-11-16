@@ -26,6 +26,7 @@ pub mod playerdata;
 pub mod fluids;
 pub mod redstone;
 pub mod blocks;
+pub mod sleep;
 #[cfg(test)]
 mod bench;
 
@@ -54,6 +55,8 @@ pub struct Game {
     pub next_eid: i32,
     pub tick: u64,
     pub day_time: i64,
+    /// `SleepStatus`: sleepers and active players from the last update.
+    pub sleep: sleep::Status,
     pub spawn: [f64; 3],
     pub new_rx: crossbeam_channel::Receiver<NewPlayer>,
     /// Signalled by the net readers when inbound packets are queued.
@@ -129,6 +132,7 @@ impl Game {
             next_eid: 1,
             tick: 0,
             day_time: 1000,
+            sleep: Default::default(),
             spawn: [sx as f64 + 0.5, sy as f64, sz as f64 + 0.5],
             new_rx,
             wake_rx,
@@ -606,6 +610,7 @@ impl Game {
         }
         self.by_eid.insert(eid, slot);
         self.players[slot] = Some(p);
+        sleep::update_status(self);
         cmd::commands::world::on_join(self, slot);
         cmd::commands::scoreboard::on_join(self, slot);
         cmd::commands::bossbar::on_join(self, slot);
@@ -616,6 +621,8 @@ impl Game {
         if self.players.get(slot).is_some_and(|p| p.is_some()) {
             containers::player_left(self, slot);
         }
+        // a sleeper wakes up without a status update; the recount follows the removal below
+        sleep::on_leave(self, slot);
         let Some(p) = self.players.get_mut(slot).and_then(|p| p.take()) else { return };
         playerdata::save_player(&self.shared.config.world_dir, &p, survival::exhaustion_of(slot, p.eid), false);
         tracing::info!("{} left", p.name);
@@ -640,6 +647,7 @@ impl Game {
             }
             o.out.push(left.clone());
         }
+        sleep::update_status(self);
     }
 
     /// Per-player chunk streaming with vanilla's batch/ack flow control.

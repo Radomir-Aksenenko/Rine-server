@@ -12,6 +12,7 @@
 //! is still the newest one for its player, so an older write can't win.
 
 use super::items;
+use crate::game::cmd::commands::world::Respawn;
 use super::player::{max_stack, Player, Stack};
 use super::Game;
 use ahash::AHashMap;
@@ -48,6 +49,9 @@ pub struct PlayerData {
     pub cursor: Option<ItemData>,
     /// Ender chest contents (`EnderItems`), non-empty slots only.
     pub ender: Vec<SlotData>,
+    /// Respawn point, as the vanilla `respawn` compound (`RespawnConfig`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub respawn: Option<RespawnData>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -70,6 +74,22 @@ pub struct ItemData {
 
 fn is_zero(v: &u16) -> bool {
     *v == 0
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+/// `RespawnData` + `forced` of `RespawnConfig`: `dimension`, `pos`, `yaw`, `pitch`, `forced`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RespawnData {
+    pub dimension: String,
+    pub pos: [i32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    #[serde(skip_serializing_if = "is_false")]
+    pub forced: bool,
 }
 
 impl ItemData {
@@ -97,6 +117,7 @@ impl PlayerData {
             .collect();
         Self {
             version: VERSION,
+            respawn: p.respawn.map(|r| RespawnData { dimension: "minecraft:overworld".into(), pos: r.pos, yaw: r.yaw, pitch: r.pitch, forced: r.forced }),
             pos: p.pos,
             yaw: p.yaw,
             pitch: p.pitch,
@@ -130,6 +151,7 @@ pub fn apply(p: &mut Player, d: &PlayerData) {
         p.yaw = d.yaw;
         p.pitch = d.pitch;
     }
+    p.respawn = d.respawn.as_ref().map(|r| Respawn { pos: r.pos, yaw: r.yaw, pitch: r.pitch, forced: r.forced });
     p.gamemode = d.gamemode;
     p.health = if d.health > 0.0 { d.health.min(20.0) } else { 20.0 };
     p.food = d.food.clamp(0, 20);
@@ -299,6 +321,20 @@ mod tests {
         assert_eq!(back.slots[0].item.damage, 9);
         assert_eq!(back.slots[0].item.stack().unwrap().damage, 9);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn respawn_point_keeps_vanilla_field_names_and_skips_forced_when_false() {
+        let d = PlayerData { respawn: Some(RespawnData { dimension: "minecraft:overworld".into(), pos: [10, 64, -3], yaw: 90.0, pitch: 0.0, forced: false }), ..Default::default() };
+        let text = serde_json::to_string(&d).unwrap();
+        assert!(text.contains(r#""respawn":{"dimension":"minecraft:overworld","pos":[10,64,-3],"yaw":90.0,"pitch":0.0}"#), "{text}");
+        let back: PlayerData = serde_json::from_str(&text).unwrap();
+        let r = back.respawn.unwrap();
+        assert_eq!((r.pos, r.forced), ([10, 64, -3], false));
+        // a point without the field is none
+        let none: PlayerData = serde_json::from_str("{}").unwrap();
+        assert!(none.respawn.is_none());
+        assert!(!serde_json::to_string(&none).unwrap().contains("respawn"));
     }
 
     #[test]

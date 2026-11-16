@@ -52,6 +52,8 @@ pub enum Res {
     Fail,
     /// `SUCCESS` / `CONSUME`: done, with these effects on the player.
     Done(UseOut),
+    /// `BedBlock.useWithoutItem` on a bed half: the game layer runs the player side (`game/sleep.rs`).
+    Bed(super::bed::BedUse),
 }
 
 impl Res {
@@ -105,6 +107,7 @@ pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: 
 pub fn use_without_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
         Beh::Bell | Beh::Composter | Beh::FlowerPot | Beh::Cake | Beh::CandleCake | Beh::RespawnAnchor => super::uses::use_without_item(rs, l, st, pos, ctx, rng),
+        super::Beh::Bed => super::bed::use_without_item(|q| l.get(q), st, pos),
         super::Beh::DragonEgg => {
             super::falling::dragon_teleport(rs, l, st, pos, rng);
             Res::swing()

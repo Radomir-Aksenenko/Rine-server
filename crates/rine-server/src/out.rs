@@ -310,6 +310,19 @@ impl Meta {
         self.0.w_varint(v);
         self
     }
+    /// `OPTIONAL_BLOCK_POS` (serializer 11): presence flag, then the packed position.
+    pub fn optional_block_pos(mut self, idx: u8, v: Option<rine_protocol::BlockPos>) -> Self {
+        self.0.w_u8(idx);
+        self.0.w_varint(11);
+        match v {
+            Some(p) => {
+                self.0.w_bool(true);
+                self.0.w_pos(p);
+            }
+            None => self.0.w_bool(false),
+        }
+        self
+    }
     pub fn finish(mut self) -> BytesMut {
         self.0.w_u8(0xFF);
         self.0

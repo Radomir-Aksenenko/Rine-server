@@ -18,6 +18,7 @@
 //! - `on_place` / `neighbor_changed` likewise.
 //! Random ticks come from `random::tick`, once per game tick.
 
+pub mod bed;
 pub mod cauldron;
 pub mod copper;
 pub mod crops;
@@ -210,6 +211,8 @@ pub enum Beh {
     RespawnAnchor,
     /// `SaplingBlock` (stage, random tick growth, bone meal).
     Sapling,
+    /// `BedBlock` and `AbstractBedBlock` of the 16 colours (`bed.rs`).
+    Bed,
 }
 
 struct Table {
@@ -271,6 +274,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = misc::classify(n) {
+        return b;
+    }
+    if let Some(b) = bed::classify(n) {
         return b;
     }
     if let Some(b) = uses::classify(n) {
@@ -497,6 +503,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Snow => snow::update_shape(l, st, pos),
         Beh::Ice | Beh::FrostedIce => st,
         Beh::Farmland | Beh::DriedGhast | Beh::ChorusFlower | Beh::ChorusPlant | Beh::Speleothem | Beh::SporeBlossom => misc::update_shape(rs, l, st, pos, dir, nst),
+        Beh::Bed => bed::update_shape(st, dir, nst),
         #[allow(unreachable_patterns)]
         _ => st,
     }
