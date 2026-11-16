@@ -188,6 +188,12 @@ pub struct Player {
     pub op: bool,
     pub kick: Option<String>,
     pub joined_tick: u64,
+    /// Head of the bed the player sleeps in (`Player.sleepingPos`), None when awake.
+    pub sleep: Option<rine_protocol::BlockPos>,
+    /// `Player.sleepCounter`: ticks in bed, then the wake-up countdown.
+    pub sleep_timer: i32,
+    /// Respawn point (`ServerPlayer.respawnConfig`), from a bed or `/spawnpoint`.
+    pub respawn: Option<crate::game::cmd::commands::world::Respawn>,
 }
 
 impl Player {
@@ -250,6 +256,9 @@ impl Player {
             op: false,
             kick: None,
             joined_tick: 0,
+            sleep: None,
+            sleep_timer: 0,
+            respawn: None,
         }
     }
 

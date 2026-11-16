@@ -11,7 +11,6 @@
 use crate::game::cmd::{lit, Commands, Ctx};
 use crate::game::{entity, Game};
 use crate::out;
-use ahash::AHashMap;
 use bytes::{Bytes, BytesMut};
 use rine_command::error::{java_double, java_float};
 use rine_command::{CmdError, CmdResult};
@@ -182,6 +181,8 @@ pub struct Respawn {
     pub pos: [i32; 3],
     pub yaw: f32,
     pub pitch: f32,
+    /// `forced`: used even without a bed (`/spawnpoint`).
+    pub forced: bool,
 }
 
 /// World border, weather, clock, forced chunks, tick rate, difficulty and
@@ -198,7 +199,6 @@ pub struct State {
     pub difficulty: Option<u8>,
     /// World spawn rotation: [yaw, pitch].
     pub spawn_rot: [f32; 2],
-    pub respawn: AHashMap<Uuid, Respawn>,
 }
 
 // ---- hooks for the game loop ----------------------------------------------
@@ -206,8 +206,11 @@ pub struct State {
 /// Once per tick: clock, weather, border lerp end. Replace the
 /// `self.day_time += 1` in `do_tick` with this call.
 pub fn tick(g: &mut Game) {
-    advance_clock(g);
+    // vanilla order: weather, the sleep block of ServerLevel.tick, then tickTime
     advance_weather(g);
+    crate::game::sleep::level_tick(g);
+    advance_clock(g);
+    crate::game::sleep::player_tick(g);
     let now = g.tick;
     let b = &mut g.cs.world.border;
     if let Some((_, to, start, dur)) = b.lerp {
@@ -305,7 +308,7 @@ pub fn is_forced(g: &Game, pos: ChunkPos) -> bool {
 
 /// Spawn point set by `/spawnpoint` for a player, if any.
 pub fn respawn_point(g: &Game, uuid: Uuid) -> Option<Respawn> {
-    g.cs.world.respawn.get(&uuid).copied()
+    g.players.iter().flatten().find(|p| p.uuid == uuid).and_then(|p| p.respawn)
 }
 
 /// Join packets for the world border and weather. Call from `Game::join`
@@ -354,7 +357,7 @@ fn advance_clock(g: &mut Game) {
     g.day_time += whole as i64;
 }
 
-fn broadcast_clock(g: &mut Game) {
+pub fn broadcast_clock(g: &mut Game) {
     let ids = g.clock_ids.clone();
     let f = out::frame(out::set_time(g.tick as i64, g.day_time, &ids, g.cs.world.clock.rate));
     g.broadcast.push(f);
@@ -899,12 +902,12 @@ fn spawnpoint_cmd(x: &mut Ctx) -> CmdResult<i32> {
     let rot = if x.has("rotation") { x.rotation("rotation") } else { [0.0, 0.0] };
     let yaw = wrap_degrees(rot[1]);
     let pitch = rot[0].clamp(-90.0, 90.0);
-    let respawn = Respawn { pos, yaw, pitch };
+    let respawn = Respawn { pos, yaw, pitch, forced: true };
     let mut count = 0;
     let mut last = 0;
     for &slot in &targets {
-        let Some(uuid) = x.g.players.get(slot).and_then(|p| p.as_ref()).map(|p| p.uuid) else { continue };
-        x.g.cs.world.respawn.insert(uuid, respawn);
+        let Some(p) = x.g.players.get_mut(slot).and_then(|p| p.as_mut()) else { continue };
+        p.respawn = Some(respawn);
         count += 1;
         last = slot;
     }
