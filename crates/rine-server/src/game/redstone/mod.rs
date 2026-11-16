@@ -579,6 +579,14 @@ impl Lvl for GameLvl<'_> {
         }
     }
 
+    fn temperature(&self, biome: u8, p: BlockPos) -> f32 {
+        self.g.world.generator.temperature(biome, p.x, p.y, p.z)
+    }
+
+    fn has_precipitation(&self, biome: u8) -> bool {
+        self.g.world.generator.has_precipitation(biome)
+    }
+
     fn height_motion_blocking(&self, x: i32, z: i32) -> i32 {
         match self.g.world.chunks.get(&ChunkPos::new(x >> 4, z >> 4)) {
             Some(s) => s.chunk.motion_blocking[(x & 15) as usize + (z & 15) as usize * 16] as i32 + MIN_Y,

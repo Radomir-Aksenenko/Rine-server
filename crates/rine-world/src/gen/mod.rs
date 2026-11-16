@@ -63,6 +63,10 @@ pub struct Generator {
     noise: Noises,
     ids: Ids,
     biome_ids: [u8; BIOME_COUNT],
+    /// Synced biome id -> index in the rine-worldgen biome list (`u16::MAX` if not an overworld biome).
+    biome_vanilla: Vec<u16>,
+    /// Synced biome id -> `Biome.hasPrecipitation`.
+    biome_precip: Vec<bool>,
 }
 
 const FLOWERS: [&str; 5] = ["dandelion", "poppy", "cornflower", "oxeye_daisy", "azure_bluet"];
@@ -115,15 +119,50 @@ impl Generator {
                 .map(|w| st(&format!("minecraft:{w}_leaves[distance=1,persistent=false,waterlogged=false]"))),
         };
 
+        // Overworld biomes with `has_precipitation: false` in the 26.3 worldgen/biome JSON.
+        const NO_PRECIPITATION: [&str; 7] = [
+            "minecraft:badlands",
+            "minecraft:desert",
+            "minecraft:eroded_badlands",
+            "minecraft:savanna",
+            "minecraft:savanna_plateau",
+            "minecraft:windswept_savanna",
+            "minecraft:wooded_badlands",
+        ];
+        let vanilla = rine_worldgen::Overworld::new(seed);
+        let mut biome_vanilla = vec![u16::MAX; 256];
+        let mut biome_precip = vec![true; 256];
+        for (i, name) in vanilla.biome_names().iter().enumerate() {
+            if let Some(id) = reg.id(name).filter(|&id| id < 256) {
+                biome_vanilla[id as usize] = i as u16;
+                biome_precip[id as usize] = !NO_PRECIPITATION.contains(&name.as_str());
+            }
+        }
+
         Self {
-            vanilla: rine_worldgen::Overworld::new(seed),
+            vanilla,
             palette: parking_lot::RwLock::new(Vec::new()),
             biome_map: parking_lot::RwLock::new(Vec::new()),
             seed: seed as u64,
             noise: Noises::new(seed as u64),
             ids,
             biome_ids,
+            biome_vanilla,
+            biome_precip,
         }
+    }
+
+    /// `Biome.getTemperature(pos, seaLevel)` of a synced biome id at a block position (0.8 if unknown).
+    pub fn temperature(&self, biome: u8, x: i32, y: i32, z: i32) -> f32 {
+        match self.biome_vanilla[biome as usize] {
+            u16::MAX => 0.8,
+            i => self.vanilla.biome_temperature(i, x, y, z),
+        }
+    }
+
+    /// `Biome.hasPrecipitation` of a synced biome id.
+    pub fn has_precipitation(&self, biome: u8) -> bool {
+        self.biome_precip[biome as usize]
     }
 
     /// Map palette names to state / biome ids, extending the caches as the
@@ -271,6 +310,20 @@ mod tests {
             }
         }
         v
+    }
+
+    #[test]
+    fn biome_climate_follows_the_vanilla_biome() {
+        rine_data::init();
+        let g = Generator::new(42);
+        let reg = rine_data::get().registries.synced("minecraft:worldgen/biome");
+        let id = |n: &str| reg.id(&format!("minecraft:{n}")).expect("biome") as u8;
+        assert!(g.temperature(id("snowy_plains"), 0, 70, 0) < 0.15);
+        assert!(g.temperature(id("plains"), 0, 70, 0) >= 0.15);
+        assert!(!g.has_precipitation(id("desert")));
+        assert!(g.has_precipitation(id("snowy_plains")));
+        // not a bundled overworld biome: the warm default
+        assert_eq!(g.temperature(id("the_end"), 0, 70, 0), 0.8);
     }
 
     #[test]

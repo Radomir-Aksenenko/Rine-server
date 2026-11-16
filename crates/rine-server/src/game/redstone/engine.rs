@@ -109,6 +109,14 @@ pub trait Lvl {
     fn biome(&self, _p: BlockPos) -> u8 {
         0
     }
+    /// `Biome.getTemperature(pos, seaLevel)` of a synced biome id at a position.
+    fn temperature(&self, _biome: u8, _p: BlockPos) -> f32 {
+        0.8
+    }
+    /// `Biome.hasPrecipitation` of a synced biome id.
+    fn has_precipitation(&self, _biome: u8) -> bool {
+        true
+    }
     /// Highest Y+1 of a motion-blocking block in the column (`MOTION_BLOCKING` heightmap).
     fn height_motion_blocking(&self, _x: i32, _z: i32) -> i32 {
         rine_world::MIN_Y

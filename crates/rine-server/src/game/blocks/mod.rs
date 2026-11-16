@@ -22,6 +22,7 @@ pub mod crops;
 pub mod props;
 pub mod random;
 pub mod rng;
+pub mod snow;
 #[cfg(test)]
 pub mod testw;
 
@@ -61,6 +62,12 @@ pub enum Beh {
     SweetBerry,
     /// `PitcherCropBlock`.
     PitcherCrop,
+    /// `IceBlock` (melts in light).
+    Ice,
+    /// `FrostedIceBlock` (ages, then melts).
+    FrostedIce,
+    /// `SnowLayerBlock`.
+    Snow,
 }
 
 struct Table {
@@ -86,6 +93,9 @@ fn table() -> &'static Table {
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
     if let Some(b) = crops::classify(n) {
+        return b;
+    }
+    if let Some(b) = snow::classify(n) {
         return b;
     }
     Beh::None
@@ -199,6 +209,7 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
     match beh(st) {
         Beh::None => {}
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::random_tick(rs, l, st, pos, rng),
+        Beh::Ice | Beh::FrostedIce | Beh::Snow => snow::random_tick(rs, l, st, pos),
     }
 }
 
@@ -207,7 +218,9 @@ pub fn fluid_random_tick<L: Lvl>(_rs: &mut Rs, _l: &mut L, _st: u16, _pos: Block
 
 /// `ServerLevel.tickPrecipitation` at column (x, z): ice, snow layers,
 /// `handlePrecipitation` of the block below the top.
-pub fn precipitation<L: Lvl>(_rs: &mut Rs, _l: &mut L, _x: i32, _z: i32, _rng: &mut Rng) {}
+pub fn precipitation<L: Lvl>(rs: &mut Rs, l: &mut L, x: i32, z: i32, rng: &mut Rng) {
+    snow::precipitation(rs, l, x, z, rng);
+}
 
 /// `BlockState.updateShape` for blocks the redstone engine does not handle.
 /// `dir` points from `pos` to the changed neighbor `npos`, now `nst`.
@@ -215,26 +228,31 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
     match beh(st) {
         Beh::None => st,
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Snow => snow::update_shape(l, st, pos),
+        Beh::Ice | Beh::FrostedIce => st,
     }
 }
 
 /// A scheduled tick came due for a block the engine does not know.
-pub fn tick<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos) {
+pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
+        Beh::FrostedIce => snow::tick(rs, l, st, pos),
         _ => {}
     }
 }
 
 /// `BlockState.onPlace` for blocks the engine does not know.
-pub fn on_place<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _old: u16) {
+pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, _old: u16) {
     match beh(st) {
+        Beh::FrostedIce => snow::on_place(rs, l, pos),
         _ => {}
     }
 }
 
 /// `BlockState.handleNeighborChanged` for blocks the engine does not know.
-pub fn neighbor_changed<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _from: u16) {
+pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, from: u16) {
     match beh(st) {
+        Beh::FrostedIce => snow::neighbor_changed(rs, l, pos, from),
         _ => {}
     }
 }
