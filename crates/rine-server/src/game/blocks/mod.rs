@@ -18,8 +18,10 @@
 //! - `on_place` / `neighbor_changed` likewise.
 //! Random ticks come from `random::tick`, once per game tick.
 
+pub mod cauldron;
 pub mod copper;
 pub mod crops;
+pub mod falling;
 pub mod grass;
 pub mod interact;
 pub mod leaves;
@@ -31,6 +33,7 @@ pub mod random;
 pub mod rng;
 pub mod shape;
 pub mod snow;
+pub mod sponge;
 #[cfg(test)]
 pub mod testw;
 
@@ -98,8 +101,22 @@ pub enum Beh {
     Propagule,
     /// `SporeBlossomBlock` (ceiling support).
     SporeBlossom,
-    /// Cauldrons that take stalactite drips (`AbstractCauldronBlock.tick`).
+    /// Cauldrons: bucket interactions (`cauldron.rs`), stalactite drips
+    /// (`AbstractCauldronBlock.tick`) and rain (`snow.rs`).
     Cauldron,
+    /// `SpongeBlock` (absorbs water on place and neighbour change).
+    Sponge,
+    /// `WetSpongeBlock` (no effect in the overworld).
+    WetSponge,
+    /// `FallingBlock` subclasses without their own rules: sand, red sand,
+    /// gravel, anvils.
+    Falling,
+    /// `ConcretePowderBlock` (turns to concrete next to water).
+    ConcretePowder,
+    /// `DragonEggBlock` (falls, teleports on use).
+    DragonEgg,
+    /// `BrushableBlock` (suspicious sand and gravel: falls, no brushing here).
+    Brushable,
     /// `CropBlock` and subclasses (wheat, carrots, potatoes, beetroots, torchflower crop).
     Crop,
     /// `StemBlock` (pumpkin, melon).
@@ -195,6 +212,15 @@ fn table() -> &'static Table {
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
     if let Some(b) = crops::classify(n) {
+        return b;
+    }
+    if let Some(b) = cauldron::classify(n) {
+        return b;
+    }
+    if let Some(b) = sponge::classify(n) {
+        return b;
+    }
+    if let Some(b) = falling::classify(n) {
         return b;
     }
     if let Some(b) = grass::classify(n) {
@@ -385,6 +411,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
         Beh::Leaves => Some(leaves::placement(l, st, pos)),
         Beh::ChorusPlant => Some(misc::chorus_placement(l, st, pos)),
         Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Vine | Beh::AmethystCluster => plants::placement(l, st, pos, ctx),
+        Beh::ConcretePowder => Some(falling::placement(l, st, pos)),
         _ => Some(st),
     }
 }
@@ -432,6 +459,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Nylium => st,
         Beh::Copper => st,
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::Falling | Beh::ConcretePowder | Beh::DragonEgg | Beh::Brushable => falling::update_shape(rs, l, st, pos),
         Beh::Leaves => leaves::update_shape(rs, l, st, pos, nst),
         Beh::Fire | Beh::SoulFire => fire::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Snow => snow::update_shape(l, st, pos),
@@ -450,6 +478,7 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
         Beh::FrostedIce => snow::tick(rs, l, st, pos),
+        Beh::Falling | Beh::ConcretePowder | Beh::DragonEgg | Beh::Brushable => falling::tick(rs, l, st, pos),
         _ => misc::tick(rs, l, st, pos),
     }
 }
@@ -460,6 +489,8 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
         Beh::Fire | Beh::SoulFire => fire::on_place(rs, l, st, pos, old),
         Beh::FrostedIce => snow::on_place(rs, l, pos),
         Beh::SnifferEgg => misc::on_place(rs, l, st, pos),
+        Beh::Sponge => sponge::on_place(rs, l, st, pos, old),
+        Beh::Falling | Beh::ConcretePowder | Beh::DragonEgg | Beh::Brushable => falling::on_place(rs, l, st, pos),
         _ => {}
     }
 }
@@ -468,6 +499,7 @@ pub fn on_place<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, old: u16
 pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, from: u16) {
     match beh(st) {
         Beh::FrostedIce => snow::neighbor_changed(rs, l, pos, from),
+        Beh::Sponge => sponge::neighbor_changed(rs, l, pos),
         _ => {}
     }
 }

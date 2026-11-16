@@ -404,10 +404,13 @@ pub fn tick(g: &mut Game) {
                 }
                 Kind::Falling { state } => {
                     e.vel[1] *= 0.98;
-                    if e.on_ground || e.pos[1] < rine_world::MIN_Y as f64 - 64.0 {
+                    // concrete powder in water stops in the water cell (`isStuckInWater`)
+                    let cell = BlockPos::new(e.pos[0].floor() as i32, e.pos[1].floor() as i32, e.pos[2].floor() as i32);
+                    let stuck = crate::game::blocks::falling::stuck_in_water(*state, world.get_block(cell.x, cell.y, cell.z));
+                    if e.on_ground || stuck || e.pos[1] < rine_world::MIN_Y as f64 - 64.0 {
                         e.removed = true;
-                        let bp = BlockPos::new(e.pos[0].floor() as i32, e.pos[1].round() as i32, e.pos[2].floor() as i32);
-                        fx.land.push((bp, *state, e.eid));
+                        let y = if stuck { cell.y } else { e.pos[1].round() as i32 };
+                        fx.land.push((BlockPos::new(cell.x, y, cell.z), *state, e.eid));
                     }
                 }
             }
@@ -436,8 +439,22 @@ pub fn tick(g: &mut Game) {
     for (bp, st, _) in fx.land {
         let cur = g.world.get_block(bp.x, bp.y, bp.z);
         let b = &rine_data::get().blocks;
+        if crate::game::blocks::falling::breaks_on_landing(st) {
+            // cancelDrop: the entity breaks where it lands (BrushableBlock.onBrokenAfterFall)
+            let f = out::frame(out::level_event(2001, bp, st as i32));
+            g.send_chunk_viewers(ChunkPos::new(bp.x >> 4, bp.z >> 4), &f);
+            continue;
+        }
         if b.is_air(cur) || b.has(cur, rine_data::blocks::flag::REPLACEABLE) {
-            g.world.set_block(bp, st);
+            // FallingBlockEntity.tick: setBlockAndUpdate, then Fallable.onLand
+            crate::game::redstone::set_block(g, bp, st);
+            if let Some(solid) = crate::game::blocks::falling::solidify_after_land(st, cur, |p| g.world.get_block(p.x, p.y, p.z), bp) {
+                crate::game::redstone::set_block(g, bp, solid);
+            }
+            if let Some(ev) = crate::game::blocks::falling::land_event(st) {
+                let f = out::frame(out::level_event(ev, bp, 0));
+                g.send_chunk_viewers(ChunkPos::new(bp.x >> 4, bp.z >> 4), &f);
+            }
         } else {
             let item = b.state(st).item;
             spawn_item(g, [bp.x as f64 + 0.5, bp.y as f64 + 0.5, bp.z as f64 + 0.5], [0.0, 0.1, 0.0], Stack::new(item, 1), 10);

@@ -91,15 +91,20 @@ pub enum ItemOp {
 }
 
 /// Step 1a: `BlockState.useItemOn` with the held stack.
-pub fn use_item_on<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _ctx: &UseCtx, _rng: &mut Rng) -> Res {
+pub fn use_item_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
+        super::Beh::Cauldron => super::cauldron::use_item_on(rs, l, st, pos, ctx, rng),
         _ => Res::TryEmptyHand,
     }
 }
 
 /// Step 1b: `BlockState.useWithoutItem` (main hand only).
-pub fn use_without_item<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPos, _ctx: &UseCtx, _rng: &mut Rng) -> Res {
+pub fn use_without_item<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, _ctx: &UseCtx, rng: &mut Rng) -> Res {
     match super::beh(st) {
+        super::Beh::DragonEgg => {
+            super::falling::dragon_teleport(rs, l, st, pos, rng);
+            Res::swing()
+        }
         _ => Res::Pass,
     }
 }
