@@ -272,3 +272,15 @@ Rine: `crates/rine-server/src/game` (survival.rs, containers.rs, blockinv.rs, du
 - ЧАСТИЧНО, часы и окружение: ClockTimeMarkers (см. clock), EnvironmentAttributes (НЕТ, см. attribute), BlockTransformers, OffsetDoubleList.
 - ЧАСТИЧНО или не уверен, формы блоков (phys/shapes): ArrayVoxelShape, BitSetDiscreteVoxelShape, CubePointRange, DiscreteCubeMerger, EntityCollisionContext, IdenticalMerger, IndexMerger, IndirectMerger, MinecartCollisionContext, NonOverlappingMerger, PositionCollisionContext, SliceShape, SubShape. Общего модуля форм нет, данные коллизий есть в rine-data (см. выше).
 - НЕТ, другое: CushionItem уже в таблице, BrewingFuel и CookingFuel (см. выше), DebugStickState (палка отладки, НЕТ).
+
+## Хвосты из отчёта 01 (блоки), 2026-11-16
+
+Что блоки ждут от компонентов предметов:
+
+- `jukebox_playable` и длина песен: проигрыватель не сделан. В `datapack_registries.json` у `jukebox_song` только имена, без `length_in_seconds`.
+- `potion_contents`: бутылки с водой и зелья в котле.
+- `dyed_color`, `banner_patterns`, контейнер шалкера: мытьё в котле.
+- `can_place_on` и `can_break` для приключенческого режима: сейчас `ItemStack.useOn` в приключении всегда пропускается.
+- `blocks_attacks`: правило щита во второй руке у мотыги, лопаты и топора сделано по id щита, без компонента.
+- `use_cooldown`: проверка перезарядки предмета в `useItemOn` не сделана.
+- Меню блоков (наковальня, стол зачарований, точило, кузнечный стол, ткацкий станок, картографический стол, камнерез, крафтер, варочная стойка, маяк, кафедра с книгой) ждут компонентов, см. 01-plan.md.
