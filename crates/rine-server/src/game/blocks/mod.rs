@@ -24,6 +24,7 @@ pub mod grass;
 pub mod leaves;
 pub mod misc;
 pub mod fire;
+pub mod plants;
 pub mod props;
 pub mod random;
 pub mod rng;
@@ -146,6 +147,28 @@ pub enum Beh {
     FrostedIce,
     /// `SnowLayerBlock`.
     Snow,
+    /// `CactusBlock`.
+    Cactus,
+    /// `SugarCaneBlock`.
+    SugarCane,
+    /// `BambooStalkBlock`.
+    Bamboo,
+    /// `BambooSaplingBlock`.
+    BambooSapling,
+    /// `GrowingPlantHeadBlock` (kelp, weeping, twisting, cave vines).
+    GrowHead,
+    /// `GrowingPlantBodyBlock` (the body blocks of the same plants).
+    GrowBody,
+    /// `MushroomBlock` (spread).
+    Mushroom,
+    /// `BuddingAmethystBlock`.
+    BuddingAmethyst,
+    /// `AmethystClusterBlock` (cluster and buds).
+    AmethystCluster,
+    /// `EyeblossomBlock`.
+    Eyeblossom,
+    /// `VineBlock`.
+    Vine,
 }
 
 struct Table {
@@ -189,6 +212,9 @@ fn classify(n: &str) -> Beh {
         return b;
     }
     if let Some(b) = snow::classify(n) {
+        return b;
+    }
+    if let Some(b) = plants::classify(n) {
         return b;
     }
     if let Some(b) = misc::classify(n) {
@@ -357,6 +383,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Door | Beh::Chorus | Beh::HugeMushroom => shape::placement(l, st, pos, ctx),
         Beh::Leaves => Some(leaves::placement(l, st, pos)),
         Beh::ChorusPlant => Some(misc::chorus_placement(l, st, pos)),
+        Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Vine | Beh::AmethystCluster => plants::placement(l, st, pos, ctx),
         _ => Some(st),
     }
 }
@@ -374,6 +401,8 @@ pub fn random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: 
         Beh::Leaves => leaves::random_tick(rs, l, st, pos),
         Beh::Ice | Beh::FrostedIce | Beh::Snow => snow::random_tick(rs, l, st, pos),
         Beh::RedstoneOre | Beh::Farmland | Beh::TurtleEgg | Beh::DriedGhast | Beh::ChorusFlower | Beh::Speleothem | Beh::Propagule => misc::random_tick(rs, l, st, pos, rng),
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::Mushroom | Beh::BuddingAmethyst | Beh::Eyeblossom | Beh::Vine => plants::random_tick(rs, l, st, pos, rng),
+        Beh::GrowBody | Beh::AmethystCluster => {}
         #[allow(unreachable_patterns)]
         _ => {}
     }
@@ -397,6 +426,8 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::None | Beh::Door => st,
         Beh::Crop | Beh::Stem | Beh::NetherWart | Beh::Cocoa | Beh::SweetBerry | Beh::PitcherCrop => crops::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Spreading | Beh::Snowy => grass::update_shape(st, dir, nst),
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::BambooSapling | Beh::GrowHead | Beh::GrowBody | Beh::Mushroom | Beh::AmethystCluster | Beh::Vine => plants::update_shape(rs, l, st, pos, dir, npos, nst),
+        Beh::BuddingAmethyst | Beh::Eyeblossom => st,
         Beh::Nylium => st,
         Beh::Copper => st,
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
@@ -413,6 +444,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
 /// A scheduled tick came due for a block the engine does not know.
 pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
+        Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Eyeblossom => plants::tick(rs, l, st, pos),
         Beh::Chorus => shape::tick(rs, l, st, pos),
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
