@@ -182,6 +182,11 @@ pub fn placement_state(g: &Game, pos: BlockPos, st: u16) -> u16 {
     engine::placement_state(&g.world.redstone, &View { g }, pos, st)
 }
 
+/// Players on the ground above big dripleaf heads (`BigDripleafBlock.entityInside`).
+pub(crate) fn dripleaf_feet(g: &mut Game, hits: &[(BlockPos, f64)]) {
+    with_engine(g, None, |rs, l| crate::game::blocks::dripleaf::tilt_feet(rs, l, hits));
+}
+
 /// Placement corrections of the block behaviour families
 /// (`blocks::placement`): connections, shapes, persistence. None when the
 /// block cannot be placed there.

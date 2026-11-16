@@ -167,7 +167,7 @@ fn support(short: &str, st: u16) -> Support {
         return Support::CeilingCenter;
     }
     // two-block plants and doors
-    if matches!(short, "tall_grass" | "large_fern" | "sunflower" | "lilac" | "rose_bush" | "peony" | "pitcher_plant" | "tall_dry_grass" | "tall_seagrass" | "small_dripleaf")
+    if matches!(short, "tall_grass" | "large_fern" | "sunflower" | "lilac" | "rose_bush" | "peony" | "pitcher_plant" | "tall_dry_grass" | "tall_seagrass")
         || short.ends_with("_door")
     {
         return match b.get_prop(st, "half") {

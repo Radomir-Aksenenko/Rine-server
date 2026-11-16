@@ -311,6 +311,8 @@ impl Game {
 
         // 6. movement + entity tracking
         track::tick(self);
+        // players on dripleaf heads (`BigDripleafBlock.entityInside`)
+        blocks::dripleaf::players_tilt(self);
         mark(4, &mut t);
 
         // 7. scheduled block ticks (redstone), fluid ticks, random ticks, then block events,

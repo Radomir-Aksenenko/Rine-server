@@ -8,8 +8,8 @@
 //! - hanging mangrove propagules: the age cycles (`MangrovePropaguleBlock`).
 //!
 //! Standing mangrove propagules go through `growth.rs` (`TreeGrower.MANGROVE`).
-//! Not ported here: small and big dripleaf (`placeWithRandomHeight` and the tilt
-//! states), grass block spread (the biome bone meal features).
+//! Dripleaves go through `dripleaf.rs`. Not ported here: grass block spread
+//! (the biome bone meal features).
 
 use std::sync::OnceLock;
 
@@ -94,6 +94,10 @@ fn t() -> &'static T {
 /// Bone meal on a block of this file. `rng` is the level random (`level.getRandom()`).
 /// Returns false when the block is not a valid target.
 pub fn bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) -> bool {
+    // big and small dripleaf (`dripleaf.rs`)
+    if super::dripleaf::bonemeal(rs, l, st, pos, rng) {
+        return true;
+    }
     let t = t();
     let blk = block_of(st);
     let idx = blk as usize;
