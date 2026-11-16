@@ -38,6 +38,7 @@ pub mod tools;
 pub mod uses;
 pub mod sponge;
 pub mod sapling;
+pub mod bonemeal;
 #[cfg(test)]
 pub mod testw;
 

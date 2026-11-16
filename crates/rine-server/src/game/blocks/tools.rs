@@ -25,6 +25,7 @@
 
 use super::crops;
 use super::fire;
+use super::bonemeal;
 use super::sapling;
 use super::interact::{ItemOp, Res, UseCtx, UseOut};
 use super::plants;
@@ -471,7 +472,7 @@ fn wax_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx) 
 /// moss, mossy carpet, dripleaf, sea pickle, seagrass, rooted dirt,
 /// netherrack, shelf mushroom, mangrove leaves, dry grass, firefly bush, bush.
 fn bone_meal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
-    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng)) {
+    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng) || bonemeal::bonemeal(rs, l, st, pos)) {
         return Res::Pass;
     }
     l.level_event(EV_PLANT_GROWTH, pos, 15);
