@@ -50,6 +50,26 @@ Read `CLAUDE.md` and `docs/PHILOSOPHY.md` sections 1-3 first (short). Rules that
 - Random: the `rng: &mut Rng` parameter in random ticks; `rs.rng` in scheduled ticks.
   `rng.next_int(n)`, `next_float()`, `next_double()`, `next_bool()`, `range(lo, hi)` (inclusive).
 
+## Player right click (`blocks/interact.rs`)
+
+Right clicks on blocks reach the families through `blocks/interact.rs`, in the order of
+`ServerPlayerGameMode.useItemOn`. Read that file fully. You add arms to its three dispatchers:
+`use_item_on` (block reacts to the held item, default `TryEmptyHand`), `use_without_item`
+(empty-hand use, default `Pass`) and `item_use_on` (`ItemStack.useOn`, routed by the held item id;
+`Pass` falls through to block placement). Return `Res::Fail`, `Res::Pass`, `Res::TryEmptyHand` or
+`Res::Done(UseOut { item, give, food })`. You never touch the player inventory yourself: the
+caller applies `ItemOp::{Shrink, Damage, Fill, Set}`, `give` and `food` (see the doc comments,
+they mirror `stack.consume`, `hurtAndBreak`, `ItemUtils.createFilledResult`, `setItemInHand`,
+`Player.addItem`, `FoodData.eat`). `UseCtx` carries the held item, creative, sneaking, face,
+cursor, player position and `can_eat`. Sounds with the player as source: `l.sound(..., skip_actor=true)`
+matches vanilla `level.playSound(player, ...)` (everyone but the player hears it).
+Tests: call your functions directly on `testw::World` with a hand-built `UseCtx`.
+
+## Start of work
+
+Your worktree branch may start at `master`. First run `git merge --ff-only blocks` in your
+worktree: the brief, `blocks/` and `interact.rs` live only on `blocks`.
+
 ## Tests and build
 
 - Unit tests in your file, on `super::super::testw::World` (in-memory level: `put`, `light`,
@@ -60,7 +80,7 @@ Read `CLAUDE.md` and `docs/PHILOSOPHY.md` sections 1-3 first (short). Rules that
   (Git Bash syntax; in PowerShell set `$env:CARGO_TARGET_DIR` first). Then run the whole
   `cargo test -p rine-server` once at the end: all tests must pass. No new warnings in your files.
 - Port 25565 is the owner's live server: never start a server on it.
-- Keep LF line endings (do not rewrite files with tools that convert to CRLF).
+- Keep each file's existing line endings (most are LF; `interact.rs` and `survival.rs` are CRLF). Never rewrite a whole file with a tool that changes them.
 
 ## Finish
 
