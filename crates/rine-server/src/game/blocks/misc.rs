@@ -497,14 +497,14 @@ fn spore_can_survive<L: Lvl>(l: &L, pos: BlockPos) -> bool {
 
 // ------------------------------------------------------------------ mangrove propagule
 
-/// `MangrovePropaguleBlock.randomTick`, hanging stage. Tree growth is not here:
-/// `advanceTree` belongs to the sapling family.
+/// `MangrovePropaguleBlock.randomTick`: the standing stage advances its tree (`growth.rs`), the hanging
+/// stage ages. The random chance is the sapling one: `saplingModifier / (100 * 7)` with the default 100.
 const SAPLING_CHANCE: f32 = 100.0 / (100.0 * 7.0);
 
 fn propagule_random_tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
     if !getb(st, Pr::Hanging) {
         if rng.next_float() < SAPLING_CHANCE {
-            // TODO(sapling): advanceTree (tree growth, another task)
+            super::growth::propagule_advance(rs, l, st, pos, rng);
         }
     } else {
         let age = geti(st, Pr::Age);
