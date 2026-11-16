@@ -104,7 +104,7 @@ pub fn use_without_item<L: Lvl>(_rs: &mut Rs, _l: &mut L, st: u16, _pos: BlockPo
     }
 }
 
-/// Step 2: `ItemStack.useOn`, routed by the held item.
-pub fn item_use_on<L: Lvl>(_rs: &mut Rs, _l: &mut L, _st: u16, _pos: BlockPos, _ctx: &UseCtx, _rng: &mut Rng) -> Res {
-    Res::Pass
+/// Step 2: `ItemStack.useOn`, routed by the held item (`tools::use_on`).
+pub fn item_use_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
+    super::tools::use_on(rs, l, st, pos, ctx, rng)
 }
