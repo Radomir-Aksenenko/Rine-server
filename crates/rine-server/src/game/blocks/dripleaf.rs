@@ -385,7 +385,10 @@ pub fn players_tilt(g: &mut Game) {
         let (z0, z1) = ((p.pos[2] - 0.3).floor() as i32, (p.pos[2] + 0.3 - 1e-5).floor() as i32);
         for x in x0..=x1 {
             for z in z0..=z1 {
-                hits.push((BlockPos::new(x, y as i32, z), feet));
+                // only big dripleaf heads matter: no work for players on slabs and the like
+                if super::beh(g.world.get_block(x, y as i32, z)) == Beh::BigDripleaf {
+                    hits.push((BlockPos::new(x, y as i32, z), feet));
+                }
             }
         }
     }
