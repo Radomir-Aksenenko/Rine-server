@@ -13,6 +13,7 @@ use std::sync::OnceLock;
 
 use rine_protocol::BlockPos;
 
+use super::props::{geti, seti, Pr};
 use super::sapling::{self, Growth};
 use super::{block_id, block_of, Rng};
 use crate::game::redstone::engine::{self, fl, Lvl, UPDATE_LIMIT};
@@ -24,6 +25,9 @@ const WORLD_HEIGHT: i32 = 384;
 
 const HUGE_RED: &str = "minecraft:huge_red_mushroom";
 const HUGE_BROWN: &str = "minecraft:huge_brown_mushroom";
+
+/// `SaplingBlock.isBonemealSuccess`: `nextFloat() < 0.45` (the standing mangrove propagule uses it too).
+const SAPLING_BONEMEAL_SUCCESS: f32 = 0.45;
 
 /// `MushroomBlock.isBonemealSuccess`: `nextFloat() < 0.4`.
 const MUSHROOM_SUCCESS: f32 = 0.4;
@@ -60,6 +64,31 @@ fn t() -> &'static T {
     })
 }
 
+/// The mangrove growth: `TreeGrower.MANGROVE` over the mangrove configured features.
+fn mangrove() -> Option<&'static Growth> {
+    static M: OnceLock<Option<Growth>> = OnceLock::new();
+    M.get_or_init(|| sapling::build(&["minecraft:mangrove", "minecraft:tall_mangrove"])).as_ref()
+}
+
+/// `SaplingBlock.advanceTree` for the standing mangrove propagule: stage 0 becomes stage 1
+/// (`UPDATE_NONE`), stage 1 grows `TreeGrower.MANGROVE`.
+pub fn propagule_advance<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
+    if geti(st, Pr::Stage) == 0 {
+        engine::set_block(rs, l, pos, seti(st, Pr::Stage, 1), fl::NONE, UPDATE_LIMIT);
+        return;
+    }
+    let Some(gr) = mangrove() else { return };
+    sapling::grow_tree(rs, l, gr, pos, st, &sapling::MANGROVE, rng);
+}
+
+/// Bone meal on a standing mangrove propagule: `SaplingBlock.isBonemealSuccess`, then `advanceTree`.
+/// The hanging stage is in `bonemeal.rs`.
+pub fn propagule_bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) {
+    if rng.next_float() < SAPLING_BONEMEAL_SUCCESS {
+        propagule_advance(rs, l, st, pos, rng);
+    }
+}
+
 /// Bone meal on a mushroom plant (`MushroomBlock.isValidBonemealTarget`, `isBonemealSuccess`,
 /// `performBonemeal`). Returns false when it is not a valid target.
 pub fn bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mut Rng) -> bool {
@@ -90,6 +119,7 @@ fn grow_mushroom<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, st: u16, pos: Bloc
 
 #[cfg(test)]
 mod tests {
+    use super::super::props::{geti, seti, Pr};
     use super::super::testw::World;
     use super::super::{block_id, default_state};
     use super::*;
@@ -152,6 +182,40 @@ mod tests {
             }
         }
         assert!(grew > 0, "some growths succeed in 24 seeds");
+    }
+
+    #[test]
+    fn standing_propagule_takes_two_random_ticks_to_start_and_then_grows_mangrove() {
+        rine_data::init();
+        let p = BlockPos { x: 0, y: 64, z: 0 };
+        let stage1 = seti(default_state("mangrove_propagule"), Pr::Stage, 1);
+        // stage 0 -> 1 with no tree
+        let mut w = World::new();
+        let mut rs = Rs::default();
+        let mut rng = Rng::new(1);
+        w.put(p, default_state("mangrove_propagule"));
+        propagule_advance(&mut rs, &mut w, default_state("mangrove_propagule"), p, &mut rng);
+        assert_eq!(geti(w.get(p), Pr::Stage), 1);
+        assert_eq!(count(&w, "mangrove_log"), 0);
+
+        // stage 1 grows the mangrove tree on a mud floor
+        let mut logs = 0;
+        for seed in 0..16u64 {
+            let mut w = World::new();
+            let mut rs = Rs::default();
+            let mut rng = Rng::new(seed);
+            // mud, with stone under it: the roots stop at the stone (`MangroveRootPlacer.simulateRoots`)
+            for x in -8..=8 {
+                for z in -8..=8 {
+                    w.put(BlockPos { x, y: 63, z }, default_state("mud"));
+                    w.put(BlockPos { x, y: 62, z }, default_state("stone"));
+                }
+            }
+            w.put(p, stage1);
+            propagule_advance(&mut rs, &mut w, stage1, p, &mut rng);
+            logs += count(&w, "mangrove_log");
+        }
+        assert!(logs > 0, "some mangrove trees grow in 16 seeds");
     }
 
     #[test]

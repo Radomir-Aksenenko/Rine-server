@@ -42,7 +42,8 @@ const WORLD_HEIGHT: i32 = 384;
 /// Live copy around the sapling: sideways radius, and blocks above and below.
 const BOX_RADIUS: i32 = 12;
 const BOX_UP: i32 = 48;
-const BOX_DOWN: i32 = 1;
+/// Mangrove roots reach 15 blocks down (`max_root_length`), so the box goes 20 down.
+const BOX_DOWN: i32 = 20;
 
 /// Configured features the growers use. Names are `features.json` keys.
 const GROWER_FEATURES: [&str; 16] = [
@@ -65,7 +66,7 @@ const GROWER_FEATURES: [&str; 16] = [
 ];
 
 /// `TreeGrower`: weighted lists of configured features, and the shortest tree (`getMinimumHeight`).
-struct Grower {
+pub(super) struct Grower {
     trees: &'static [(&'static str, i32)],
     mega: &'static [(&'static str, i32)],
     flowers: &'static [(&'static str, i32)],
@@ -113,6 +114,14 @@ const DARK_OAK: Grower = Grower {
     mega: &[("minecraft:dark_oak", 1)],
     flowers: &[],
     shortest: None,
+};
+/// `TreeGrower.MANGROVE`: the standing mangrove propagule (`MangrovePropaguleBlock`), 15 mangrove and
+/// 85 tall mangrove, no mega or flower trees.
+pub(super) const MANGROVE: Grower = Grower {
+    trees: &[("minecraft:mangrove", 15), ("minecraft:tall_mangrove", 85)],
+    mega: &[],
+    flowers: &[],
+    shortest: Some("minecraft:mangrove"),
 };
 const PALE_OAK: Grower = Grower {
     trees: &[],
@@ -368,8 +377,7 @@ fn clear_box(origin: BlockPos, blocks: &mut [Vec<u16>], log: &[(i32, i32, i32, u
 
 /// `TreeGrower.growTree` for the grower `g` of the sapling at `pos` (state `st`).
 /// Returns whether the tree was placed.
-fn grow_tree<L: Lvl>(rs: &mut Rs, l: &mut L, pos: BlockPos, st: u16, g: &Grower, rng: &mut Rng) -> bool {
-    let Some(gr) = growth() else { return false };
+pub(super) fn grow_tree<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, pos: BlockPos, st: u16, g: &Grower, rng: &mut Rng) -> bool {
     let blk = block_of(st);
     // The mega feature is drawn first, then the 2x2 search.
     if let Some(mega) = pick(g.mega, rng) {
@@ -441,7 +449,8 @@ pub fn advance_tree<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng:
         return;
     }
     let Some(g) = grower_of(block_of(st)) else { return };
-    grow_tree(rs, l, pos, st, g, rng);
+    let Some(gr) = growth() else { return };
+    grow_tree(rs, l, gr, pos, st, g, rng);
 }
 
 /// `SaplingBlock.randomTick`: light above at least 9, then a 1 in 7 chance.

@@ -7,10 +7,9 @@
 //! - `GlowLichenBlock` (`MultifaceSpreader`): one new face somewhere around;
 //! - hanging mangrove propagules: the age cycles (`MangrovePropaguleBlock`).
 //!
-//! Not ported here: standing mangrove propagules (`SaplingBlock.performBonemeal`
-//! through `TreeGrower.MANGROVE`), small and big dripleaf (`placeWithRandomHeight`
-//! and the tilt states), grass block spread (the biome bone meal features),
-//! and the feature targets in `sapling.rs` and `growth.rs`.
+//! Standing mangrove propagules go through `growth.rs` (`TreeGrower.MANGROVE`).
+//! Not ported here: small and big dripleaf (`placeWithRandomHeight` and the tilt
+//! states), grass block spread (the biome bone meal features).
 
 use std::sync::OnceLock;
 
@@ -133,11 +132,16 @@ pub fn bonemeal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, rng: &mu
         return true;
     }
     if blk == t.propagule {
-        // Hanging stage only: the standing stage grows a mangrove tree (not ported).
-        if !getb(st, Pr::Hanging) || geti(st, Pr::Age) == 4 {
+        if !getb(st, Pr::Hanging) {
+            // `SaplingBlock.isValidBonemealTarget` is true; the success draw and `advanceTree` are in growth.rs.
+            super::growth::propagule_bonemeal(rs, l, st, pos, rng);
+            return true;
+        }
+        // `MangrovePropaguleBlock.isValidBonemealTarget`: hanging and not fully grown.
+        if geti(st, Pr::Age) == 4 {
             return false;
         }
-        // `MangrovePropaguleBlock.performBonemeal`: `state.cycle(AGE)`, `UPDATE_CLIENTS`.
+        // `performBonemeal`: `state.cycle(AGE)`, `UPDATE_CLIENTS`.
         engine::set_block(rs, l, pos, seti(st, Pr::Age, geti(st, Pr::Age) + 1), fl::CLIENTS, UPDATE_LIMIT);
         return true;
     }
