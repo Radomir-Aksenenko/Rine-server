@@ -36,6 +36,7 @@ pub struct Loaded {
     /// Redstone blocks that need block entity data rebuilt (see
     /// `redstone::load_scan`).
     pub rs_scan: Vec<BlockPos>,
+    pub block_ticks: Vec<(BlockPos, u16)>,
 }
 
 pub struct World {
@@ -137,12 +138,12 @@ impl World {
         let gen = self.generator.clone();
         let store = self.store.clone();
         spawn_background(move || {
-            let mut chunk = match store.load(pos) {
-                Some(c) => c,
+            let (mut chunk, block_ticks) = match store.load(pos) {
+                Some(c) => (c, Vec::new()),
                 None => {
-                    let mut c = gen.generate(pos);
+                    let (mut c, block_ticks) = gen.generate_with_ticks(pos);
                     rine_world::light::light_chunk(&mut c);
-                    c
+                    (c, block_ticks)
                 }
             };
             chunk.dirty = chunk.dirty || false;
@@ -150,7 +151,7 @@ impl World {
             let mut b = BytesMut::with_capacity(16 * 1024);
             rine_world::encode::encode_chunk_packet(&chunk, &mut b);
             let frame = out::frame(b);
-            let _ = tx.send(Loaded { chunk: Box::new(chunk), frame, rs_scan });
+            let _ = tx.send(Loaded { chunk: Box::new(chunk), frame, rs_scan, block_ticks });
         });
     }
 
@@ -163,6 +164,9 @@ impl World {
             let v = l.chunk.version;
             self.rs_loaded.extend_from_slice(&l.rs_scan);
             self.redstone.chunk_loaded(pos.x, pos.z, self.rs_time);
+            for (p, block) in l.block_ticks {
+                self.redstone.schedule_at(p, block, self.rs_time + 1, super::redstone::engine::prio::NORMAL);
+            }
             self.next_uid += 1;
             let uid = self.next_uid;
             self.chunks.insert(pos, ChunkSlot { chunk: l.chunk, frame: Some((v, l.frame)), viewers: Vec::new(), idle_since: tick, uid });

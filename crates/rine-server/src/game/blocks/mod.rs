@@ -42,7 +42,12 @@ pub mod uses;
 pub mod sponge;
 pub mod sapling;
 pub mod bonemeal;
+mod feature_growth;
 pub mod growth;
+
+pub(crate) fn prepare_feature_growth() {
+    feature_growth::prepare();
+}
 #[cfg(test)]
 pub mod testw;
 
@@ -146,6 +151,7 @@ pub enum Beh {
     Snowy,
     /// `NyliumBlock` (crimson, warped).
     Nylium,
+    MossyCarpet,
     /// `ChangeOverTimeBlock` copper classes (`WeatheringCopper`).
     Copper,
     /// `StairBlock` (shape at placement and on neighbour change).
@@ -248,6 +254,9 @@ fn table() -> &'static Table {
 
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
+    if n == "pale_moss_carpet" {
+        return Beh::MossyCarpet;
+    }
     if let Some(b) = crops::classify(n) {
         return b;
     }
@@ -514,6 +523,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Sapling => sapling::update_shape(&*l, st, pos),
         Beh::BuddingAmethyst | Beh::Eyeblossom => st,
         Beh::Nylium => st,
+        Beh::MossyCarpet => feature_growth::carpet_update_shape(rs, l, st, pos),
         Beh::Copper => st,
         Beh::Stairs | Beh::Fence | Beh::Bars | Beh::Wall | Beh::FenceGate | Beh::Chorus | Beh::HugeMushroom => shape::update_shape(rs, l, st, pos, dir, npos, nst),
         Beh::Falling | Beh::ConcretePowder | Beh::DragonEgg | Beh::Brushable => falling::update_shape(rs, l, st, pos),

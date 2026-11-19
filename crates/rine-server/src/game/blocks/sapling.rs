@@ -238,10 +238,16 @@ fn growth() -> Option<&'static Growth> {
 /// A decorator with the configured features `growers` (`Decorator::new_growers`) over the live palette.
 /// Logged and `None` when it does not compile.
 pub(super) fn build(growers: &[&str]) -> Option<Growth> {
+    build_with(|names, defaults| Decorator::new_growers(names, defaults, growers))
+}
+
+pub(super) fn build_with(
+    compile: impl FnOnce(&[String], HashMap<String, String>) -> Result<Decorator, String>,
+) -> Option<Growth> {
     let b = &rine_data::get().blocks;
     let names: Vec<String> = (0..b.states.len()).map(|s| canonical(b, s as u16)).collect();
     let defaults: HashMap<String, String> = b.blocks.iter().map(|blk| (blk.name.clone(), canonical(b, blk.default_state as u16))).collect();
-    let dec = match Decorator::new_growers(&names, defaults, growers) {
+    let dec = match compile(&names, defaults) {
         Ok(d) => d,
         Err(e) => {
             tracing::error!("block growth disabled: {e}");
@@ -374,7 +380,7 @@ fn copy_box<L: Lvl>(l: &L, origin: BlockPos, blocks: &mut [Vec<u16>]) {
 }
 
 /// Back to all air: the copied box and every cell in `log`.
-fn clear_box(origin: BlockPos, blocks: &mut [Vec<u16>], log: &[(i32, i32, i32, u16)], air: u16) {
+fn clear_box(origin: BlockPos, blocks: &mut [Vec<u16>], log: &[rine_worldgen::feature::region::BlockWrite], air: u16) {
     let (cx, cz) = (origin.x.div_euclid(16), origin.z.div_euclid(16));
     let (xa, xb, ya, yb, za, zb) = box_bounds(origin);
     for y in ya..=yb {
@@ -385,7 +391,7 @@ fn clear_box(origin: BlockPos, blocks: &mut [Vec<u16>], log: &[(i32, i32, i32, u
             }
         }
     }
-    for &(x, y, z, _) in log {
+    for &(x, y, z, _, _) in log {
         let (c, i) = cell(cx, cz, x, y, z);
         if let Some(b) = blocks.get_mut(c).and_then(|v| v.get_mut(i)) {
             *b = air;
@@ -454,8 +460,8 @@ pub(super) fn place_and_replay<L: Lvl>(rs: &mut Rs, l: &mut L, gr: &Growth, inde
     let mut blocks = region.into_blocks();
     clear_box(origin, &mut blocks, &log, air);
     give_back(blocks);
-    for (x, y, z, pal) in log {
-        engine::set_block(rs, l, BlockPos { x, y, z }, live_id(gr, pal), flags, UPDATE_LIMIT);
+    for (x, y, z, pal, write_flags) in log {
+        engine::set_block(rs, l, BlockPos { x, y, z }, live_id(gr, pal), write_flags.unwrap_or(flags), UPDATE_LIMIT);
     }
     placed
 }

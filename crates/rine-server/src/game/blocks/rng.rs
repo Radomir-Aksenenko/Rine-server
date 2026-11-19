@@ -26,6 +26,16 @@ fn splitmix(x: &mut u64) -> u64 {
 }
 
 impl Rng {
+    pub(super) fn feature_random(&self) -> rine_worldgen::feature::rng::WorldgenRng {
+        rine_worldgen::feature::rng::WorldgenRng::direct(
+            rine_worldgen::random::Xoroshiro::from_longs(self.s0 as i64, self.s1 as i64),
+        )
+    }
+
+    pub(super) fn finish_feature_random(&mut self, rng: rine_worldgen::feature::rng::WorldgenRng) {
+        (self.s0, self.s1) = rng.source().raw_state();
+    }
+
     pub fn new(seed: u64) -> Self {
         let mut x = seed;
         let s0 = splitmix(&mut x);

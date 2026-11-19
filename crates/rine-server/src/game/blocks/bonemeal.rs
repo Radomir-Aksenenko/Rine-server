@@ -168,7 +168,7 @@ fn flower_bed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
 
 /// `TallGrassBlock`: `isValidBonemealTarget` checks the tall form can survive at `pos`
 /// (`DoublePlantBlock` lower half, `VegetationBlock` ground), air above, then `placeAt`.
-fn tall_grass<L: Lvl>(rs: &mut Rs, l: &mut L, blk: u16, pos: BlockPos) -> bool {
+pub(super) fn tall_grass<L: Lvl>(rs: &mut Rs, l: &mut L, blk: u16, pos: BlockPos) -> bool {
     let t = t();
     let (lower, upper) = if blk == t.fern { (t.fern_lower, t.fern_upper) } else { (t.grass_lower, t.grass_upper) };
     let below = block_of(l.get(pos.offset(0, -1, 0)));

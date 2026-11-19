@@ -14,6 +14,7 @@ fn main() -> anyhow::Result<()> {
         .init();
     let t0 = std::time::Instant::now();
     rine_data::init();
+    game::blocks::prepare_feature_growth();
     let config = config::Config::load_or_create("rine.toml");
     out::THRESHOLD.store(config.compression_threshold, Ordering::Relaxed);
     tracing::info!("data loaded in {:?}", t0.elapsed());

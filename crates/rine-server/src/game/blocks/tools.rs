@@ -464,15 +464,15 @@ fn wax_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx) 
 
 /// `BoneMealItem.useOn` through `growCrop`. The water branch is not ported.
 ///
-/// Saplings (`sapling.rs`), mushroom plants (`growth.rs`) and the simple targets
-/// of `bonemeal.rs` are routed here. Not reached here (vanilla
-/// `BonemealableBlock` that is not ported yet): grass_block (its biome bone meal
-/// features), mycelium, crimson and warped nylium, nether fungus, moss blocks and
-/// pale moss, standing mangrove propagule,
-/// hanging moss, mossy carpet, rooted dirt, netherrack, shelf mushroom,
-/// mangrove leaves, dry grass, firefly bush, bush.
+/// Feature-based targets share the chunk-generation implementations.
 fn bone_meal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {
-    if !(crops::bonemeal(rs, l, st, pos, rng) || plants::bonemeal(rs, l, st, pos, rng) || sapling::bonemeal(rs, l, st, pos, rng) || growth::bonemeal(rs, l, st, pos, rng) || bonemeal::bonemeal(rs, l, st, pos, rng)) {
+    if !(crops::bonemeal(rs, l, st, pos, rng)
+        || plants::bonemeal(rs, l, st, pos, rng)
+        || sapling::bonemeal(rs, l, st, pos, rng)
+        || growth::bonemeal(rs, l, st, pos, rng)
+        || bonemeal::bonemeal(rs, l, st, pos, rng)
+        || super::feature_growth::bone_meal(rs, l, st, pos, rng))
+    {
         return Res::Pass;
     }
     l.level_event(EV_PLANT_GROWTH, pos, 15);

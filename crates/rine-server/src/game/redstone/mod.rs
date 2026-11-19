@@ -649,6 +649,11 @@ impl Lvl for GameLvl<'_> {
         }
     }
 
+    fn bone_meal_biome(&self, p: BlockPos) -> u8 {
+        let (x, y, z) = self.g.world.generator.bone_meal_biome_sample(p.x, p.y, p.z);
+        self.biome(BlockPos { x, y, z })
+    }
+
     fn temperature(&self, biome: u8, p: BlockPos) -> f32 {
         self.g.world.generator.temperature(biome, p.x, p.y, p.z)
     }
