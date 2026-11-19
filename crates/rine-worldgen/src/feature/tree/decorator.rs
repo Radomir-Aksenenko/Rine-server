@@ -448,9 +448,12 @@ fn pale_moss(leaves_p: f32, trunk_p: f32, ground_p: f32, d: &mut DecoratorCtx, c
     // Collections.min by Y: first minimal element in list order.
     let origin = logs.iter().copied().reduce(|a, b| if b.1 < a.1 { b } else { a }).expect("non-empty");
     if ctx.rng.next_float() < ground_p {
-        panic!("pale_moss ground patch (pale_moss_patch) is not ported");
+        // DEVIATION: vanilla places `pale_moss_patch` (VegetationPatchFeature) at
+        // `origin.above()` here. It is not ported (needs MossyCarpetBlock.placeAt
+        // face shapes), so the patch is skipped instead of crashing generation.
+        // The rest of the tree matches; the patch's own random draws are missing.
+        let _ = origin;
     }
-    let _ = origin;
     for pos in d.logs.clone() {
         if ctx.rng.next_float() < trunk_p {
             let down = offset(pos, 0, -1, 0);
