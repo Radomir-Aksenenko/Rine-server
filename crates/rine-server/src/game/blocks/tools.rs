@@ -468,7 +468,7 @@ fn wax_on<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx) 
 /// of `bonemeal.rs` are routed here. Not reached here (vanilla
 /// `BonemealableBlock` that is not ported yet): grass_block (its biome bone meal
 /// features), mycelium, crimson and warped nylium, nether fungus, moss blocks and
-/// pale moss, standing mangrove propagule, small and big dripleaf,
+/// pale moss, standing mangrove propagule,
 /// hanging moss, mossy carpet, rooted dirt, netherrack, shelf mushroom,
 /// mangrove leaves, dry grass, firefly bush, bush.
 fn bone_meal<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, ctx: &UseCtx, rng: &mut Rng) -> Res {

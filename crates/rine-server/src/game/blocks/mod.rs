@@ -22,6 +22,7 @@ pub mod bed;
 pub mod cauldron;
 pub mod copper;
 pub mod crops;
+pub mod dripleaf;
 pub mod falling;
 pub mod grass;
 pub mod interact;
@@ -217,6 +218,12 @@ pub enum Beh {
     Bed,
     /// `SignBlock` and its subclasses (standing, wall, hanging, wall hanging).
     Sign,
+    /// `BigDripleafBlock` (head: tilt, entity tilt, bone meal).
+    BigDripleaf,
+    /// `BigDripleafStemBlock`.
+    DripleafStem,
+    /// `SmallDripleafBlock` (two-block plant).
+    SmallDripleaf,
 }
 
 struct Table {
@@ -242,6 +249,9 @@ fn table() -> &'static Table {
 /// Claim a block for a family. Families are asked in order.
 fn classify(n: &str) -> Beh {
     if let Some(b) = crops::classify(n) {
+        return b;
+    }
+    if let Some(b) = dripleaf::classify(n) {
         return b;
     }
     if let Some(b) = cauldron::classify(n) {
@@ -454,6 +464,7 @@ pub fn placement<L: Lvl>(l: &L, st: u16, pos: BlockPos, ctx: &PlaceCtx) -> Optio
         Beh::ChorusPlant => Some(misc::chorus_placement(l, st, pos)),
         Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Vine | Beh::AmethystCluster => plants::placement(l, st, pos, ctx),
         Beh::Sign => signs::placement(l, st, pos, ctx),
+        Beh::BigDripleaf | Beh::SmallDripleaf => dripleaf::placement(l, st, pos, ctx),
         Beh::ConcretePowder => Some(falling::placement(l, st, pos)),
         _ => Some(st),
     }
@@ -512,6 +523,7 @@ pub fn update_shape<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, dir:
         Beh::Ice | Beh::FrostedIce => st,
         Beh::Farmland | Beh::DriedGhast | Beh::ChorusFlower | Beh::ChorusPlant | Beh::Speleothem | Beh::SporeBlossom => misc::update_shape(rs, l, st, pos, dir, nst),
         Beh::Bed => bed::update_shape(st, dir, nst),
+        Beh::BigDripleaf | Beh::DripleafStem | Beh::SmallDripleaf => dripleaf::update_shape(rs, l, st, pos, dir, nst),
         #[allow(unreachable_patterns)]
         _ => st,
     }
@@ -522,6 +534,7 @@ pub fn tick<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos) {
     match beh(st) {
         Beh::Cactus | Beh::SugarCane | Beh::Bamboo | Beh::GrowHead | Beh::GrowBody | Beh::Eyeblossom => plants::tick(rs, l, st, pos),
         Beh::Chorus => shape::tick(rs, l, st, pos),
+        Beh::BigDripleaf | Beh::DripleafStem => dripleaf::tick(rs, l, st, pos),
         Beh::Leaves => leaves::tick(rs, l, st, pos),
         Beh::Fire => fire::tick(rs, l, st, pos),
         Beh::FrostedIce => snow::tick(rs, l, st, pos),
@@ -549,6 +562,7 @@ pub fn neighbor_changed<L: Lvl>(rs: &mut Rs, l: &mut L, st: u16, pos: BlockPos, 
     match beh(st) {
         Beh::FrostedIce => snow::neighbor_changed(rs, l, pos, from),
         Beh::Bell => uses::neighbor_changed(rs, l, st, pos),
+        Beh::BigDripleaf => dripleaf::neighbor_changed(rs, l, st, pos),
         Beh::Sponge => sponge::neighbor_changed(rs, l, pos),
         _ => {}
     }
