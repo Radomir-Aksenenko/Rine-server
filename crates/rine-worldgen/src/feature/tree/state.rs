@@ -236,7 +236,7 @@ pub fn tree_wanted_blocks(bundle: &Value) -> Vec<String> {
             walk(p, &mut out);
         }
     }
-    for n in ["minecraft:vine", "minecraft:cocoa", "minecraft:bee_nest", "minecraft:creaking_heart", "minecraft:pale_hanging_moss"] {
+    for n in ["minecraft:vine", "minecraft:cocoa", "minecraft:bee_nest", "minecraft:creaking_heart", "minecraft:pale_hanging_moss", "minecraft:shelf_mushroom"] {
         if !out.iter().any(|x| x == n) {
             out.push(n.to_string());
         }

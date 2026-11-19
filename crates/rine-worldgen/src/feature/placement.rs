@@ -11,20 +11,27 @@ use super::region::Region;
 use crate::overworld::biome::biome_info_noise;
 
 /// `IntProvider`: constant, `UniformInt`, `TrapezoidInt`, `BiasedToBottomInt`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum IntProvider {
     Constant(i32),
     Uniform { min: i32, max: i32 },
     Trapezoid { min: i32, max: i32, plateau: i32 },
     BiasedToBottom { min: i32, max: i32 },
+    /// `WeightedListInt`: `(provider, weight)` entries; one `nextInt(total)` draw picks the entry.
+    Weighted(Vec<(IntProvider, i32)>),
 }
 
 impl IntProvider {
     /// `minInclusive()` and `maxInclusive()`.
     pub fn bounds(&self) -> (i32, i32) {
-        match *self {
-            IntProvider::Constant(v) => (v, v),
-            IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max } => (min, max),
+        match self {
+            IntProvider::Constant(v) => (*v, *v),
+            IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max } => (*min, *max),
+            IntProvider::Weighted(entries) => {
+                let lo = entries.iter().map(|(p, _)| p.bounds().0).min().unwrap_or(0);
+                let hi = entries.iter().map(|(p, _)| p.bounds().1).max().unwrap_or(0);
+                (lo, hi)
+            }
         }
     }
 }
@@ -85,8 +92,21 @@ pub enum Modifier {
 }
 
 pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
+    if let IntProvider::Weighted(entries) = p {
+        // WeightedRandom.getRandomItem: nextInt(total), then the first entry whose running sum exceeds it.
+        let total: i32 = entries.iter().map(|e| e.1).sum();
+        let mut sel = rng.next_int_bound(total);
+        for (inner, w) in entries {
+            sel -= w;
+            if sel < 0 {
+                return sample_int(inner, rng);
+            }
+        }
+        return sample_int(&entries[entries.len() - 1].0, rng);
+    }
     match *p {
         IntProvider::Constant(v) => v,
+        IntProvider::Weighted(_) => unreachable!("handled above"),
         // BiasedToBottomInt.sample: min + nextInt(nextInt(max - min + 1) + 1).
         IntProvider::BiasedToBottom { min, max } => {
             let bound = rng.next_int_bound(max - min + 1) + 1;
@@ -250,6 +270,16 @@ pub fn parse_int_provider(v: &Value) -> Result<IntProvider, String> {
     let ty = v["type"].as_str().ok_or_else(|| format!("int provider without type: {v}"))?;
     let int = |k: &str| -> Result<i32, String> { v[k].as_i64().map(|n| n as i32).ok_or_else(|| format!("{ty} missing {k}")) };
     match ty {
+        "minecraft:weighted_list" => {
+            let mut entries = Vec::new();
+            for e in v["distribution"].as_array().ok_or("weighted_list distribution")? {
+                entries.push((parse_int_provider(&e["data"])?, e["weight"].as_i64().ok_or("weight")? as i32));
+            }
+            if entries.is_empty() || entries.iter().map(|e| e.1).sum::<i32>() <= 0 {
+                return Err("weighted_list without weight".into());
+            }
+            Ok(IntProvider::Weighted(entries))
+        }
         "minecraft:constant" => Ok(IntProvider::Constant(int("value")?)),
         "minecraft:uniform" => Ok(IntProvider::Uniform { min: int("min_inclusive")?, max: int("max_inclusive")? }),
         // TrapezoidInt's codec uses "min"/"max" (UniformInt and BiasedToBottomInt use "min_inclusive"/"max_inclusive").

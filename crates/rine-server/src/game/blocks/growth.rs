@@ -325,6 +325,33 @@ mod tests {
     }
 
     #[test]
+    fn poplar_sapling_bone_meal_grows_a_poplar_with_shelf_mushrooms() {
+        rine_data::init();
+        let p = BlockPos { x: 0, y: 64, z: 0 };
+        // stage 1: `advanceTree` only moves stage 0 on
+        let sapling = seti(default_state("poplar_sapling"), Pr::Stage, 1);
+        let mut grew = 0;
+        let mut shelves = 0;
+        for seed in 0..48u64 {
+            let mut rs = Rs::default();
+            let mut w = World::new();
+            floor(&mut w);
+            w.put(p, sapling);
+            let mut rng = Rng::new(seed);
+            assert!(sapling::bonemeal(&mut rs, &mut w, sapling, p, &mut rng), "seed {seed}: valid target");
+            if count(&w, "poplar_log") > 0 {
+                grew += 1;
+                assert!(count(&w, "red_poplar_leaves") + count(&w, "orange_poplar_leaves") + count(&w, "yellow_poplar_leaves") > 0, "seed {seed}: crown");
+                shelves += count(&w, "shelf_mushroom");
+            } else {
+                assert_eq!(block_of(w.get(p)), block_id("poplar_sapling"), "seed {seed}: sapling reset");
+            }
+        }
+        assert!(grew > 0, "some poplars grow in 48 seeds");
+        assert!(shelves > 0, "shelf mushrooms on some trunks");
+    }
+
+    #[test]
     fn no_build_height_no_target() {
         rine_data::init();
         let p = BlockPos { x: 0, y: 320, z: 0 };

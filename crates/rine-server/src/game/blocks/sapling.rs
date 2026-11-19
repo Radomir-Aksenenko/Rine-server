@@ -46,7 +46,7 @@ const BOX_UP: i32 = 48;
 const BOX_DOWN: i32 = 20;
 
 /// Configured features the growers use. Names are `features.json` keys.
-const GROWER_FEATURES: [&str; 16] = [
+const GROWER_FEATURES: [&str; 19] = [
     "minecraft:oak",
     "minecraft:fancy_oak",
     "minecraft:oak_bees_005",
@@ -63,6 +63,9 @@ const GROWER_FEATURES: [&str; 16] = [
     "minecraft:cherry_bees_005",
     "minecraft:dark_oak",
     "minecraft:pale_oak_bonemeal",
+    "minecraft:red_poplar",
+    "minecraft:orange_poplar",
+    "minecraft:yellow_poplar",
 ];
 
 /// `TreeGrower`: weighted lists of configured features, and the shortest tree (`getMinimumHeight`).
@@ -137,9 +140,16 @@ const PALE_OAK: Grower = Grower {
     shortest: None,
 };
 
-/// Sapling block name and its grower. `poplar_sapling` is not here: the red, orange and
-/// yellow poplar trees need the `shelf_mushroom` tree decorator, which is not ported.
-const SAPLINGS: [(&str, &Grower); 8] = [
+/// `TreeGrower.POPLAR`: red, orange and yellow poplars (shelf mushrooms come from the tree decorator).
+const POPLAR: Grower = Grower {
+    trees: &[("minecraft:red_poplar", 1), ("minecraft:orange_poplar", 1), ("minecraft:yellow_poplar", 1)],
+    mega: &[],
+    flowers: &[],
+    shortest: Some("minecraft:red_poplar"),
+};
+
+/// Sapling block name and its grower.
+const SAPLINGS: [(&str, &Grower); 9] = [
     ("oak_sapling", &OAK),
     ("spruce_sapling", &SPRUCE),
     ("birch_sapling", &BIRCH),
@@ -148,6 +158,7 @@ const SAPLINGS: [(&str, &Grower); 8] = [
     ("cherry_sapling", &CHERRY),
     ("dark_oak_sapling", &DARK_OAK),
     ("pale_oak_sapling", &PALE_OAK),
+    ("poplar_sapling", &POPLAR),
 ];
 
 /// Tables by block id, built once.

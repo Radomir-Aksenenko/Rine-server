@@ -7,7 +7,7 @@ use serde_json::Value;
 use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::order::Pos;
-use super::trunk::java_floor_f32;
+use super::trunk::{java_floor_f32, Axis};
 use super::{dist_manhattan, offset, relative, TreeCompile, Ctx, Dir, TreeFeature, HORIZONTAL};
 
 /// `FoliagePlacer.FoliageAttachment`.
@@ -52,6 +52,8 @@ pub enum FoliageKind {
         hanging_leaves_chance: f32,
         hanging_leaves_extension_chance: f32,
     },
+    /// `PoplarFoliagePlacer`: a rhombus crown with logs cut into its sides.
+    Poplar { height: IntProvider, side_hole_chance: f32 },
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +93,10 @@ impl FoliagePlacer {
                     hanging_leaves_extension_chance: f("hanging_leaves_extension_chance")?,
                 }
             }
+            "minecraft:poplar_foliage_placer" => FoliageKind::Poplar {
+                height: parse_int_provider(&v["height"])?,
+                side_hole_chance: v["side_hole_chance"].as_f64().ok_or("side_hole_chance")? as f32,
+            },
             other => return Err(format!("unsupported foliage placer {other}")),
         };
         Ok(FoliagePlacer { radius, offset, kind })
@@ -101,7 +107,7 @@ impl FoliagePlacer {
         match &self.kind {
             FoliageKind::Blob { height } | FoliageKind::Fancy { height } | FoliageKind::Bush { height } | FoliageKind::MegaJungle { height } => *height,
             FoliageKind::Spruce { trunk_height } => (tree_height - sample_int(trunk_height, ctx.rng)).max(4),
-            FoliageKind::Pine { height } | FoliageKind::Cherry { height, .. } => sample_int(height, ctx.rng),
+            FoliageKind::Pine { height } | FoliageKind::Cherry { height, .. } | FoliageKind::Poplar { height, .. } => sample_int(height, ctx.rng),
             FoliageKind::Acacia => 0,
             FoliageKind::DarkOak => 4,
             FoliageKind::MegaPine { crown_height } => sample_int(crown_height, ctx.rng),
@@ -218,6 +224,20 @@ impl FoliagePlacer {
                     try_place_leaf(tree, ctx, offset(origin, dx, dy, dz));
                 }
             }
+            FoliageKind::Poplar { side_hole_chance, .. } => {
+                let fp = offset(a.pos, 0, off, 0);
+                let cr = leaf_radius + a.radius_offset_xz - 1;
+                let flip = ctx.rng.next_bool();
+                poplar_row(tree, ctx, fp, cr - 2, fhwo - 1, a.double_trunk(), fhwo, flip, *side_hole_chance);
+                poplar_row(tree, ctx, fp, cr - 1, fhwo - 2, a.double_trunk(), fhwo, flip, *side_hole_chance);
+                poplar_row(tree, ctx, fp, cr - 1, fhwo - 3, a.double_trunk(), fhwo, flip, *side_hole_chance);
+                for y in (1..=fhwo - 4).rev() {
+                    poplar_row(tree, ctx, fp, cr, y, a.double_trunk(), fhwo, flip, *side_hole_chance);
+                }
+                poplar_logs(tree, ctx, fp, cr, fhwo - 4, a.double_trunk(), fhwo, flip);
+                poplar_row(tree, ctx, fp, cr - 1, 0, a.double_trunk(), fhwo, flip, *side_hole_chance);
+                poplar_row(tree, ctx, fp, (cr - 2).clamp(1, 2), -1, a.double_trunk(), fhwo, flip, *side_hole_chance);
+            }
             FoliageKind::Cherry { wide_bottom_layer_hole_chance: _, hanging_leaves_chance, hanging_leaves_extension_chance, .. } => {
                 let double = a.double_trunk();
                 let fp = offset(a.pos, 0, off, 0);
@@ -261,6 +281,8 @@ fn should_skip_location(kind: &FoliageKind, ctx: &mut Ctx, dx: i32, y: i32, dz: 
         }
         FoliageKind::MegaPine { .. } | FoliageKind::MegaJungle { .. } => dx + dz >= 7 || dx * dx + dz * dz > cr * cr,
         FoliageKind::RandomSpread { .. } => false,
+        // Poplar rows use `poplar_row`, which has its own skip rule.
+        FoliageKind::Poplar { .. } => false,
         FoliageKind::Cherry { wide_bottom_layer_hole_chance, corner_hole_chance, .. } => {
             if y == -1 && (dx == cr || dz == cr) && ctx.rng.next_float() < *wide_bottom_layer_hole_chance {
                 return true;
@@ -359,5 +381,77 @@ pub fn try_place_leaf(tree: &TreeFeature, ctx: &mut Ctx, pos: Pos) -> bool {
         true
     } else {
         false
+    }
+}
+
+/// `PoplarFoliagePlacer.getCornerBlocksToCutForRhombusShape`.
+fn poplar_corner_cut(dx: i32, dz: i32, cr: i32, partial: bool, flip: bool) -> i32 {
+    let small_corner = if flip {
+        (dx > 0 && dz > 0) || (dz < 0 && dx < 0)
+    } else {
+        (dx > 0 && dz < 0) || (dz > 0 && dx < 0)
+    };
+    if small_corner {
+        cr - 1
+    } else if partial {
+        cr + 1
+    } else {
+        cr
+    }
+}
+
+/// `PoplarFoliagePlacer.isWithinRhombusShape`.
+fn poplar_within(cr: i32, abs_dx: i32, abs_dz: i32, cut: i32, extra: i32) -> bool {
+    abs_dx + abs_dz <= cr * 2 - (cut + extra)
+}
+
+/// `PoplarFoliagePlacer.placeLeavesRow` with `shouldSkipLocation`: the edge test of a partial row draws
+/// nothing, the side hole draws one float (`<= sideHoleChance`).
+#[allow(clippy::too_many_arguments)]
+fn poplar_row(tree: &TreeFeature, ctx: &mut Ctx, origin: Pos, cr: i32, y: i32, double: bool, fhwo: i32, flip: bool, side_hole: f32) {
+    let off = i32::from(double);
+    let partial = fhwo - 1 == y || fhwo - 2 == y;
+    for dx in -cr..=cr + off {
+        for dz in -cr..=cr + off {
+            let (abs_dx, abs_dz) = (dx.abs(), dz.abs());
+            let is_edge = abs_dx == cr || abs_dz == cr;
+            let skip = if partial && is_edge {
+                true
+            } else {
+                let cut = poplar_corner_cut(dx, dz, cr, partial, flip);
+                let extra = i32::from(ctx.rng.next_float() <= side_hole);
+                !poplar_within(cr, abs_dx, abs_dz, cut, extra)
+            };
+            if !skip {
+                try_place_leaf(tree, ctx, offset(origin, dx, y, dz));
+            }
+        }
+    }
+}
+
+/// `PoplarFoliagePlacer.replaceLeavesWithLog`: crown cells on the two axis lines at distance >= 4 that still
+/// hold the leaves state become sideways logs. Compares against the raw foliage provider state.
+#[allow(clippy::too_many_arguments)]
+fn poplar_logs(tree: &TreeFeature, ctx: &mut Ctx, origin: Pos, cr: i32, y: i32, double: bool, fhwo: i32, flip: bool) {
+    let off = i32::from(double);
+    let partial = fhwo - 1 == y || fhwo - 2 == y;
+    for dx in -cr..=cr + off {
+        for dz in -cr..=cr + off {
+            let (abs_dx, abs_dz) = (dx.abs(), dz.abs());
+            let cut = poplar_corner_cut(dx, dz, cr, partial, flip);
+            if poplar_within(cr, abs_dx, abs_dz, cut, 2) && ((abs_dz == 0 && cr - abs_dx >= 4) || (abs_dx == 0 && cr - abs_dz >= 4)) {
+                let pos = offset(origin, dx, y, dz);
+                let leaves = ctx.prov(&tree.foliage_provider, pos);
+                if ctx.id(pos) == leaves {
+                    let axis = if abs_dz == 0 { Axis::X } else { Axis::Z };
+                    let log = ctx.prov(&tree.trunk_provider, pos);
+                    let log = match ctx.env.states.get(log, "axis") {
+                        Some(_) => ctx.env.states.with(log, "axis", axis.name()),
+                        None => log,
+                    };
+                    ctx.set_foliage(pos, log);
+                }
+            }
+        }
     }
 }

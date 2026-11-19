@@ -64,6 +64,7 @@ pub enum TreeDecorator {
     AlterGround { provider: Provider },
     PaleMoss { leaves_probability: f32, trunk_probability: f32, ground_probability: f32 },
     CreakingHeart { probability: f32 },
+    ShelfMushroom { probability: f32 },
 }
 
 impl TreeDecorator {
@@ -108,6 +109,7 @@ impl TreeDecorator {
                 ground_probability: f("ground_probability")?,
             },
             "minecraft:creaking_heart" => TreeDecorator::CreakingHeart { probability: f("probability")? },
+            "minecraft:shelf_mushroom" => TreeDecorator::ShelfMushroom { probability: f("probability")? },
             other => return Err(format!("unsupported tree decorator {other}")),
         })
     }
@@ -128,6 +130,7 @@ impl TreeDecorator {
                 pale_moss(*leaves_probability, *trunk_probability, *ground_probability, d, ctx)
             }
             TreeDecorator::CreakingHeart { probability } => creaking_heart(*probability, d, ctx),
+            TreeDecorator::ShelfMushroom { probability } => shelf_mushroom(*probability, d, ctx),
         }
     }
 }
@@ -492,4 +495,98 @@ fn creaking_heart(p: f32, d: &mut DecoratorCtx, ctx: &mut Ctx) {
         let id = ctx.env.states.id("minecraft:creaking_heart", &[("creaking_heart_state", "dormant"), ("natural", "true")]);
         d.set(ctx, t, id);
     }
+}
+
+/// `ShelfMushroomDecorator`: shelf mushrooms on the sides of a standing trunk (1 to 4 blocks above the first
+/// log) or on a fallen log. Replaceable is approximated by air or `replaceable_by_trees` (vanilla reads
+/// `canBeReplaced()`, which has no tag).
+fn shelf_mushroom(p: f32, d: &mut DecoratorCtx, ctx: &mut Ctx) {
+    if ctx.rng.next_float() >= p {
+        return;
+    }
+    let logs = d.logs.clone();
+    if logs.is_empty() {
+        return;
+    }
+    let fallen = logs[0].1 == logs[logs.len() - 1].1;
+    if fallen {
+        shelf_on_fallen(&logs, d, ctx);
+    } else {
+        shelf_on_standing(&logs, d, ctx);
+    }
+}
+
+/// `ShelfMushroomDecorator.placeOnStandingTree`.
+fn shelf_on_standing(logs: &[Pos], d: &mut DecoratorCtx, ctx: &mut Ctx) {
+    let first = HORIZONTAL[ctx.rng.next_int_bound(4) as usize];
+    let directions = [first, first.clockwise()];
+    let base_y = logs[0].1;
+    for &log in logs {
+        let dy = log.1 - base_y;
+        if !(1..=4).contains(&dy) {
+            continue;
+        }
+        for facing in directions {
+            // `!(random.nextFloat() > 0.25F)`: the draw happens for every direction tried.
+            let roll = !(ctx.rng.next_float() > 0.25);
+            if roll && shelf_on_standing_try(log, facing, d, ctx) {
+                break;
+            }
+        }
+    }
+}
+
+fn shelf_on_standing_try(log: Pos, facing: Dir, d: &mut DecoratorCtx, ctx: &mut Ctx) -> bool {
+    let pos = relative(log, facing, 1);
+    if !shelf_replaceable(pos, ctx) {
+        return false;
+    }
+    if shelf_at(offset(pos, 0, -1, 0), ctx) {
+        return false;
+    }
+    shelf_place(pos, facing, d, ctx);
+    true
+}
+
+/// `ShelfMushroomDecorator.placeOnFallenLog`: both perpendicular sides, no neighbouring shelf mushroom.
+fn shelf_on_fallen(logs: &[Pos], d: &mut DecoratorCtx, ctx: &mut Ctx) {
+    let (first, last) = (logs[0], logs[logs.len() - 1]);
+    let directions = if first.0 != last.0 { [Dir::North, Dir::South] } else { [Dir::East, Dir::West] };
+    for &log in logs {
+        for facing in directions {
+            if !(ctx.rng.next_float() > 0.25) {
+                let pos = relative(log, facing, 1);
+                if shelf_replaceable(pos, ctx) && !shelf_beside(pos, ctx) && !shelf_beside(log, ctx) {
+                    shelf_place(pos, facing, d, ctx);
+                }
+            }
+        }
+    }
+}
+
+fn shelf_replaceable(pos: Pos, ctx: &Ctx) -> bool {
+    (ctx.is_air(pos) || ctx.has_tag(pos, ctx.env.tags.replaceable_by_trees)) && !shelf_water_near(pos, ctx)
+}
+
+fn shelf_water_near(pos: Pos, ctx: &Ctx) -> bool {
+    ctx.is_water_at(pos)
+        || ctx.is_water_at(offset(pos, 1, 0, 0))
+        || ctx.is_water_at(offset(pos, -1, 0, 0))
+        || ctx.is_water_at(offset(pos, 0, 0, -1))
+        || ctx.is_water_at(offset(pos, 0, 0, 1))
+}
+
+fn shelf_at(pos: Pos, ctx: &Ctx) -> bool {
+    ctx.env.states.base_name(ctx.id(pos)) == "minecraft:shelf_mushroom"
+}
+
+fn shelf_beside(pos: Pos, ctx: &Ctx) -> bool {
+    HORIZONTAL.iter().any(|&dir| shelf_at(relative(pos, dir, 1), ctx))
+}
+
+/// `placeMushroom`: `age = random.nextInt(2)`, `facing` the side the mushroom grows out of.
+fn shelf_place(pos: Pos, facing: Dir, d: &mut DecoratorCtx, ctx: &mut Ctx) {
+    let age = if ctx.rng.next_int_bound(2) == 0 { "0" } else { "1" };
+    let id = ctx.env.states.id("minecraft:shelf_mushroom", &[("age", age), ("facing", facing.name())]);
+    d.set(ctx, pos, id);
 }

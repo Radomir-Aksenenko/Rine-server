@@ -58,7 +58,7 @@ pub enum Axis {
 }
 
 impl Axis {
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Axis::X => "x",
             Axis::Y => "y",
@@ -100,6 +100,11 @@ pub enum TrunkKind {
     Bending {
         min_height_for_leaves: i32,
         bend_length: IntProvider,
+    },
+    /// `PoplarTrunkPlacer`: one attachment at the top of the trunk, branches from a random horizontal set.
+    Poplar {
+        trunk_height_above_branches: IntProvider,
+        branch_amount: IntProvider,
     },
 }
 
@@ -150,6 +155,10 @@ impl TrunkPlacer {
             "minecraft:bending_trunk_placer" => TrunkKind::Bending {
                 min_height_for_leaves: v["min_height_for_leaves"].as_i64().unwrap_or(1) as i32,
                 bend_length: parse_int_provider(&v["bend_length"])?,
+            },
+            "minecraft:poplar_trunk_placer" => TrunkKind::Poplar {
+                trunk_height_above_branches: parse_int_provider(&v["trunk_height_above_branches"])?,
+                branch_amount: parse_int_provider(&v["branch_amount"])?,
             },
             other => return Err(format!("unsupported trunk placer {other}")),
         };
@@ -225,7 +234,42 @@ impl TrunkPlacer {
             TrunkKind::Bending { min_height_for_leaves, bend_length } => {
                 self.bending(tree, ctx, tree_height, origin, *min_height_for_leaves, bend_length)
             }
+            TrunkKind::Poplar { trunk_height_above_branches, branch_amount } => {
+                self.poplar(tree, ctx, tree_height, origin, trunk_height_above_branches, branch_amount)
+            }
         }
+    }
+
+    /// `PoplarTrunkPlacer.placeTrunk`: the trunk goes up `treeHeight` logs. Each row draws a shuffle of the six
+    /// directions (the horizontal ones keep their order); at the branch row, `branch_amount` sideways logs
+    /// are set along the first directions. One attachment at the branch row.
+    fn poplar(
+        &self,
+        tree: &TreeFeature,
+        ctx: &mut Ctx,
+        tree_height: i32,
+        origin: Pos,
+        trunk_height_above_branches: &IntProvider,
+        branch_amount: &IntProvider,
+    ) -> Vec<Attachment> {
+        self.place_below_trunk_block(tree, ctx, offset(origin, 0, -1, 0));
+        let branch_row = tree_height - sample_int(trunk_height_above_branches, ctx.rng);
+        for y in 0..tree_height {
+            let at = offset(origin, 0, y, 0);
+            self.place_log(tree, ctx, at, None);
+            // `Direction.allShuffled(random)` filtered to the horizontal ones, drawn on every row.
+            let mut dirs = Dir::ALL;
+            super::decorator::java_shuffle(&mut dirs, ctx);
+            let horizontal: Vec<Dir> = dirs.into_iter().filter(|d| !matches!(d, Dir::Up | Dir::Down)).collect();
+            if branch_row - 1 == y {
+                let branches = sample_int(branch_amount, ctx.rng);
+                for &dir in horizontal.iter().take(branches.max(0) as usize) {
+                    let side = relative(at, dir, 1);
+                    self.place_log(tree, ctx, side, Some(Axis::of_dir(dir)));
+                }
+            }
+        }
+        vec![Attachment::new(offset(origin, 0, branch_row, 0), 0, false)]
     }
 
     /// `BendingTrunkPlacer.placeTrunk`: the first `treeHeight` logs go up, the trunk steps one block sideways
