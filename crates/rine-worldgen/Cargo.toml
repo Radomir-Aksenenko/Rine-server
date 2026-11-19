@@ -8,6 +8,7 @@ license.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
+rine-data = { path = "../rine-data" }
 md-5 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -86,7 +86,17 @@ impl Palette {
 
     /// Default state of a block id (`minecraft:grass_block` -> `minecraft:grass_block[snowy=false]`).
     pub fn default_state(&mut self, id: &str) -> u16 {
-        let s = self.defaults.get(id).cloned().unwrap_or_else(|| id.to_string());
+        let s = self.defaults.get(id).cloned().unwrap_or_else(|| {
+            let blocks = &rine_data::init().blocks;
+            let Some(block) = blocks.block(id) else { return id.to_string() };
+            if block.props.is_empty() {
+                return id.to_string();
+            }
+            let properties = block.props.iter().filter_map(|p| {
+                Some(format!("{}={}", p.name, blocks.get_prop(block.default_state as u16, &p.name)?))
+            }).collect::<Vec<_>>().join(",");
+            format!("{id}[{properties}]")
+        });
         self.intern(&s)
     }
 

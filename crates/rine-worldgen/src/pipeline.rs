@@ -15,8 +15,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use crate::feature::allow::ported_only;
+use crate::feature::allow::generation;
 use crate::feature::heightmap::WgHeights;
+use crate::feature::region::Pos;
 use crate::feature::Decorator;
 use crate::overworld::{ChunkBlocks, Overworld};
 
@@ -29,11 +30,13 @@ pub const FINAL_CAPACITY: usize = 256;
 const RING: i32 = 2;
 /// Protos needed around a requested chunk: the ring plus one chunk on each side.
 const AREA: i32 = RING + 1;
+const HEIGHT_VALUES: usize = 256 * crate::feature::heightmap::FINAL.len();
 
 /// A carved proto chunk and its worldgen heights (computed once, on the terrain-end blocks).
 pub struct Proto {
     pub chunk: ChunkBlocks,
     pub wg: WgHeights,
+    heights: Vec<i32>,
 }
 
 /// A decorated chunk. `blocks.palette` is the decorator's output palette.
@@ -41,6 +44,7 @@ pub struct FullChunk {
     pub cx: i32,
     pub cz: i32,
     pub blocks: ChunkBlocks,
+    pub block_ticks: Vec<(Pos, u16)>,
 }
 
 /// Bounded map with first-in first-out eviction.
@@ -82,7 +86,7 @@ impl<T: Clone> Cache<T> {
 /// The overworld generator with its compiled decoration and the caches.
 pub struct Pipeline {
     seed: i64,
-    overworld: Overworld,
+    overworld: Arc<Overworld>,
     decorator: Decorator,
     protos: Cache<Arc<Proto>>,
     finals: Cache<Arc<FullChunk>>,
@@ -91,8 +95,12 @@ pub struct Pipeline {
 impl Pipeline {
     /// Builds the generator for `seed`: the overworld, and the decoration of the ported placed features.
     pub fn new(seed: i64) -> Result<Self, String> {
-        let overworld = Overworld::new(seed);
-        let decorator = Decorator::new(&overworld, &ported_only)?;
+        Self::with_features(Arc::new(Overworld::new(seed)), &generation)
+    }
+
+    pub fn with_features(overworld: Arc<Overworld>, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
+        let seed = overworld.seed();
+        let decorator = Decorator::production(&overworld, allow)?;
         Ok(Pipeline {
             seed,
             overworld,
@@ -114,7 +122,8 @@ impl Pipeline {
         }
         let (chunk, _mask) = self.overworld.generate_carved(cx, cz);
         let wg = self.decorator.wg_heights(&chunk);
-        self.protos.insert((cx, cz), Arc::new(Proto { chunk, wg }))
+        let heights = self.decorator.final_heights(&chunk);
+        self.protos.insert((cx, cz), Arc::new(Proto { chunk, wg, heights }))
     }
 
     /// The final (carved and decorated) chunk `(cx, cz)`, cached.
@@ -131,16 +140,20 @@ impl Pipeline {
         let side = (2 * AREA + 1) as usize;
         let mut area: Vec<ChunkBlocks> = Vec::with_capacity(side * side);
         let mut area_wg: Vec<WgHeights> = Vec::with_capacity(side * side);
+        let mut area_heights = Vec::with_capacity(side * side * HEIGHT_VALUES);
         for dz in -AREA..=AREA {
             for dx in -AREA..=AREA {
                 let p = self.proto(cx + dx, cz + dz);
                 area.push(p.chunk.clone());
                 area_wg.push(p.wg.clone());
+                area_heights.extend_from_slice(&p.heights);
             }
         }
         let index = |dx: i32, dz: i32| ((dz + AREA) as usize) * side + (dx + AREA) as usize;
         let mut window: Vec<ChunkBlocks> = Vec::with_capacity(9);
         let mut window_wg: Vec<WgHeights> = Vec::with_capacity(9);
+        let mut window_heights = Vec::with_capacity(9 * HEIGHT_VALUES);
+        let mut block_ticks = Vec::new();
         for dz in -RING..=RING {
             for dx in -RING..=RING {
                 // Move the 3x3 window out of the area, decorate, and move it back.
@@ -149,23 +162,27 @@ impl Pipeline {
                         let i = index(dx + wx, dz + wz);
                         window.push(std::mem::replace(&mut area[i], empty_chunk()));
                         window_wg.push(area_wg[i].clone());
+                        window_heights.extend_from_slice(&area_heights[i * HEIGHT_VALUES..(i + 1) * HEIGHT_VALUES]);
                     }
                 }
-                self.decorator
-                    .decorate(&self.overworld, self.seed, cx + dx, cz + dz, &mut window, &window_wg)
-                    .expect("decoration of a ported window");
-                let mut back = window.drain(..);
-                for wz in -1..=1 {
-                    for wx in -1..=1 {
-                        area[index(dx + wx, dz + wz)] = back.next().expect("window chunk");
-                    }
+                let scheduled = self.decorator.decorate_window(
+                    &self.overworld, self.seed, cx + dx, cz + dz, &mut window, &window_wg, &mut window_heights,
+                );
+                block_ticks.extend(scheduled.into_iter().filter(|&((x, _, z), _)| x >> 4 == cx && z >> 4 == cz));
+                for (j, chunk) in window.drain(..).enumerate() {
+                    let (wx, wz) = ((j % 3) as i32 - 1, (j / 3) as i32 - 1);
+                    let i = index(dx + wx, dz + wz);
+                    area[i] = chunk;
+                    area_heights[i * HEIGHT_VALUES..(i + 1) * HEIGHT_VALUES]
+                        .copy_from_slice(&window_heights[j * HEIGHT_VALUES..(j + 1) * HEIGHT_VALUES]);
                 }
                 window_wg.clear();
+                window_heights.clear();
             }
         }
         let mut blocks = area.swap_remove(index(0, 0));
         blocks.palette = self.decorator.palette().to_vec();
-        FullChunk { cx, cz, blocks }
+        FullChunk { cx, cz, blocks, block_ticks }
     }
 }
 

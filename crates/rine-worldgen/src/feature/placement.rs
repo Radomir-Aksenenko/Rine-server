@@ -17,6 +17,7 @@ pub enum IntProvider {
     Uniform { min: i32, max: i32 },
     Trapezoid { min: i32, max: i32, plateau: i32 },
     BiasedToBottom { min: i32, max: i32 },
+    Clamped { source: Box<IntProvider>, min: i32, max: i32 },
     /// `WeightedListInt`: `(provider, weight)` entries; one `nextInt(total)` draw picks the entry.
     Weighted(Vec<(IntProvider, i32)>),
 }
@@ -27,6 +28,10 @@ impl IntProvider {
         match self {
             IntProvider::Constant(v) => (*v, *v),
             IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max } => (*min, *max),
+            IntProvider::Clamped { source, min, max } => {
+                let (lo, hi) = source.bounds();
+                (lo.max(*min), hi.min(*max))
+            }
             IntProvider::Weighted(entries) => {
                 let lo = entries.iter().map(|(p, _)| p.bounds().0).min().unwrap_or(0);
                 let hi = entries.iter().map(|(p, _)| p.bounds().1).max().unwrap_or(0);
@@ -70,6 +75,7 @@ pub enum HeightProvider {
 pub enum Modifier {
     /// `count` (`CountPlacement`, a `RepeatingPlacement`).
     Count(IntProvider),
+    CountOnEveryLayer { count: IntProvider, empty_blocks: [u16; 2], bedrock: u16 },
     /// `rarity_filter` (`RarityFilter`).
     RarityFilter(i32),
     /// `in_square` (`InSquarePlacement`).
@@ -80,6 +86,8 @@ pub enum Modifier {
     Biome,
     /// `block_predicate_filter` (`BlockPredicateFilter`): the predicate holds at the origin.
     BlockPredicate(BlockPredicate),
+    EnvironmentScan { dy: i32, target: BlockPredicate, allowed: BlockPredicate, steps: i32 },
+    SurfaceWaterDepth(i32),
     /// `offset` (`OffsetPlacement`).
     Offset(IntProvider, IntProvider, IntProvider),
     /// `heightmap` (`HeightmapPlacement`): the column's height, when above the build bottom.
@@ -106,6 +114,7 @@ pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
     }
     match *p {
         IntProvider::Constant(v) => v,
+        IntProvider::Clamped { ref source, min, max } => sample_int(source, rng).clamp(min, max),
         IntProvider::Weighted(_) => unreachable!("handled above"),
         // BiasedToBottomInt.sample: min + nextInt(nextInt(max - min + 1) + 1).
         IntProvider::BiasedToBottom { min, max } => {
@@ -217,6 +226,72 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
                 out.push(origin);
             }
         }
+        Modifier::EnvironmentScan { dy, target, allowed, steps } => {
+            let mut y = oy;
+            if !allowed.test(region, ox, y, oz) {
+                return;
+            }
+            for _ in 0..*steps {
+                if target.test(region, ox, y, oz) {
+                    out.push((ox, y, oz));
+                    return;
+                }
+                y += dy;
+                if region.outside_build_height(y) {
+                    return;
+                }
+                if !allowed.test(region, ox, y, oz) {
+                    break;
+                }
+            }
+            if target.test(region, ox, y, oz) {
+                out.push((ox, y, oz));
+            }
+        }
+        Modifier::CountOnEveryLayer { count, empty_blocks, bedrock } => {
+            let mut floors: [Option<Vec<i32>>; 256] = std::array::from_fn(|_| None);
+            let tags = region.tags;
+            let empty = |state| tags.is_air(state) || empty_blocks.contains(&tags.block_of(state));
+            for layer in 0.. {
+                let mut found = false;
+                let mut attempt = 0;
+                // CountOnEveryLayerPlacement samples its bound on each loop check.
+                while attempt < sample_int(count, rng) {
+                    let lx = rng.next_int_bound(16);
+                    let lz = rng.next_int_bound(16);
+                    let (x, z) = (ox + lx, oz + lz);
+                    let column = floors[(lz * 16 + lx) as usize].get_or_insert_with(|| {
+                        let top = region.height_of(Kind::MotionBlocking, x, z);
+                        let mut floors = Vec::new();
+                        let mut air = empty(region.get_block(x, top, z));
+                        for y in (region.min_y() + 1..=top).rev() {
+                            let state = region.get_block(x, y - 1, z);
+                            let below = empty(state);
+                            if air && !below && !tags.is_block(state, *bedrock) {
+                                floors.push(y);
+                            }
+                            air = below;
+                        }
+                        floors
+                    });
+                    if let Some(&y) = column.get(layer) {
+                        out.push((x, y, z));
+                        found = true;
+                    }
+                    attempt += 1;
+                }
+                if !found {
+                    break;
+                }
+            }
+        }
+        Modifier::SurfaceWaterDepth(max_depth) => {
+            let surface = region.height_of(Kind::WorldSurface, ox, oz);
+            let bottom = region.height_of(Kind::OceanFloor, ox, oz);
+            if surface - bottom <= *max_depth {
+                out.push(origin);
+            }
+        }
         Modifier::Offset(x, y, z) => {
             let dx = sample_int(x, rng);
             let dy = sample_int(y, rng);
@@ -282,6 +357,12 @@ pub fn parse_int_provider(v: &Value) -> Result<IntProvider, String> {
         }
         "minecraft:constant" => Ok(IntProvider::Constant(int("value")?)),
         "minecraft:uniform" => Ok(IntProvider::Uniform { min: int("min_inclusive")?, max: int("max_inclusive")? }),
+        "minecraft:clamped" => {
+            let min = int("min_inclusive")?;
+            let max = int("max_inclusive")?;
+            if min > max { return Err("invalid clamped int bounds".into()); }
+            Ok(IntProvider::Clamped { source: Box::new(parse_int_provider(&v["source"])?), min, max })
+        }
         // TrapezoidInt's codec uses "min"/"max" (UniformInt and BiasedToBottomInt use "min_inclusive"/"max_inclusive").
         "minecraft:trapezoid" => Ok(IntProvider::Trapezoid {
             min: int("min")?,
@@ -331,6 +412,7 @@ pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
             parse_int_provider(&v["z"])?,
         )),
         "minecraft:heightmap" => Ok(Modifier::Heightmap(Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?)),
+        "minecraft:surface_water_depth_filter" => Ok(Modifier::SurfaceWaterDepth(v["max_water_depth"].as_i64().ok_or("max_water_depth")? as i32)),
         "minecraft:noise_threshold_count" => Ok(Modifier::NoiseThresholdCount {
             level: v["noise_level"].as_f64().ok_or("noise_level")?,
             below: v["below_noise"].as_i64().ok_or("below_noise")? as i32,

@@ -5,14 +5,10 @@
 //! table is a compile error, and `assets/worldgen/ported_features.json` (`simple_blocks`) lists the same names
 //! for the allow rule, so a feature that places an unclassified block is never decorated.
 //!
-//! Ground support uses `isFaceSturdy(UP)` of the default state (`block_behaviour.tsv`). The supporting blocks
-//! of these features are full cubes, whose sturdy face does not depend on properties.
-
 use serde_json::Value;
 
 use super::region::{Region, Tags};
-use super::state::Palette;
-use super::tree::fallen::sturdy_up_default;
+use super::state::{Fluid, Palette};
 
 /// Survival class of a vegetation block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -24,30 +20,42 @@ pub enum Survival {
     /// `DoublePlantBlock.canSurvive`: a lower half as `Vegetation`; an upper half needs the same block's lower
     /// half below it.
     DoublePlant,
+    SmallDripleaf,
     /// `SeaPickleBlock.mayPlaceOn`: the block below has a sturdy UP face.
     SeaPickle,
     /// `SeagrassBlock.mayPlaceOn`: a sturdy UP face and not `cannot_support_seagrass`.
     Seagrass,
+    Carpet,
+    MossyCarpet,
+    Tagged(usize),
 }
 
 /// Survival class of a block name, `None` for blocks the port does not classify.
 pub fn kind_of_name(name: &str) -> Option<Survival> {
     Some(match name {
-        "minecraft:poppy" | "minecraft:dandelion" | "minecraft:short_grass" | "minecraft:fern" => Survival::Vegetation,
+        "minecraft:poppy" | "minecraft:dandelion" | "minecraft:short_grass" | "minecraft:fern"
+        | "minecraft:allium" | "minecraft:azure_bluet" | "minecraft:blue_orchid" | "minecraft:cornflower"
+        | "minecraft:lily_of_the_valley" | "minecraft:oxeye_daisy" | "minecraft:red_tulip" | "minecraft:pink_tulip"
+        | "minecraft:orange_tulip" | "minecraft:white_tulip" | "minecraft:closed_eyeblossom" | "minecraft:open_eyeblossom"
+        | "minecraft:pink_petals" | "minecraft:wildflowers" => Survival::Vegetation,
         "minecraft:tall_grass" | "minecraft:large_fern" | "minecraft:sunflower" | "minecraft:lilac" | "minecraft:rose_bush" | "minecraft:peony" => {
             Survival::DoublePlant
         }
         "minecraft:dead_bush" => Survival::DryVegetation,
         "minecraft:sea_pickle" => Survival::SeaPickle,
+        "minecraft:small_dripleaf" => Survival::SmallDripleaf,
         "minecraft:seagrass" => Survival::Seagrass,
+        "minecraft:moss_carpet" => Survival::Carpet,
+        "minecraft:pale_moss_carpet" => Survival::MossyCarpet,
+        "minecraft:azalea" | "minecraft:flowering_azalea" => Survival::Tagged(0),
+        "minecraft:crimson_fungus" => Survival::Tagged(1),
+        "minecraft:warped_fungus" => Survival::Tagged(2),
+        "minecraft:crimson_roots" => Survival::Tagged(3),
+        "minecraft:warped_roots" => Survival::Tagged(4),
+        "minecraft:nether_sprouts" => Survival::Tagged(5),
         _ => return None,
     })
 }
-
-/// Blocks that `canBeReplaced()` for the vegetation that a double plant can meet above it. Air is handled by the
-/// caller. This is the vanilla `replaceable` set for the blocks listed here; any other block above a double plant
-/// counts as not replaceable, which is exact for every state the ported features can produce.
-const REPLACEABLE: [&str; 3] = ["minecraft:short_grass", "minecraft:fern", "minecraft:dead_bush"];
 
 /// Block names a block state provider can answer with, from its JSON (`BlockStateProvider` codec).
 pub fn provider_names(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
@@ -63,6 +71,19 @@ pub fn provider_names(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
             }
         }
         Some("minecraft:randomized_int") => provider_names(&v["source"], out)?,
+        Some("minecraft:noise" | "minecraft:dual_noise") => {
+            for state in v["states"].as_array().ok_or("states")? {
+                provider_names(state, out)?;
+            }
+        }
+        Some("minecraft:noise_threshold") => {
+            provider_names(&v["default_state"], out)?;
+            for list in ["low_states", "high_states"] {
+                for state in v[list].as_array().ok_or("noise threshold states")? {
+                    provider_names(state, out)?;
+                }
+            }
+        }
         Some("minecraft:rule_based") => {
             for r in v["rules"].as_array().ok_or("rules")? {
                 provider_names(&r["then"], out)?;
@@ -81,19 +102,19 @@ pub fn provider_names(v: &Value, out: &mut Vec<String>) -> Result<(), String> {
 pub struct VegTable {
     /// Per block index: survival class, `None` for other blocks.
     kind: Vec<Option<Survival>>,
-    /// Per block index: `isFaceSturdy(UP)` of the default state.
-    sturdy_up: Vec<bool>,
-    /// Per block index: `canBeReplaced()` (see `REPLACEABLE`).
-    replaceable: Vec<bool>,
     /// Per palette state: 0 for no half, 1 for `lower`, 2 for `upper` (`DoubleBlockHalf`).
     half: Vec<u8>,
     /// Per palette state of a double plant: the same state with `half=lower`.
     lower_of: Vec<u16>,
     /// Per palette state of a double plant: the same state with `half=upper`.
     upper_of: Vec<u16>,
+    waterlogged: Vec<Option<[u16; 2]>>,
     tag_vegetation: u16,
     tag_dry: u16,
     tag_no_seagrass: u16,
+    tag_small_dripleaf: Option<u16>,
+    extra_tags: [Option<u16>; 6],
+    pub(crate) moss_carpet: Option<super::moss_carpet::Carpet>,
 }
 
 impl VegTable {
@@ -107,20 +128,49 @@ impl VegTable {
             tag_vegetation: tag("minecraft:supports_vegetation")?,
             tag_dry: tag("minecraft:supports_dry_vegetation")?,
             tag_no_seagrass: tag("minecraft:cannot_support_seagrass")?,
+            tag_small_dripleaf: tag("minecraft:supports_small_dripleaf").ok(),
+            extra_tags: [
+                "supports_azalea", "supports_crimson_fungus", "supports_warped_fungus",
+                "supports_crimson_roots", "supports_warped_roots", "supports_nether_sprouts",
+            ].map(|name| tag(&format!("minecraft:{name}")).ok()),
             ..VegTable::default()
         };
 
         // Both half variants of every double plant state exist in the palette before the tables are sized.
         let block_names: Vec<String> = (0..pal.block_count()).map(|b| pal.block_name(b as u16).to_string()).collect();
-        let double_blocks: Vec<bool> = block_names.iter().map(|n| kind_of_name(n) == Some(Survival::DoublePlant)).collect();
-        for s in 0..pal.states().len() {
-            if double_blocks[pal.block_of()[s] as usize] {
-                pal.with_property(s as u16, "half", "lower").ok_or("double plant without half")?;
-                pal.with_property(s as u16, "half", "upper").ok_or("double plant without half")?;
+        if let Some(block) = pal.block_id("minecraft:pale_moss_carpet") {
+            t.moss_carpet = Some(super::moss_carpet::Carpet::compile(pal, block));
+        }
+        let double_blocks: Vec<bool> = block_names.iter().map(|n| {
+            matches!(kind_of_name(n), Some(Survival::DoublePlant | Survival::SmallDripleaf))
+        }).collect();
+        let mut state = 0;
+        while state < pal.states().len() {
+            if double_blocks[pal.block_of()[state] as usize] {
+                let state = state as u16;
+                pal.with_property(state, "half", "lower").ok_or("double plant without half")?;
+                pal.with_property(state, "half", "upper").ok_or("double plant without half")?;
+                if pal.block_id("minecraft:small_dripleaf") == Some(pal.block_of()[state as usize]) {
+                    pal.with_property(state, "waterlogged", "true");
+                    pal.with_property(state, "waterlogged", "false");
+                }
             }
+            state += 1;
         }
 
         let n_states = pal.states().len();
+        t.waterlogged.resize(n_states, None);
+        if let Some(dripleaf) = pal.block_id("minecraft:small_dripleaf") {
+            for s in 0..n_states {
+                let s = s as u16;
+                if pal.block_of()[s as usize] == dripleaf {
+                    t.waterlogged[s as usize] = Some([
+                        pal.with_property(s, "waterlogged", "false").ok_or("small dripleaf waterlogged")?,
+                        pal.with_property(s, "waterlogged", "true").ok_or("small dripleaf waterlogged")?,
+                    ]);
+                }
+            }
+        }
         t.half = vec![0; n_states];
         t.lower_of = vec![u16::MAX; n_states];
         t.upper_of = vec![u16::MAX; n_states];
@@ -137,9 +187,6 @@ impl VegTable {
         // needs behaviour data: a missing entry is an error, not a default.
         for name in &block_names {
             t.kind.push(kind_of_name(name));
-            let sturdy = sturdy_up_default(name).ok_or_else(|| format!("no behaviour data for {name}"))?;
-            t.sturdy_up.push(sturdy);
-            t.replaceable.push(REPLACEABLE.contains(&name.as_str()));
         }
         Ok(t)
     }
@@ -147,7 +194,7 @@ impl VegTable {
     /// Survival class of a palette state's block.
     #[inline]
     pub fn kind_of_block(&self, block: u16) -> Survival {
-        self.kind[block as usize].expect("vegetation block without survival class: checked at compile time")
+        self.kind.get(block as usize).copied().flatten().unwrap_or(Survival::Vegetation)
     }
 
     #[inline]
@@ -179,28 +226,34 @@ fn survive_with(tags: &Tags, at: &dyn Fn(i32, i32, i32) -> u16, s: u16) -> bool 
     match v.kind_of_block(block) {
         Survival::Vegetation => tags.has(below, v.tag_vegetation),
         Survival::DryVegetation => tags.has(below, v.tag_dry),
-        Survival::DoublePlant => {
+        kind @ (Survival::DoublePlant | Survival::SmallDripleaf) => {
             if v.half(s) == 2 {
                 // DoublePlantBlock.canSurvive: the upper half needs this block's lower half below.
                 tags.block_of(below) == block && v.half(below) == 1
+            } else if kind == Survival::SmallDripleaf {
+                v.tag_small_dripleaf.is_some_and(|tag| tags.has(below, tag))
+                    || tags.fluid(at(0, 0, 0)) == Fluid::Water && tags.has(below, v.tag_vegetation)
             } else {
                 tags.has(below, v.tag_vegetation)
             }
         }
-        Survival::SeaPickle => v.sturdy_up[tags.block_of(below) as usize],
-        Survival::Seagrass => v.sturdy_up[tags.block_of(below) as usize] && !tags.has(below, v.tag_no_seagrass),
+        Survival::SeaPickle => tags.sturdy(below, 1),
+        Survival::Seagrass => tags.sturdy(below, 1) && !tags.has(below, v.tag_no_seagrass),
+        Survival::Carpet => !tags.is_air(below),
+        Survival::MossyCarpet => v.moss_carpet.as_ref().is_some_and(|carpet| carpet.can_survive(tags, s, below)),
+        Survival::Tagged(i) => v.extra_tags[i].is_some_and(|tag| tags.has(below, tag)),
     }
-}
-
-/// `DoublePlantBlock`: the state above a double plant can be replaced (`Objects.equals` on the fluid is checked by
-/// the caller). Air is replaceable by definition of `isAir`, so only the listed blocks reach here.
-pub fn above_replaceable(tags: &Tags, s: u16) -> bool {
-    tags.veg.replaceable[tags.block_of(s) as usize]
 }
 
 /// Whether `s` is a double plant state (`Survival::DoublePlant`), which places two halves.
 pub fn is_double_plant(tags: &Tags, s: u16) -> bool {
-    tags.veg.kind_of_block(tags.block_of(s)) == Survival::DoublePlant
+    matches!(tags.veg.kind_of_block(tags.block_of(s)), Survival::DoublePlant | Survival::SmallDripleaf)
+}
+
+pub fn copy_waterlogged(tags: &Tags, state: u16, previous: u16) -> u16 {
+    tags.veg.waterlogged[state as usize].map_or(state, |variants| {
+        variants[usize::from(matches!(tags.fluid(previous), Fluid::Water | Fluid::FlowingWater))]
+    })
 }
 
 pub fn lower_state(tags: &Tags, s: u16) -> u16 {

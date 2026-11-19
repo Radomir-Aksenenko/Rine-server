@@ -11,12 +11,21 @@ const DOUBLE_MULTIPLIER: f32 = 1.110223E-16_f32;
 
 pub struct WorldgenRng {
     src: Xoroshiro,
+    direct: bool,
 }
 
 impl WorldgenRng {
     /// `new WorldgenRandom(new XoroshiroRandomSource(seed))`.
     pub fn new(seed: i64) -> Self {
-        WorldgenRng { src: Xoroshiro::new(seed) }
+        WorldgenRng { src: Xoroshiro::new(seed), direct: false }
+    }
+
+    pub fn direct(src: Xoroshiro) -> Self {
+        Self { src, direct: true }
+    }
+
+    pub fn source(self) -> Xoroshiro {
+        self.src
     }
 
     /// `WorldgenRandom.setSeed`: forwards to the wrapped source.
@@ -33,11 +42,14 @@ impl WorldgenRng {
     /// `nextInt()`.
     #[inline]
     pub fn next_int(&mut self) -> i32 {
-        self.next(32)
+        if self.direct { self.src.next_int() } else { self.next(32) }
     }
 
     /// `nextInt(bound)` (`BitRandomSource`).
     pub fn next_int_bound(&mut self, bound: i32) -> i32 {
+        if self.direct {
+            return self.src.next_int_bound(bound);
+        }
         assert!(bound > 0, "Bound must be positive");
         if bound & (bound - 1) == 0 {
             return ((bound as i64 * self.next(31) as i64) >> 31) as i32;
@@ -59,6 +71,9 @@ impl WorldgenRng {
 
     /// `nextLong()`.
     pub fn next_long(&mut self) -> i64 {
+        if self.direct {
+            return self.src.next_long();
+        }
         let upper = self.next(32);
         let lower = self.next(32);
         ((upper as i64) << 32).wrapping_add(lower as i64)
@@ -66,7 +81,7 @@ impl WorldgenRng {
 
     /// `nextBoolean()`.
     pub fn next_bool(&mut self) -> bool {
-        self.next(1) != 0
+        if self.direct { self.src.next_long() & 1 != 0 } else { self.next(1) != 0 }
     }
 
     /// `nextFloat()`: `next(24) * FLOAT_MULTIPLIER` in float arithmetic.
@@ -77,6 +92,9 @@ impl WorldgenRng {
 
     /// `nextDouble()`: `(long)combined * DOUBLE_MULTIPLIER`, the product is a float widened to double.
     pub fn next_double(&mut self) -> f64 {
+        if self.direct {
+            return self.src.next_double();
+        }
         let upper = self.next(26);
         let lower = self.next(27);
         let combined = ((upper as i64) << 27) + lower as i64;

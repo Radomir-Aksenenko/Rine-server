@@ -15,7 +15,9 @@ const path = require('path');
 
 const REPO = path.resolve(__dirname, '..', '..');
 // vanilla-data is git-ignored and lives in the main checkout; RINE_VANILLA_GENERATED overrides the path.
-const VANILLA_GENERATED = process.env.RINE_VANILLA_GENERATED || path.join(REPO, 'vanilla-data', 'generated');
+const localData = path.join(REPO, 'vanilla-data', 'generated');
+const VANILLA_GENERATED = process.env.RINE_VANILLA_GENERATED ||
+    (fs.existsSync(localData) ? localData : path.resolve(REPO, '..', '..', '..', 'vanilla-data', 'generated'));
 const DATA = path.join(VANILLA_GENERATED, 'data', 'minecraft', 'worldgen');
 const BIOMES_TXT = path.join(REPO, 'crates', 'rine-worldgen', 'assets', 'worldgen', 'overworld_biomes.txt');
 const OUT = path.join(REPO, 'crates', 'rine-worldgen', 'assets', 'worldgen', 'features.json');
@@ -80,8 +82,7 @@ function visitChildren(cf) {
             (c.features || []).forEach((e) => visitPlaced(e));
             break;
         case 'minecraft:weighted_random_selector':
-            (c.features || []).forEach((e) => visitPlaced(e.feature));
-            visitPlaced(c.default);
+            (c.features || []).forEach((e) => visitPlaced(e.data));
             break;
         case 'minecraft:random_boolean_selector':
             visitPlaced(c.feature_true);
@@ -91,8 +92,9 @@ function visitChildren(cf) {
         case 'minecraft:waterlogged_vegetation_patch':
             visitPlaced(c.vegetation_feature);
             break;
+        case 'minecraft:overlay':
         case 'minecraft:sequence':
-            (c.features || []).forEach(visitPlaced);
+            (Array.isArray(c.features) ? c.features : [c.features]).forEach(visitPlaced);
             break;
         case 'minecraft:root_system':
             visitPlaced(c.feature);
@@ -128,10 +130,44 @@ for (const f of fs.readdirSync(path.join(DATA, 'feature'))) {
 
 // Configured features that the block code places by name (`blocks/growth.rs`, bone meal and growth of the
 // huge mushrooms). Only the configured entries: no biome list reaches them.
-const BLOCK_FEATURES = ['minecraft:huge_red_mushroom', 'minecraft:huge_brown_mushroom'];
-for (const ref of BLOCK_FEATURES) {
-    if (!configured[ref]) configured[ref] = read(path.join(DATA, 'feature', ref.replace('minecraft:', '') + '.json'));
+const BLOCK_FEATURES = [
+    'huge_red_mushroom', 'huge_brown_mushroom', 'pale_moss_patch', 'moss_patch_bonemeal',
+    'pale_moss_patch_bonemeal', 'nylium_bonemeal', 'crimson_fungus_planted', 'warped_fungus_planted',
+    'crimson_fungus', 'warped_fungus', 'crimson_forest_vegetation', 'warped_forest_vegetation',
+    'twisting_vines', 'weeping_vines',
+];
+for (const name of BLOCK_FEATURES) visitConfigured('minecraft:' + name);
+visitPlaced('minecraft:grass_bonemeal');
+for (const name of ['crimson_forest', 'warped_forest']) {
+    const biome = read(path.join(DATA, 'biome', name + '.json'));
+    biome.features.flat().forEach(visitPlaced);
 }
+
+const flowerTag = new Set(read(path.join(VANILLA_GENERATED, 'data', 'minecraft', 'tags', 'worldgen',
+    'feature', 'can_spawn_from_bone_meal.json')).values);
+for (const name of flowerTag) visitConfigured(name);
+
+// PlacedFeature.getFeatures and the selector/sequence getSubFeatures traverse in registry order.
+function* featureReferences(ref) {
+    const p = typeof ref === 'string' ? placed[ref] : ref;
+    const feature = p.feature;
+    if (flowerTag.has(feature)) yield feature;
+    const node = typeof feature === 'string' ? configured[feature] : feature;
+    const c = node.config || node;
+    const list = Array.isArray(c.features) ? c.features : [c.features];
+    let children = [];
+    switch (node.type) {
+        case 'minecraft:random_selector': children = [...list.map(e => e.feature), c.default]; break;
+        case 'minecraft:weighted_random_selector': children = list.map(e => e.data); break;
+        case 'minecraft:random_boolean_selector': children = [c.feature_true, c.feature_false]; break;
+        case 'minecraft:simple_random_selector':
+        case 'minecraft:sequence':
+        case 'minecraft:overlay': children = list; break;
+    }
+    for (const child of children) yield* featureReferences(child);
+}
+const boneMealFeatures = Object.fromEntries(Object.entries(biomes).map(([name, steps]) =>
+    [name, steps.flat().flatMap(ref => [...featureReferences(ref)])]));
 
 // Block tags referenced by the bundled predicates (`"tag": "minecraft:x"` and `"#minecraft:x"`),
 // flattened to block ids: tags/block/*.json with nested `#` references resolved.
@@ -153,7 +189,8 @@ function flattenTag(name) {
 }
 const tagRefs = new Set(['minecraft:blocks_motion_in_heightmap', 'minecraft:blocks_motion_in_heightmap_no_leaves']);
 const collectTags = (node) => {
-    if (Array.isArray(node)) node.forEach(collectTags);
+    if (typeof node === 'string' && node.startsWith('#minecraft:')) tagRefs.add(node);
+    else if (Array.isArray(node)) node.forEach(collectTags);
     else if (node && typeof node === 'object') {
         for (const [k, v] of Object.entries(node)) {
             if ((k === 'tag' || k === 'matching_block_tag') && typeof v === 'string') tagRefs.add(v);
@@ -192,7 +229,7 @@ const providerKeyRefs = (node) => {
     if (Array.isArray(node)) node.forEach(providerKeyRefs);
     else if (node && typeof node === 'object') {
         for (const [k, v] of Object.entries(node)) {
-            if (/provider$/.test(k) && typeof v === 'string') visitProviderRef(v);
+            if ((/provider$/.test(k) || k === 'to_place') && typeof v === 'string') visitProviderRef(v);
             else providerKeyRefs(v);
         }
     }
@@ -209,7 +246,9 @@ collectTags(blockStateProviders);
  'minecraft:blocks_motion_no_leaves', 'minecraft:snow', 'minecraft:supports_vegetation', 'minecraft:supports_mangrove_propagule', 'minecraft:supports_hanging_mangrove_propagule',
  // Vegetation survival (crates/rine-worldgen/src/feature/vegetation.rs): dry vegetation and seagrass support.
  'minecraft:supports_dry_vegetation', 'minecraft:cannot_support_seagrass',
- 'minecraft:replaceable_by_mushrooms'].forEach((t) => tagRefs.add(t));
+ 'minecraft:replaceable_by_mushrooms', 'minecraft:supports_crimson_fungus', 'minecraft:supports_warped_fungus',
+ 'minecraft:supports_crimson_roots', 'minecraft:supports_warped_roots', 'minecraft:supports_nether_sprouts',
+ 'minecraft:supports_azalea', 'minecraft:supports_small_dripleaf'].forEach((t) => tagRefs.add(t));
 for (const t of tagRefs) flattenTag(t);
 
 // Block property tables from the 26.3 block report: ordered property values and the default state, for
@@ -246,7 +285,7 @@ for (const name of [...blockNames].sort()) {
     };
 }
 
-const bundle = { biomes, placed, configured, inline, blockTags, blockStateProviders, blockProps };
+const bundle = { biomes, placed, configured, inline, blockTags, blockStateProviders, blockProps, boneMealFeatures };
 fs.mkdirSync(path.dirname(OUT), { recursive: true });
 fs.writeFileSync(OUT, JSON.stringify(bundle) + '\n');
 console.log(

@@ -166,6 +166,10 @@ impl Xoroshiro {
         }
     }
 
+    pub fn raw_state(&self) -> (u64, u64) {
+        (self.gen.lo, self.gen.hi)
+    }
+
     /// `setSeed(long)`.
     pub fn set_seed(&mut self, seed: i64) {
         *self = Self::new(seed);

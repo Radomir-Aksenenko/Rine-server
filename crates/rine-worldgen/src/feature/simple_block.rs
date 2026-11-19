@@ -1,9 +1,5 @@
 //! `SimpleBlockFeature` (`minecraft:simple_block`): one block state from a provider at the origin, when the state
 //! can survive there. Double plants place both halves (`DoublePlantBlock.placeAt`).
-//!
-//! `schedule_tick` is accepted and ignored: `level.scheduleTick` only queues a tick and changes no block and draws
-//! no random numbers, so the generated blocks are the same. `MossyCarpetBlock` (`placeAt` draws from the level
-//! random) is not ported: its blocks are not in `ported_features.json`, so no compiled feature places one.
 
 use super::region::Region;
 use super::rng::WorldgenRng;
@@ -12,6 +8,7 @@ use super::vegetation::{self, Survival};
 
 pub struct SimpleBlock {
     pub to_place: StateProvider,
+    pub schedule_tick: bool,
 }
 
 impl SimpleBlock {
@@ -25,20 +22,27 @@ impl SimpleBlock {
             return false;
         }
         let tags = region.tags;
-        if tags.veg.kind_of_block(tags.block_of(s)) == Survival::DoublePlant {
+        if vegetation::is_double_plant(tags, s) {
             // DoublePlantBlock placement: the block above must be air, or the same fluid and replaceable.
             let above = region.get_block(x, y + 1, z);
             if !tags.is_air(above)
-                && (tags.fluid(above) != tags.fluid(s) || !vegetation::above_replaceable(tags, above))
+                && (tags.fluid(above) != tags.fluid(s) || !tags.replaceable(above))
             {
                 return false;
             }
-            let lower = vegetation::lower_state(tags, s);
-            let upper = vegetation::upper_state(tags, s);
-            region.set_block(x, y, z, lower);
-            region.set_block(x, y + 1, z, upper);
+            let lower = vegetation::copy_waterlogged(tags, vegetation::lower_state(tags, s), region.get_block(x, y, z));
+            region.write(pos, lower, 2);
+            let upper = vegetation::copy_waterlogged(tags, vegetation::upper_state(tags, s), region.get_block(x, y + 1, z));
+            region.write((x, y + 1, z), upper, 2);
+        } else if tags.veg.kind_of_block(tags.block_of(s)) == Survival::MossyCarpet {
+            if let Some(carpet) = &tags.veg.moss_carpet {
+                carpet.place(region, rng, pos);
+            }
         } else {
-            region.set_block(x, y, z, s);
+            region.write(pos, s, 2);
+        }
+        if self.schedule_tick {
+            region.schedule(pos, region.get_block(x, y, z));
         }
         true
     }

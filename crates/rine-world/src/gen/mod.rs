@@ -13,6 +13,7 @@ mod terrain;
 mod trees;
 
 use crate::chunk::{Chunk, ChunkPos, MIN_Y, SECTIONS};
+use std::sync::Arc;
 use biome::{Biome, BIOME_COUNT};
 use grid::Grid;
 use terrain::{Column, Corners, Noises, SEA_LEVEL};
@@ -54,7 +55,8 @@ pub struct Ids {
 
 pub struct Generator {
     /// Bit-exact vanilla terrain, biomes and surface (rine-worldgen).
-    vanilla: rine_worldgen::Overworld,
+    vanilla: Arc<rine_worldgen::Overworld>,
+    vegetation: Option<rine_worldgen::pipeline::Pipeline>,
     /// rine-worldgen palette string -> state id (same palette for every chunk).
     palette: parking_lot::RwLock<Vec<u16>>,
     /// rine-worldgen biome palette index -> synced biome registry id.
@@ -67,6 +69,7 @@ pub struct Generator {
     biome_vanilla: Vec<u16>,
     /// Synced biome id -> `Biome.hasPrecipitation`.
     biome_precip: Vec<bool>,
+    pale_garden: Option<u8>,
 }
 
 const FLOWERS: [&str; 5] = ["dandelion", "poppy", "cornflower", "oxeye_daisy", "azure_bluet"];
@@ -129,7 +132,16 @@ impl Generator {
             "minecraft:windswept_savanna",
             "minecraft:wooded_badlands",
         ];
-        let vanilla = rine_worldgen::Overworld::new(seed);
+        let vanilla = Arc::new(rine_worldgen::Overworld::new(seed));
+        let vegetation = match rine_worldgen::pipeline::Pipeline::with_features(
+            Arc::clone(&vanilla), &rine_worldgen::feature::allow::live_generation,
+        ) {
+            Ok(pipeline) => Some(pipeline),
+            Err(error) => {
+                eprintln!("failed to compile vegetation decoration: {error}");
+                None
+            }
+        };
         let mut biome_vanilla = vec![u16::MAX; 256];
         let mut biome_precip = vec![true; 256];
         for (i, name) in vanilla.biome_names().iter().enumerate() {
@@ -141,6 +153,7 @@ impl Generator {
 
         Self {
             vanilla,
+            vegetation,
             palette: parking_lot::RwLock::new(Vec::new()),
             biome_map: parking_lot::RwLock::new(Vec::new()),
             seed: seed as u64,
@@ -149,6 +162,7 @@ impl Generator {
             biome_ids,
             biome_vanilla,
             biome_precip,
+            pale_garden: reg.id("minecraft:pale_garden").and_then(|id| u8::try_from(id).ok()),
         }
     }
 
@@ -163,6 +177,11 @@ impl Generator {
     /// `Biome.hasPrecipitation` of a synced biome id.
     pub fn has_precipitation(&self, biome: u8) -> bool {
         self.biome_precip[biome as usize]
+    }
+
+    pub fn bone_meal_biome_sample(&self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+        let (qx, qy, qz) = self.vanilla.biome_quart(x, y, z);
+        (qx * 4, qy * 4, qz * 4)
     }
 
     /// Map palette names to state / biome ids, extending the caches as the
@@ -194,8 +213,23 @@ impl Generator {
 
     /// Pure function of (seed, pos). Thread-safe.
     pub fn generate(&self, pos: ChunkPos) -> Chunk {
-        let cb = self.vanilla.generate(pos.x, pos.z);
-        let (pal, bmap) = self.map_palettes(&cb);
+        self.generate_with_ticks(pos).0
+    }
+
+    pub fn generate_with_ticks(&self, pos: ChunkPos) -> (Chunk, Vec<(rine_protocol::BlockPos, u16)>) {
+        let generated;
+        let raw;
+        let (cb, ticks) = match self.vegetation.as_ref() {
+            Some(pipeline) => {
+                generated = pipeline.full_chunk(pos.x, pos.z);
+                (&generated.blocks, generated.block_ticks.as_slice())
+            }
+            None => {
+                raw = self.vanilla.generate(pos.x, pos.z);
+                (&raw, &[][..])
+            }
+        };
+        let (pal, bmap) = self.map_palettes(cb);
         debug_assert_eq!(cb.min_y, MIN_Y);
         let mut grid = Grid::new(self.ids.air);
         // rine-worldgen: [((y - min_y) * 16 + z) * 16 + x]; Grid uses the same order
@@ -206,7 +240,7 @@ impl Generator {
         let b = &rine_data::get().blocks;
         let qh = (cb.height / 4) as usize;
         let mut cols = [Column { surface: MIN_Y, biome: Biome::Plains }; 256];
-        let mut surf_biome = [0u16; 256];
+        let mut legacy_trees = [true; 256];
         for lz in 0..16i32 {
             for lx in 0..16i32 {
                 let mut y = MIN_Y + cb.height - 1;
@@ -220,14 +254,14 @@ impl Generator {
                 let qy = (((y + 1 - MIN_Y) >> 2) as usize).min(qh - 1);
                 let bi = cb.biomes[(qy * 4 + (lz as usize >> 2)) * 4 + (lx as usize >> 2)];
                 let name = cb.biome_palette[bi as usize].as_str();
-                cols[(lz * 16 + lx) as usize] = Column { surface: y, biome: biome::from_vanilla(name) };
-                surf_biome[(lz * 16 + lx) as usize] = bi;
+                let column = (lz * 16 + lx) as usize;
+                cols[column] = Column { surface: y, biome: biome::from_vanilla(name) };
+                legacy_trees[column] = self.vegetation.is_none() || self.pale_garden != Some(bmap[bi as usize]);
             }
         }
-        let _ = surf_biome;
         ores::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
-        trees::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
-        decor::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
+        trees::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols, &legacy_trees);
+        decor::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols, self.vegetation.is_none());
 
         let mut chunk = Chunk::new(pos);
         for sy in 0..SECTIONS {
@@ -252,7 +286,10 @@ impl Generator {
             }
         }
         chunk.finish_bulk();
-        chunk
+        let ticks = ticks.iter().map(|&((x, y, z), state)| {
+            (rine_protocol::BlockPos { x, y, z }, b.state(pal[state as usize]).block)
+        }).collect();
+        (chunk, ticks)
     }
 
     /// Column data for one world position (spawn search, neighbour checks).
@@ -330,6 +367,7 @@ mod tests {
     fn generator_builds_and_bedrock_floor() {
         rine_data::init();
         let g = Generator::new(12345);
+        assert!(g.vegetation.is_some());
         let bedrock = g.ids.bedrock;
         let mut total_non_air = 0u32;
         for &(x, z) in &[(0, 0), (5, -3), (-7, 11)] {

@@ -438,21 +438,16 @@ fn place_block_at(provider: &Provider, d: &mut DecoratorCtx, ctx: &mut Ctx, pos:
     }
 }
 
-/// `PaleMossDecorator`. The ground patch is `pale_moss_patch` (a vegetation patch), not ported yet.
+/// `PaleMossDecorator.place`.
 fn pale_moss(leaves_p: f32, trunk_p: f32, ground_p: f32, d: &mut DecoratorCtx, ctx: &mut Ctx) {
     let mut logs = d.logs.clone();
     java_shuffle(&mut logs, ctx);
-    if logs.is_empty() {
-        return;
-    }
     // Collections.min by Y: first minimal element in list order.
-    let origin = logs.iter().copied().reduce(|a, b| if b.1 < a.1 { b } else { a }).expect("non-empty");
+    let Some(origin) = logs.iter().copied().reduce(|a, b| if b.1 < a.1 { b } else { a }) else { return };
     if ctx.rng.next_float() < ground_p {
-        // DEVIATION: vanilla places `pale_moss_patch` (VegetationPatchFeature) at
-        // `origin.above()` here. It is not ported (needs MossyCarpetBlock.placeAt
-        // face shapes), so the patch is skipped instead of crashing generation.
-        // The rest of the tree matches; the patch's own random draws are missing.
-        let _ = origin;
+        if let Some((decorator, patch)) = ctx.decorator.and_then(|d| Some((d, d.pale_moss_patch?))) {
+            decorator.place_configured(patch, ctx.region, ctx.rng, offset(origin, 0, 1, 0));
+        }
     }
     for pos in d.logs.clone() {
         if ctx.rng.next_float() < trunk_p {

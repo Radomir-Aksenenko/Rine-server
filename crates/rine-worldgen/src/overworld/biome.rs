@@ -190,6 +190,11 @@ impl Biomes {
     /// `BiomeManager.getBiome(x, y, z)`: picks the nearest of the 8 surrounding quart corners after
     /// the zoom fiddle. `lookup(qx, qy, qz)` is the stored (region) biome of a quart cell.
     pub fn fiddled<F: Fn(i32, i32, i32) -> u16>(&self, x: i32, y: i32, z: i32, lookup: F) -> u16 {
+        let (qx, qy, qz) = self.fiddled_quart(x, y, z);
+        lookup(qx, qy, qz)
+    }
+
+    pub fn fiddled_quart(&self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
         let abs_x = x - 2;
         let abs_y = y - 2;
         let abs_z = z - 2;
@@ -220,7 +225,7 @@ impl Biomes {
         let bx = if (min_i & 4) == 0 { parent_x } else { parent_x + 1 };
         let by = if (min_i & 2) == 0 { parent_y } else { parent_y + 1 };
         let bz = if (min_i & 1) == 0 { parent_z } else { parent_z + 1 };
-        lookup(bx, by, bz)
+        (bx, by, bz)
     }
 
     fn fiddled_distance(&self, xr: i32, yr: i32, zr: i32, dx: f64, dy: f64, dz: f64) -> f64 {

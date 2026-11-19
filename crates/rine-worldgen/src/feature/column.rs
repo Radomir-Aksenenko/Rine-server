@@ -38,7 +38,14 @@ impl BlockColumn {
     /// Returns whether the feature reported success (`true` once any height was drawn).
     pub fn place(&self, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32)) -> bool {
         let n = self.layers.len();
-        let mut heights = vec![0i32; n];
+        let mut small = [0; 4];
+        let mut large;
+        let heights = if n <= small.len() {
+            &mut small[..n]
+        } else {
+            large = vec![0; n];
+            &mut large
+        };
         let mut total = 0;
         for (i, layer) in self.layers.iter().enumerate() {
             heights[i] = sample_int(&layer.height, rng);
@@ -53,7 +60,7 @@ impl BlockColumn {
         let (mut nx, mut ny, mut nz) = (px + dx, py + dy, pz + dz);
         for y in 0..total {
             if !self.allowed.test(region, nx, ny, nz) {
-                truncate(&mut heights, total, y, self.prioritize_tip);
+                truncate(heights, total, y, self.prioritize_tip);
                 break;
             }
             nx += dx;

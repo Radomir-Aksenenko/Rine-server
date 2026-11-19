@@ -1,7 +1,6 @@
 //! `BlockPredicate` (`levelgen/blockpredicates`) for the predicates that only read block identity, tags
 //! and fluids: `true`, `matching_blocks`, `matching_block_tag`, `matching_fluids`, `all_of`, `any_of`
-//! and `not`. Predicates that need block shape or survival (`solid`, `has_sturdy_face`, `would_survive`,
-//! `replaceable`, `unobstructed`, ...) are rejected at compile time instead of being approximated.
+//! and `not`, plus the solid-state and supported vegetation survival checks.
 //!
 //! `StateTestingPredicate.test(level, origin)` reads `origin + offset`; the combining predicates
 //! short-circuit in the same order as the Java classes.
@@ -15,6 +14,8 @@ use super::vegetation;
 #[derive(Clone, Debug)]
 pub enum BlockPredicate {
     True,
+    Solid([i32; 3]),
+    SturdyFace { offset: [i32; 3], face: usize },
     /// `matching_blocks`: the state's block is one of `blocks` (block indices).
     MatchingBlocks { offset: [i32; 3], blocks: Vec<u16> },
     /// `matching_block_tag`: the state's block is in the tag (tag id).
@@ -83,6 +84,12 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
     let ty = v["type"].as_str().ok_or_else(|| format!("block predicate without type: {v}"))?;
     match ty {
         "minecraft:true" => Ok(BlockPredicate::True),
+        "minecraft:solid" => Ok(BlockPredicate::Solid(offset_of(v)?)),
+        "minecraft:has_sturdy_face" => {
+            let direction = super::column::direction_of(v["direction"].as_str().ok_or("direction")?)?;
+            let face = super::shape::DIRECTIONS.iter().position(|&d| d == direction).ok_or("invalid face")?;
+            Ok(BlockPredicate::SturdyFace { offset: offset_of(v)?, face })
+        }
         "minecraft:matching_blocks" => {
             let mut blocks = Vec::new();
             for name in names_of(&v["blocks"])? {
@@ -156,6 +163,10 @@ impl BlockPredicate {
     pub fn test(&self, region: &Region, x: i32, y: i32, z: i32) -> bool {
         match self {
             BlockPredicate::True => true,
+            BlockPredicate::Solid([dx, dy, dz]) => region.tags.solid(region.get_block(x + dx, y + dy, z + dz)),
+            BlockPredicate::SturdyFace { offset: [dx, dy, dz], face } => {
+                region.tags.sturdy(region.get_block(x + dx, y + dy, z + dz), *face)
+            }
             BlockPredicate::MatchingBlocks { offset, blocks } => {
                 let s = region.get_block(x + offset[0], y + offset[1], z + offset[2]);
                 let b = region.tags.block_of(s);

@@ -406,6 +406,10 @@ impl Overworld {
         self.biomes.temperature(biome, x, y, z, self.sea_level)
     }
 
+    pub fn biome_quart(&self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
+        self.biomes.fiddled_quart(x, y, z)
+    }
+
     /// Biome name of quart cell `(qx, qy, qz)` in stored (unfiddled) chunk biomes.
     pub fn biome_at(&self, qx: i32, qy: i32, qz: i32) -> &str {
         let cx = qx.div_euclid(4);

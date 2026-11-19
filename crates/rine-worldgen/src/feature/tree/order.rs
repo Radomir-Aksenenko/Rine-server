@@ -977,15 +977,16 @@ impl JavaSet {
 
     /// Elements in `HashMap` iteration order (bins by index, then each bin's `next` chain).
     pub fn to_vec(&self) -> Vec<Pos> {
-        let mut out = Vec::with_capacity(self.len());
-        for &head in &self.tab {
-            let mut cur = head;
-            while cur != NIL {
-                out.push(self.g(cur).pos);
-                cur = self.g(cur).next;
-            }
-        }
-        out
+        self.iter().collect()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Pos> + '_ {
+        self.tab.iter().flat_map(|&head| {
+            std::iter::successors((head != NIL).then_some(head), |&i| {
+                let next = self.g(i).next;
+                (next != NIL).then_some(next)
+            }).map(|i| self.g(i).pos)
+        })
     }
 }
 

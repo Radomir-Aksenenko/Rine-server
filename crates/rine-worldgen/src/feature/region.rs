@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use super::heightmap::{self, Kind, WgHeights, FINAL};
 use super::state::{Fluid, Palette};
-use crate::overworld::{BiomeMap, ChunkBlocks};
+use crate::overworld::{ChunkBlocks, Overworld};
 
 /// Sorted tag names of the bundle: tag ids are indices into this list.
 pub fn tag_names(block_tags: &HashMap<String, Vec<String>>) -> Vec<String> {
@@ -25,6 +25,7 @@ pub struct Tags {
     fluid_of: Vec<Fluid>,
     /// `Heightmap.Types` predicates as bit masks (see `heightmap::Kind::bit`).
     opaque: Vec<u8>,
+    shapes: Vec<[u8; 2]>,
     /// Vegetation survival tables (`vegetation::VegTable`), installed after the palette is final.
     pub(crate) veg: super::vegetation::VegTable,
 }
@@ -60,7 +61,8 @@ impl Tags {
         let no_leaves: Vec<bool> = (0..n).map(|s| has(s, no_leaves_tag)).collect();
         let fluid_nonempty: Vec<bool> = fluid_of.iter().map(|&f| f != Fluid::Empty).collect();
         let opaque = heightmap::opaque_masks(&air, &fluid_nonempty, &motion, &no_leaves);
-        Tags { names, words, bits, air, block_of, fluid_of, opaque, veg: Default::default() }
+        let shapes = super::shape::palette_shapes(palette);
+        Tags { names, words, bits, air, block_of, fluid_of, opaque, shapes, veg: Default::default() }
     }
 
     /// Tag id for a tag name, if the bundle has it.
@@ -102,15 +104,59 @@ impl Tags {
     pub fn fluid(&self, blk: u16) -> Fluid {
         self.fluid_of[blk as usize]
     }
+
+    #[inline]
+    pub fn face_full(&self, state: u16, face: usize) -> bool {
+        self.shapes[state as usize][0] & (1 << face) != 0
+    }
+
+    #[inline]
+    pub fn sturdy(&self, state: u16, face: usize) -> bool {
+        self.shapes[state as usize][1] & (1 << face) != 0
+    }
+
+    #[inline]
+    pub fn full_collision(&self, state: u16) -> bool {
+        self.shapes[state as usize][0] & 64 != 0
+    }
+
+    #[inline]
+    pub fn solid(&self, state: u16) -> bool {
+        self.shapes[state as usize][1] & 64 != 0
+    }
+
+    #[inline]
+    pub fn replaceable(&self, state: u16) -> bool {
+        self.shapes[state as usize][0] & 128 != 0
+    }
+}
+
+pub type Pos = (i32, i32, i32);
+pub type BlockWrite = (i32, i32, i32, u16, Option<u32>);
+
+/// Live placement performs each write immediately, including its neighbor updates.
+pub trait LiveRegion {
+    fn block(&self, pos: Pos) -> u16;
+    fn set(&mut self, pos: Pos, state: u16, flags: u32) -> bool;
+    fn destroy(&mut self, pos: Pos);
+    fn schedule(&mut self, pos: Pos, state: u16);
+}
+
+struct DecorationBiomes<'a> {
+    overworld: &'a Overworld,
+    quarts: [&'a [u16]; 9],
 }
 
 /// Mutable 3x3 chunk region around the chunk being decorated.
 pub struct Region<'a> {
     pub tags: &'a Tags,
+    live: Option<&'a mut dyn LiveRegion>,
+    level_random: Option<super::rng::WorldgenRng>,
+    scheduled: Vec<(Pos, u16)>,
     /// `placed_in_biome[biome][placed]`: `Biome.hasFeature` over the biome's full feature lists.
     placed_in_biome: &'a [Vec<bool>],
     /// `None` for the grower views (`grower_region`), which have no overworld biomes.
-    biomes: Option<BiomeMap<'a>>,
+    biomes: Option<DecorationBiomes<'a>>,
     min_y: i32,
     height: i32,
     cx: i32,
@@ -121,11 +167,57 @@ pub struct Region<'a> {
     wg: Vec<i32>,
     /// Maintained final heights, `[(chunk * 4 + kind) * 256 + column]`, kind in `heightmap::FINAL` order.
     fin: Vec<i32>,
-    /// Ordered writes `(x, y, z, state)` since `start_log`, every write counted (`None`: not recording).
-    log: Option<Vec<(i32, i32, i32, u16)>>,
+    /// Ordered writes since `start_log`. A missing flag uses the caller's update flags.
+    log: Option<Vec<BlockWrite>>,
 }
 
 impl<'a> Region<'a> {
+    pub fn live(tags: &'a Tags, min_y: i32, height: i32, live: &'a mut dyn LiveRegion) -> Self {
+        Self {
+            tags, live: Some(live), level_random: None, scheduled: Vec::new(), min_y, height, cx: 0, cz: 0,
+            placed_in_biome: &[], biomes: None, blocks: Vec::new(), wg: Vec::new(),
+            fin: Vec::new(), log: None,
+        }
+    }
+
+    pub(crate) fn set_level_random(&mut self, rng: super::rng::WorldgenRng) {
+        self.level_random = Some(rng);
+    }
+
+    pub(crate) fn level_next_bool(&mut self, rng: &mut super::rng::WorldgenRng) -> bool {
+        self.level_random.as_mut().unwrap_or(rng).next_bool()
+    }
+
+    pub fn write(&mut self, (x, y, z): Pos, state: u16, flags: u32) -> bool {
+        if self.outside_build_height(y) {
+            return false;
+        }
+        match self.live.as_mut() {
+            Some(live) => live.set((x, y, z), state, flags),
+            None => self.set_chunk_block(x, y, z, state, Some(flags)),
+        }
+    }
+
+    pub fn destroy(&mut self, pos: Pos, air: u16) {
+        if let Some(live) = self.live.as_mut() {
+            live.destroy(pos);
+        } else if !self.is_air(pos.0, pos.1, pos.2) {
+            self.write(pos, air, 3);
+        }
+    }
+
+    pub fn schedule(&mut self, pos: Pos, state: u16) {
+        if let Some(live) = self.live.as_mut() {
+            live.schedule(pos, state);
+        } else if !self.outside_build_height(pos.1) && self.ensure_can_write(pos.0, pos.1, pos.2) {
+            self.scheduled.push((pos, state));
+        }
+    }
+
+    pub(crate) fn take_scheduled(&mut self) -> Vec<(Pos, u16)> {
+        std::mem::take(&mut self.scheduled)
+    }
+
     /// A region for single-feature placement on the live world (saplings): `blocks` are the nine chunks in
     /// raster order, the caller fills the cells it needs and leaves the rest as air (palette id 0 in the live
     /// palette). Heightmaps are not primed: tree placement reads no heights.
@@ -135,6 +227,9 @@ impl<'a> Region<'a> {
         assert!(blocks.iter().all(|b| b.len() == n), "chunk arrays must be full height");
         Region {
             tags,
+            live: None,
+            level_random: None,
+            scheduled: Vec::new(),
             placed_in_biome: &[],
             biomes: None,
             min_y,
@@ -154,40 +249,49 @@ impl<'a> Region<'a> {
     }
 
     /// Stops recording and returns the writes in the order they happened.
-    pub fn take_log(&mut self) -> Vec<(i32, i32, i32, u16)> {
+    pub fn take_log(&mut self) -> Vec<BlockWrite> {
         self.log.take().unwrap_or_default()
     }
 
-    /// `chunks` are the current blocks of the nine chunks; `wg` their terrain-end worldgen heights.
+    /// Takes ownership of the nine chunk block buffers until decoration returns them.
     pub(crate) fn new(
         tags: &'a Tags,
         placed_in_biome: &'a [Vec<bool>],
-        biomes: BiomeMap<'a>,
+        overworld: &'a Overworld,
         min_y: i32,
         height: i32,
         cx: i32,
         cz: i32,
-        chunks: &[ChunkBlocks],
+        chunks: &'a mut [ChunkBlocks],
         wg: &[WgHeights],
+        mut fin: Vec<i32>,
     ) -> Self {
         assert_eq!(chunks.len(), 9, "region needs the 3x3 chunks");
         assert_eq!(wg.len(), 9, "region needs the 3x3 worldgen heights");
-        let blocks: Vec<Vec<u16>> = chunks.iter().map(|c| c.blocks.clone()).collect();
+        let blocks: Vec<Vec<u16>> = chunks.iter_mut().map(|c| std::mem::take(&mut c.blocks)).collect();
         let mut wg_flat = Vec::with_capacity(9 * 2 * 256);
         for h in wg {
             wg_flat.extend_from_slice(&h[0]);
             wg_flat.extend_from_slice(&h[1]);
         }
         // Priming (`primeHeightmaps`) of the final types from the current blocks.
-        let mut fin = Vec::with_capacity(9 * 4 * 256);
-        for b in &blocks {
-            for kind in FINAL {
-                for col in 0..256 {
-                    fin.push(heightmap::prime_column(b, tags, kind, min_y, height, col));
+        if fin.is_empty() {
+            fin.reserve(9 * 4 * 256);
+            for b in &blocks {
+                for kind in FINAL {
+                    for col in 0..256 {
+                        fin.push(heightmap::prime_column(b, tags, kind, min_y, height, col));
+                    }
                 }
             }
         }
-        Region { tags, placed_in_biome, biomes: Some(biomes), min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
+        let quarts = std::array::from_fn(|i| chunks[i].biomes.as_slice());
+        let biomes = Some(DecorationBiomes { overworld, quarts });
+        Region { tags, live: None, level_random: None, scheduled: Vec::new(), placed_in_biome, biomes, min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
+    }
+
+    pub(crate) fn take_final_heights(&mut self) -> Vec<i32> {
+        std::mem::take(&mut self.fin)
     }
 
     /// Consumes the region and returns the nine (mutated) block arrays in raster order.
@@ -213,7 +317,7 @@ impl<'a> Region<'a> {
     /// `WorldGenRegion.ensureCanWrite` for the FEATURES step (write radius 1).
     #[inline]
     pub fn ensure_can_write(&self, x: i32, _y: i32, z: i32) -> bool {
-        self.chunk_index(x, z).is_some()
+        self.live.is_some() || self.chunk_index(x, z).is_some()
     }
 
     #[inline]
@@ -241,12 +345,12 @@ impl<'a> Region<'a> {
     /// `VOID_AIR`; the palette id 0 (air) stands in for it, which every ported check treats the same.
     #[inline]
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> u16 {
+        if let Some(live) = self.live.as_ref() {
+            return live.block((x, y, z));
+        }
         match self.slot(x, y, z) {
             Some((c, i)) => self.blocks[c][i],
-            None => {
-                assert!(self.chunk_index(x, z).is_some(), "read outside the 3x3 region");
-                0
-            }
+            None => 0,
         }
     }
 
@@ -255,6 +359,13 @@ impl<'a> Region<'a> {
     /// the chunk are updated as `ProtoChunk.setBlockState` does (`Heightmap.update`).
     #[inline]
     pub fn set_block(&mut self, x: i32, y: i32, z: i32, blk: u16) -> bool {
+        if self.live.is_some() {
+            return self.write((x, y, z), blk, 2);
+        }
+        self.set_chunk_block(x, y, z, blk, None)
+    }
+
+    fn set_chunk_block(&mut self, x: i32, y: i32, z: i32, blk: u16, flags: Option<u32>) -> bool {
         match self.slot(x, y, z) {
             Some((c, i)) if self.ensure_can_write(x, y, z) => {
                 let old = self.blocks[c][i];
@@ -263,7 +374,7 @@ impl<'a> Region<'a> {
                     self.update_heights(c, x, y, z, blk);
                 }
                 if let Some(log) = self.log.as_mut() {
-                    log.push((x, y, z, blk));
+                    log.push((x, y, z, blk, flags));
                 }
                 true
             }
@@ -285,6 +396,9 @@ impl<'a> Region<'a> {
     /// `isAir()` of the block at a position. Outside the build height vanilla reads `VOID_AIR`, which is air.
     #[inline]
     pub fn is_air(&self, x: i32, y: i32, z: i32) -> bool {
+        if let Some(live) = self.live.as_ref() {
+            return self.tags.is_air(live.block((x, y, z)));
+        }
         match self.slot(x, y, z) {
             Some((c, i)) => self.tags.is_air(self.blocks[c][i]),
             None => self.outside_build_height(y) && self.chunk_index(x, z).is_some(),
@@ -298,7 +412,7 @@ impl<'a> Region<'a> {
         let (c, i) = self.slot(x, y, z).expect("write outside the 3x3 region or build height");
         self.blocks[c][i] = blk;
         if let Some(log) = self.log.as_mut() {
-            log.push((x, y, z, blk));
+            log.push((x, y, z, blk, None));
         }
     }
 
@@ -324,9 +438,12 @@ impl<'a> Region<'a> {
 
     /// `level.getBiome(pos).hasFeature(top)`.
     pub fn biome_has_feature(&self, x: i32, y: i32, z: i32, placed: usize) -> bool {
-        match &self.biomes {
-            Some(b) => self.placed_in_biome[b.fiddled(x, y, z) as usize][placed],
-            None => false,
-        }
+        let Some(b) = &self.biomes else { return false };
+        let (qx, qy, qz) = b.overworld.biome_quart(x, y, z);
+        let Some(chunk) = self.chunk_index(qx * 4, qz * 4) else { return false };
+        let local_y = (qy - (self.min_y >> 2)).clamp(0, (self.height >> 2) - 1);
+        let index = ((local_y * 4 + (qz & 3)) * 4 + (qx & 3)) as usize;
+        let biome = b.quarts[chunk][index] as usize;
+        self.placed_in_biome[biome][placed]
     }
 }

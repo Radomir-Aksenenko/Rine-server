@@ -33,12 +33,18 @@ pub mod state_provider;
 pub mod tree;
 pub mod simple_block;
 pub mod vegetation;
+mod huge_fungus;
+mod moss_carpet;
+mod shape;
+mod vegetation_patch;
+#[cfg(test)]
+mod samples;
 
 use std::collections::HashMap;
 
 use serde_json::Value;
 
-use crate::overworld::{BiomeMap, ChunkBlocks, Overworld};
+use crate::overworld::{ChunkBlocks, Overworld};
 use column::{direction_of, BlockColumn, Layer};
 use heightmap::WgHeights;
 use disk::Disk;
@@ -56,6 +62,7 @@ const FEATURES_JSON: &str = include_str!("../../assets/worldgen/features.json");
 const DECORATION_STEPS: usize = 11;
 
 enum Configured {
+    Unported,
     Ore(OreFeature),
     Disk(Disk),
     Spring(Spring),
@@ -63,6 +70,7 @@ enum Configured {
     BlueIce(BlueIce),
     /// `RandomBooleanSelectorFeature`: a placed-feature id per branch.
     RandomBoolean { on_true: usize, on_false: usize },
+    RandomSelector { entries: Vec<(usize, f32)>, default: usize },
     /// `SimpleRandomSelectorFeature`: uniform over the list.
     SimpleRandom(Vec<usize>),
     /// `WeightedRandomSelectorFeature`: `(placed id, weight)`; `total` > 0.
@@ -77,6 +85,18 @@ enum Configured {
     FallenTree(tree::fallen::FallenTree),
     /// `minecraft:huge_red_mushroom` / `minecraft:huge_brown_mushroom`.
     HugeMushroom(huge_mushroom::HugeMushroom),
+    HugeFungus(huge_fungus::HugeFungus),
+    VegetationPatch(vegetation_patch::VegetationPatch),
+    Overlay(Vec<usize>),
+    NoOp,
+    RandomNeighborSpread {
+        provider: state_provider::StateProvider,
+        neighbors: predicate::BlockPredicate,
+        replaceable: predicate::BlockPredicate,
+        attempts: placement::IntProvider,
+        xz: placement::IntProvider,
+        y: placement::IntProvider,
+    },
 }
 
 struct PlacedFeature {
@@ -101,6 +121,10 @@ pub struct Decorator {
     tree_env: Option<tree::TreeEnv>,
     /// Grower decorators (`Decorator::new_growers`): configured feature name -> placed index.
     grower_ids: HashMap<String, usize>,
+    bone_meal_flowers: Vec<Vec<usize>>,
+    pale_moss_patch: Option<usize>,
+    waterlogged: Vec<Option<u16>>,
+    level_random: Option<crate::random::Positional>,
 }
 
 fn bundle() -> &'static Value {
@@ -147,9 +171,14 @@ struct Compiler<'a> {
     inline: HashMap<String, usize>,
     /// Tree block schemas, built on the first tree configured feature.
     tree_states: Option<tree::state::TreeStates>,
+    pale_moss_patch: Option<usize>,
 }
 
 impl<'a> Compiler<'a> {
+    fn configured_named(&mut self, name: &str) -> Result<usize, String> {
+        self.placed_from_parts(&Value::String(name.to_owned()), &Value::Array(Vec::new()), name)
+    }
+
     /// Compiles a named placed feature once; returns its id.
     fn placed_named(&mut self, name: &str) -> Result<usize, String> {
         if let Some(&i) = self.named.get(name) {
@@ -188,6 +217,27 @@ impl<'a> Compiler<'a> {
                 Some("minecraft:block_predicate_filter") => {
                     Modifier::BlockPredicate(predicate::parse(&m["predicate"], &self.tag_names, &mut self.pal).map_err(|e| format!("{label}: {e}"))?)
                 }
+                Some("minecraft:environment_scan") => {
+                    let dy = match m["direction_of_search"].as_str() {
+                        Some("up") => 1,
+                        Some("down") => -1,
+                        _ => return Err(format!("{label}: invalid environment scan direction")),
+                    };
+                    Modifier::EnvironmentScan {
+                        dy,
+                        target: predicate::parse(&m["target_condition"], &self.tag_names, &mut self.pal)?,
+                        allowed: match m.get("allowed_search_condition") {
+                            Some(pred) => predicate::parse(pred, &self.tag_names, &mut self.pal)?,
+                            None => predicate::BlockPredicate::True,
+                        },
+                        steps: m["max_steps"].as_i64().ok_or("environment scan steps")? as i32,
+                    }
+                }
+                Some("minecraft:count_on_every_layer") => Modifier::CountOnEveryLayer {
+                    count: parse_int_provider(&m["count"])?,
+                    empty_blocks: [self.pal.block("minecraft:water"), self.pal.block("minecraft:lava")],
+                    bedrock: self.pal.block("minecraft:bedrock"),
+                },
                 _ => parse_modifier(m).map_err(|e| format!("{label}: {e}"))?,
             };
             modifiers.push(modifier);
@@ -248,7 +298,7 @@ impl<'a> Compiler<'a> {
                 for l in cfg["layers"].as_array().ok_or("layers")? {
                     layers.push(Layer {
                         height: parse_int_provider(&l["height"])?,
-                        state: state_provider::parse(&l["provider"], tn, &mut self.pal)?,
+                        state: state_provider::parse(provider_value(bundle, &l["provider"]), tn, &mut self.pal)?,
                     });
                 }
                 Ok(Configured::BlockColumn(BlockColumn {
@@ -270,6 +320,13 @@ impl<'a> Compiler<'a> {
                 on_true: self.placed_ref(&cfg["feature_true"])?,
                 on_false: self.placed_ref(&cfg["feature_false"])?,
             }),
+            "minecraft:random_selector" => {
+                let mut entries = Vec::new();
+                for entry in cfg["features"].as_array().ok_or("selector features")? {
+                    entries.push((self.placed_ref(&entry["feature"])?, entry["chance"].as_f64().ok_or("selector chance")? as f32));
+                }
+                Ok(Configured::RandomSelector { entries, default: self.placed_ref(&cfg["default"])? })
+            }
             "minecraft:simple_random_selector" => {
                 let mut list = Vec::new();
                 for f in cfg["features"].as_array().ok_or("features")? {
@@ -293,14 +350,78 @@ impl<'a> Compiler<'a> {
                 Ok(Configured::WeightedRandom { entries, total })
             }
             "minecraft:simple_block" => {
+                let provider = provider_value(bundle, &cfg["to_place"]);
                 let mut names = Vec::new();
-                vegetation::provider_names(&cfg["to_place"], &mut names)?;
+                vegetation::provider_names(provider, &mut names)?;
                 for n in &names {
                     if vegetation::kind_of_name(n).is_none() {
                         return Err(format!("simple_block places {n}, which is not ported"));
                     }
                 }
-                Ok(Configured::SimpleBlock(simple_block::SimpleBlock { to_place: state_provider::parse(&cfg["to_place"], tn, &mut self.pal)? }))
+                Ok(Configured::SimpleBlock(simple_block::SimpleBlock {
+                    to_place: state_provider::parse(provider, tn, &mut self.pal)?,
+                    schedule_tick: cfg["schedule_tick"].as_bool().unwrap_or(false),
+                }))
+            }
+            "minecraft:no_op" => Ok(Configured::NoOp),
+            "minecraft:overlay" => {
+                let mut list = Vec::new();
+                if let Some(features) = cfg["features"].as_array() {
+                    for feature in features {
+                        list.push(self.placed_ref(feature)?);
+                    }
+                } else {
+                    list.push(self.placed_ref(&cfg["features"])?);
+                }
+                Ok(Configured::Overlay(list))
+            }
+            "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" => {
+                let ground = state_provider::parse(provider_value(bundle, &cfg["ground_state"]), tn, &mut self.pal)?;
+                let replaceable = block_set(&cfg["replaceable"], tn, &mut self.pal)?;
+                let vegetation = self.placed_ref(&cfg["vegetation_feature"])?;
+                let inward = match cfg["surface"].as_str() {
+                    Some("floor") => -1,
+                    Some("ceiling") => 1,
+                    _ => return Err("invalid cave surface".into()),
+                };
+                let probability = |key: &str| cfg[key].as_f64().map(|p| p as f32).ok_or_else(|| key.to_owned());
+                let water = (ty == "minecraft:waterlogged_vegetation_patch").then(|| self.pal.default_state("minecraft:water"));
+                Ok(Configured::VegetationPatch(vegetation_patch::VegetationPatch {
+                    ground, replaceable, vegetation, inward, water,
+                    depth: parse_int_provider(&cfg["depth"])?,
+                    extra_bottom: probability("extra_bottom_block_chance")?,
+                    vertical_range: cfg["vertical_range"].as_i64().ok_or("vertical_range")? as i32,
+                    vegetation_chance: probability("vegetation_chance")?,
+                    radius: parse_int_provider(&cfg["xz_radius"])?,
+                    extra_edge: probability("extra_edge_column_chance")?,
+                }))
+            }
+            "minecraft:random_neighbor_spread" => Ok(Configured::RandomNeighborSpread {
+                provider: state_provider::parse(provider_value(bundle, &cfg["block"]), tn, &mut self.pal)?,
+                neighbors: block_set(&cfg["accepted_neighbors"], tn, &mut self.pal)?,
+                replaceable: predicate::parse(&cfg["can_replace"], tn, &mut self.pal)?,
+                attempts: parse_int_provider(&cfg["attempts"])?,
+                xz: parse_int_provider(&cfg["xz_offset"])?,
+                y: parse_int_provider(&cfg["y_offset"])?,
+            }),
+            "minecraft:huge_fungus" => {
+                let base = state_provider::state_of(&cfg["valid_base_block"], &mut self.pal)?;
+                let hat = state_provider::state_of(&cfg["hat_state"], &mut self.pal)?;
+                let wart = self.pal.block("minecraft:nether_wart_block");
+                let vines = (self.pal.block_of()[hat as usize] == wart).then(|| {
+                    let body = self.pal.default_state("minecraft:weeping_vines_plant");
+                    let heads = ["23", "24", "25"].map(|age| self.pal.state_from_parts("minecraft:weeping_vines", &[("age", age)]));
+                    (body, heads)
+                });
+                Ok(Configured::HugeFungus(huge_fungus::HugeFungus {
+                    base: self.pal.block_of()[base as usize],
+                    stem: state_provider::state_of(&cfg["stem_state"], &mut self.pal)?,
+                    hat, vines,
+                    decor: state_provider::state_of(&cfg["decor_state"], &mut self.pal)?,
+                    air: self.pal.default_state("minecraft:air"),
+                    replaceable: predicate::parse(&cfg["replaceable_blocks"], tn, &mut self.pal)?,
+                    planted: cfg["planted"].as_bool().unwrap_or(false),
+                }))
             }
             "minecraft:sequence" => {
                 let mut list = Vec::new();
@@ -323,6 +444,11 @@ impl<'a> Compiler<'a> {
             )?)),
             "minecraft:tree" | "minecraft:fallen_tree" => {
                 self.ensure_tree_states()?;
+                if self.pale_moss_patch.is_none() && cfg["decorators"].as_array().is_some_and(|decorators| {
+                    decorators.iter().any(|d| d["type"] == "minecraft:pale_moss")
+                }) {
+                    self.pale_moss_patch = Some(self.configured_named("minecraft:pale_moss_patch")?);
+                }
                 let states = self.tree_states.as_ref().expect("tree states");
                 let mut tc = tree::TreeCompile { states, pal: &mut self.pal, tag_names: &self.tag_names, providers: &bundle["blockStateProviders"] };
                 if ty == "minecraft:tree" {
@@ -350,6 +476,19 @@ impl<'a> Compiler<'a> {
     }
 }
 
+fn provider_value<'a>(bundle: &'a Value, value: &'a Value) -> &'a Value {
+    value.as_str().and_then(|name| bundle["blockStateProviders"].get(name)).unwrap_or(value)
+}
+
+fn block_set(value: &Value, tags: &[String], pal: &mut Palette) -> Result<predicate::BlockPredicate, String> {
+    let v = if let Some(tag) = value.as_str().and_then(|s| s.strip_prefix('#')) {
+        serde_json::json!({"type": "minecraft:matching_block_tag", "tag": tag})
+    } else {
+        serde_json::json!({"type": "minecraft:matching_blocks", "blocks": value})
+    };
+    predicate::parse(&v, tags, pal)
+}
+
 impl Decorator {
     /// Compiles the decoration of `o` for the top-level placed features `allow` accepts.
     pub fn new(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
@@ -359,6 +498,14 @@ impl Decorator {
     /// Like [`Decorator::new`] with an explicit feature bundle (`features.json` layout). The tree golden bundles
     /// synthetic placed features with matching biome lists (`tools/noise-golden/make_tree_golden.js`).
     pub fn new_from(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
+        Self::compile_decoration(bundle, o, allow, false)
+    }
+
+    pub(crate) fn production(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
+        Self::compile_decoration(bundle(), o, allow, true)
+    }
+
+    fn compile_decoration(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool, full_order: bool) -> Result<Self, String> {
         let biome_names: Vec<String> = o.biome_names().to_vec();
         let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
             .as_object()
@@ -376,9 +523,11 @@ impl Decorator {
             named: HashMap::new(),
             inline: HashMap::new(),
             tree_states: None,
+            pale_moss_patch: None,
         };
 
-        // Biome feature lists, filtered; ids are placed-feature indices.
+        // Production preserves FeatureSorter indices even when a feature cannot yet execute.
+        let mut excluded = HashMap::new();
         let mut biome_lists: Vec<Vec<Vec<usize>>> = Vec::with_capacity(biome_names.len());
         for name in &biome_names {
             let steps = bundle["biomes"][name].as_array().ok_or_else(|| format!("biome {name} not bundled"))?;
@@ -387,10 +536,16 @@ impl Decorator {
                 let mut ids = Vec::new();
                 for f in step.as_array().unwrap() {
                     let f = f.as_str().unwrap();
-                    if !allow(f) {
-                        continue;
+                    if allow(f) {
+                        ids.push(c.placed_named(f)?);
+                    } else if full_order {
+                        let index = *excluded.entry(f).or_insert_with(|| {
+                            let index = c.placed.len();
+                            c.placed.push(PlacedFeature { modifiers: Vec::new(), feature: Configured::Unported });
+                            index
+                        });
+                        ids.push(index);
                     }
-                    ids.push(c.placed_named(f)?);
                 }
                 lists.push(ids);
             }
@@ -413,7 +568,9 @@ impl Decorator {
             }
         }
 
-        finish(c, &block_tags, o.min_y(), o.height(), steps, placed_in_biome, in_step, HashMap::new())
+        let mut dec = finish(c, &block_tags, o.min_y(), o.height(), steps, placed_in_biome, in_step, HashMap::new())?;
+        dec.level_random = Some(o.root_random().from_hash_of("minecraft:worldgen_region_random").fork_positional());
+        Ok(dec)
     }
 
     /// Compiles only the named configured features (`minecraft:oak`, ...) for single-feature placement on
@@ -421,6 +578,17 @@ impl Decorator {
     /// state id is a palette index), `defaults` maps block names to their default state strings.
     /// Features are placed with `place_grower`; they run in the overworld height range.
     pub fn new_growers(palette_names: &[String], defaults: HashMap<String, String>, growers: &[&str]) -> Result<Self, String> {
+        Self::new_live_features(palette_names, defaults, growers, None)
+    }
+
+    pub fn new_bone_meal(palette_names: &[String], defaults: HashMap<String, String>, growers: &[&str], biome_names: &[String]) -> Result<Self, String> {
+        Self::new_live_features(palette_names, defaults, growers, Some(biome_names))
+    }
+
+    fn new_live_features(
+        palette_names: &[String], defaults: HashMap<String, String>, growers: &[&str],
+        biome_names: Option<&[String]>,
+    ) -> Result<Self, String> {
         let bundle = bundle();
         let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
             .as_object()
@@ -437,14 +605,52 @@ impl Decorator {
             named: HashMap::new(),
             inline: HashMap::new(),
             tree_states: None,
+            pale_moss_patch: None,
         };
         let mut grower_ids = HashMap::new();
         for &g in growers {
-            let feature = c.configured(&Value::String(g.to_string())).map_err(|e| format!("grower {g}: {e}"))?;
-            c.placed.push(PlacedFeature { modifiers: Vec::new(), feature });
-            grower_ids.insert(g.to_string(), c.placed.len() - 1);
+            grower_ids.insert(g.to_string(), c.configured_named(g)?);
         }
-        finish(c, &block_tags, OVERWORLD_MIN_Y, OVERWORLD_HEIGHT, Vec::new(), Vec::new(), Vec::new(), grower_ids)
+        let mut bone_meal_flowers = Vec::new();
+        if let Some(biomes) = biome_names {
+            let name = "minecraft:grass_bonemeal";
+            grower_ids.insert(name.to_owned(), c.placed_named(name)?);
+            for biome in biomes {
+                let mut choices = Vec::new();
+                if let Some(features) = bundle["boneMealFeatures"][biome].as_array() {
+                    for feature in features {
+                        let name = feature.as_str().ok_or("bone meal feature name")?;
+                        let index = match grower_ids.get(name) {
+                            Some(&index) => index,
+                            None => {
+                                let index = c.configured_named(name)?;
+                                grower_ids.insert(name.to_owned(), index);
+                                index
+                            }
+                        };
+                        choices.push(index);
+                    }
+                }
+                bone_meal_flowers.push(choices);
+            }
+        }
+        let mut out = finish(c, &block_tags, OVERWORLD_MIN_Y, OVERWORLD_HEIGHT, Vec::new(), Vec::new(), Vec::new(), grower_ids)?;
+        out.bone_meal_flowers = bone_meal_flowers;
+        Ok(out)
+    }
+
+    pub fn bone_meal_flowers(&self, biome: u8) -> &[usize] {
+        self.bone_meal_flowers.get(biome as usize).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn moss_carpet_topper(&self, region: &mut Region, pos: region::Pos, state: u16) -> Option<u16> {
+        let carpet = self.tags.veg.moss_carpet.as_ref()?;
+        if !carpet.is_base(state) { return None; }
+        carpet.topper(region, pos, None)
+    }
+
+    pub fn moss_carpet_update(&self, region: &Region, pos: region::Pos, state: u16, air: u16) -> u16 {
+        self.tags.veg.moss_carpet.as_ref().map_or(state, |carpet| carpet.update_shape(region, pos, state, air))
     }
 
     /// Whether a grower of that name was compiled.
@@ -489,12 +695,12 @@ impl Decorator {
     /// `None` when the grower is not compiled.
     pub fn place_grower(&self, name: &str, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> Option<bool> {
         let p = *self.grower_ids.get(name)?;
-        Some(self.place_configured(p, region, rng, pos))
+        Some(self.place_grower_at(p, region, rng, pos))
     }
 
     /// `place_grower` by the index from `grower_index`: no name lookup per call.
     pub fn place_grower_at(&self, index: usize, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
-        self.place_configured(index, region, rng, pos)
+        self.run_placed(index, region, rng, pos, None)
     }
 
 
@@ -509,13 +715,33 @@ impl Decorator {
         heightmap::wg_heights(&chunk.blocks, &self.tags, self.min_y, self.height)
     }
 
+    pub(crate) fn final_heights(&self, chunk: &ChunkBlocks) -> Vec<i32> {
+        heightmap::FINAL.into_iter().flat_map(|kind| {
+            (0..256).map(move |column| heightmap::prime_column(
+                &chunk.blocks, &self.tags, kind, self.min_y, self.height, column,
+            ))
+        }).collect()
+    }
+
     /// Decorates the centre chunk of the 3x3 `chunks` (raster order, centre at index 4). Writes
     /// from the centre may land in all nine chunks; the nine are updated in place. `wg` holds the
     /// terrain-end worldgen heights of the nine chunks (`wg_heights` of their protos).
-    pub fn decorate(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights]) -> Result<(), String> {
+    pub fn decorate(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights]) -> Result<Vec<(region::Pos, u16)>, String> {
+        Ok(self.decorate_window(o, seed, cx, cz, chunks, wg, &mut Vec::new()))
+    }
+
+    pub(crate) fn decorate_window(
+        &self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights],
+        final_heights: &mut Vec<i32>,
+    ) -> Vec<(region::Pos, u16)> {
         let presence = present_biomes(chunks);
-        let biome_map = BiomeMap::new(o, cx, cz);
-        let mut region = Region::new(&self.tags, &self.placed_in_biome, biome_map, self.min_y, self.height, cx, cz, chunks, wg);
+        let mut region = Region::new(
+            &self.tags, &self.placed_in_biome, o, self.min_y, self.height, cx, cz, chunks, wg,
+            std::mem::take(final_heights),
+        );
+        if let Some(crate::random::AnyRng::Xoro(rng)) = self.level_random.as_ref().map(|factory| factory.at(cx * 16, 0, cz * 16)) {
+            region.set_level_random(WorldgenRng::direct(rng));
+        }
 
         let mut rng = WorldgenRng::new(0);
         let origin_x = cx * 16;
@@ -525,6 +751,9 @@ impl Decorator {
 
         for (step, list) in self.steps.iter().enumerate() {
             for (index, &p) in list.iter().enumerate() {
+                if matches!(self.placed[p].feature, Configured::Unported) {
+                    continue;
+                }
                 let present_here = presence.iter().enumerate().any(|(b, &here)| here && self.in_step[b][step][p]);
                 if !present_here {
                     continue;
@@ -536,11 +765,13 @@ impl Decorator {
 
         // Only the block ids change here. The palette of the output is `palette()` (the overworld palette
         // plus the feature states); callers read the chunks with that palette, so it is not cloned per call.
+        let scheduled = region.take_scheduled();
+        *final_heights = region.take_final_heights();
         let out = region.into_blocks();
         for (dst, src) in chunks.iter_mut().zip(out) {
             dst.blocks = src;
         }
-        Ok(())
+        scheduled
     }
 
     /// `FeaturePlacer.place` for placed feature `p`: the modifier stack, then the configured feature at
@@ -549,6 +780,10 @@ impl Decorator {
         let pf = &self.placed[p];
         if pf.modifiers.is_empty() {
             return self.place_configured(p, region, rng, origin);
+        }
+        if let [Modifier::BlockPredicate(filter)] = pf.modifiers.as_slice() {
+            return filter.test(region, origin.0, origin.1, origin.2)
+                && self.place_configured(p, region, rng, origin);
         }
         let mut placed_any = false;
         let mut stack: Vec<((i32, i32, i32), usize)> = vec![(origin, 0)];
@@ -573,6 +808,7 @@ impl Decorator {
     /// `ConfiguredFeature.place` for the configured feature of placed feature `p`.
     fn place_configured(&self, p: usize, region: &mut Region, rng: &mut WorldgenRng, pos: (i32, i32, i32)) -> bool {
         match &self.placed[p].feature {
+            Configured::Unported => false,
             Configured::Ore(f) => f.place(region, rng, pos),
             Configured::Disk(f) => f.place(region, rng, pos),
             Configured::Spring(f) => f.place(region, pos),
@@ -581,6 +817,10 @@ impl Decorator {
             Configured::RandomBoolean { on_true, on_false } => {
                 let result = rng.next_bool();
                 self.run_placed(if result { *on_true } else { *on_false }, region, rng, pos, None)
+            }
+            Configured::RandomSelector { entries, default } => {
+                let next = entries.iter().find(|(_, chance)| rng.next_float() < *chance).map_or(*default, |&(next, _)| next);
+                self.run_placed(next, region, rng, pos, None)
             }
             Configured::SimpleRandom(list) => {
                 let index = rng.next_int_bound(list.len() as i32) as usize;
@@ -602,6 +842,7 @@ impl Decorator {
             Configured::Tree(t) => {
                 let env = self.tree_env.as_ref().expect("tree env");
                 let mut ctx = tree::Ctx::new(region, env, rng);
+                ctx.decorator = Some(self);
                 t.place(&mut ctx, pos)
             }
             Configured::FallenTree(t) => {
@@ -610,6 +851,31 @@ impl Decorator {
                 t.place(&mut ctx, pos)
             }
             Configured::HugeMushroom(f) => f.place(region, rng, pos),
+            Configured::HugeFungus(f) => f.place(region, rng, pos),
+            Configured::VegetationPatch(f) => f.place(self, region, rng, pos),
+            Configured::Overlay(list) => {
+                let mut placed = false;
+                for &child in list {
+                    placed |= self.run_placed(child, region, rng, pos, None);
+                }
+                placed
+            }
+            Configured::NoOp => true,
+            Configured::RandomNeighborSpread { provider, neighbors, replaceable, attempts, xz, y } => {
+                use placement::sample_int;
+                let state = provider.get(region, rng, pos.0, pos.1, pos.2);
+                region.write(pos, state, 2);
+                for _ in 0..sample_int(attempts, rng) {
+                    let (x, y, z) = (pos.0 + sample_int(xz, rng), pos.1 + sample_int(y, rng), pos.2 + sample_int(xz, rng));
+                    if replaceable.test(region, x, y, z)
+                        && shape::DIRECTIONS.into_iter().filter(|&(dx, dy, dz)| neighbors.test(region, x + dx, y + dy, z + dz)).take(2).count() == 1
+                    {
+                        let state = provider.get(region, rng, x, y, z);
+                        region.write((x, y, z), state, 2);
+                    }
+                }
+                true
+            }
             Configured::SimpleBlock(f) => f.place(region, rng, pos),
             Configured::Sequence(list) => {
                 for &q in list {
@@ -644,6 +910,13 @@ fn finish(
     }
     // Vegetation survival tables read the final palette (both half variants of the double plants included).
     let veg = vegetation::VegTable::build(&mut c.pal, &c.tag_names)?;
+    let mut waterlogged = Vec::new();
+    if c.placed.iter().any(|placed| matches!(&placed.feature, Configured::VegetationPatch(patch) if patch.water.is_some())) {
+        for state in 0..c.pal.states().len() {
+            let wet = c.pal.with_property(state as u16, "waterlogged", "true");
+            waterlogged.push(wet.filter(|&wet| wet != state as u16));
+        }
+    }
     let mut tags = Tags::new(&c.pal, block_tags);
     tags.set_vegetation(veg);
     let tree_env = match c.tree_states.take() {
@@ -664,6 +937,10 @@ fn finish(
         height,
         tree_env,
         grower_ids,
+        bone_meal_flowers: Vec::new(),
+        pale_moss_patch: c.pale_moss_patch,
+        waterlogged,
+        level_random: None,
     })
 }
 

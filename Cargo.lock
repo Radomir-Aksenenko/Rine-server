@@ -616,6 +616,7 @@ name = "rine-worldgen"
 version = "0.1.0"
 dependencies = [
  "md-5",
+ "rine-data",
  "serde",
  "serde_json",
 ]
