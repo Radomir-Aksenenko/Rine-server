@@ -103,7 +103,7 @@ impl Game {
         running: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let cfg = &shared.config;
-        let world = World::new(cfg.seed, &cfg.world_dir);
+        let world = World::new(cfg.seed, &cfg.world_dir, cfg.vanilla_vegetation);
         let (sx, sy, sz) = world.generator.find_spawn();
         let regs = &rine_data::get().registries;
         let dim_type_id = regs.synced("minecraft:dimension_type").id("minecraft:overworld").unwrap_or(0);

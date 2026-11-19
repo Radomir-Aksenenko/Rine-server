@@ -99,7 +99,7 @@ pub fn spawn_background(f: impl FnOnce() + Send + 'static) {
 }
 
 impl World {
-    pub fn new(seed: i64, dir: &str) -> Self {
+    pub fn new(seed: i64, dir: &str, vanilla_vegetation: bool) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded();
         let (light_tx, light_rx) = crossbeam_channel::unbounded();
         Self {
@@ -107,7 +107,7 @@ impl World {
             pending: AHashSet::new(),
             tx,
             rx,
-            generator: Arc::new(Generator::new(seed)),
+            generator: Arc::new(Generator::with_options(seed, vanilla_vegetation)),
             store: Arc::new(RegionStore::open(dir)),
             changes: AHashMap::new(),
             touched: Vec::new(),

@@ -78,7 +78,15 @@ const ORE_NAMES: [&str; 8] = ["coal", "iron", "copper", "gold", "redstone", "lap
 const TREE_WOODS: [&str; 6] = ["oak", "oak", "birch", "spruce", "acacia", "jungle"];
 
 impl Generator {
+    /// Generator with the long-standing live decoration (no vanilla vegetation pass).
     pub fn new(seed: i64) -> Self {
+        Self::with_options(seed, false)
+    }
+
+    /// `vanilla_vegetation`: decorate through `rine-worldgen` (carved terrain plus vanilla
+    /// grass, flowers and moss). Changes newly generated chunks and is about 3x slower
+    /// per chunk, so it is off unless the owner turns it on (`rine.toml`).
+    pub fn with_options(seed: i64, vanilla_vegetation: bool) -> Self {
         let data = rine_data::init();
         let b = &data.blocks;
         let reg = data.registries.synced("minecraft:worldgen/biome");
@@ -133,13 +141,15 @@ impl Generator {
             "minecraft:wooded_badlands",
         ];
         let vanilla = Arc::new(rine_worldgen::Overworld::new(seed));
-        let vegetation = match rine_worldgen::pipeline::Pipeline::with_features(
-            Arc::clone(&vanilla), &rine_worldgen::feature::allow::live_generation,
-        ) {
-            Ok(pipeline) => Some(pipeline),
-            Err(error) => {
-                eprintln!("failed to compile vegetation decoration: {error}");
-                None
+        let vegetation = if !vanilla_vegetation {
+            None
+        } else {
+            match rine_worldgen::pipeline::Pipeline::with_features(Arc::clone(&vanilla), &rine_worldgen::feature::allow::live_generation) {
+                Ok(pipeline) => Some(pipeline),
+                Err(error) => {
+                    eprintln!("failed to compile vegetation decoration: {error}");
+                    None
+                }
             }
         };
         let mut biome_vanilla = vec![u16::MAX; 256];
@@ -366,8 +376,9 @@ mod tests {
     #[test]
     fn generator_builds_and_bedrock_floor() {
         rine_data::init();
-        let g = Generator::new(12345);
+        let g = Generator::with_options(12345, true);
         assert!(g.vegetation.is_some());
+        assert!(Generator::new(12345).vegetation.is_none(), "off by default");
         let bedrock = g.ids.bedrock;
         let mut total_non_air = 0u32;
         for &(x, z) in &[(0, 0), (5, -3), (-7, 11)] {
