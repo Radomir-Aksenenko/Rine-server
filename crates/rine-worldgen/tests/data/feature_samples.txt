@@ -222,3 +222,211 @@ weeping_vines ceiling 12 true 387250d8ec81a50b -2104770071
 weeping_vines ceiling 13 true 8efd59ed238ce197 1197308316
 weeping_vines ceiling 14 true df3ffe506ac58c91 218528928
 weeping_vines ceiling 15 true 2d8f8bc817dcd0f5 -917895696
+pointed_dripstone cave 0 true 1075e1f0861ea14 -1675170139
+pointed_dripstone cave 1 false cbf29ce484222325 1502147075
+pointed_dripstone cave 2 true 8ba1e7e980047226 -1683775810
+pointed_dripstone cave 3 false cbf29ce484222325 954238845
+pointed_dripstone cave 4 true fe0521bb9b5c07bc 376307617
+pointed_dripstone cave 5 true bc347b5cff7d1f7 364730208
+pointed_dripstone cave 6 true 600ccba4b3e88262 -1944729276
+pointed_dripstone cave 7 false cbf29ce484222325 -1534720300
+pointed_dripstone cave 8 true 2644805c0b498d6a 574015906
+pointed_dripstone cave 9 true 86c5c2bd08f74493 -1093373174
+pointed_dripstone cave 10 true f158a776da259c14 -1453064403
+pointed_dripstone cave 11 false cbf29ce484222325 -1884899970
+pointed_dripstone cave 12 true 3994922e24091644 1835846937
+pointed_dripstone cave 13 false cbf29ce484222325 1742978744
+pointed_dripstone cave 14 true ae42c05bd69027ef -1450189544
+pointed_dripstone cave 15 false cbf29ce484222325 601473971
+sulfur_spike cave 0 false cbf29ce484222325 -860085545
+sulfur_spike cave 1 false cbf29ce484222325 1502147075
+sulfur_spike cave 2 false cbf29ce484222325 -2032124753
+sulfur_spike cave 3 false cbf29ce484222325 954238845
+sulfur_spike cave 4 false cbf29ce484222325 2064244764
+sulfur_spike cave 5 false cbf29ce484222325 1437183823
+sulfur_spike cave 6 false cbf29ce484222325 1477722850
+sulfur_spike cave 7 false cbf29ce484222325 -1534720300
+sulfur_spike cave 8 false cbf29ce484222325 -640392639
+sulfur_spike cave 9 false cbf29ce484222325 -328183868
+sulfur_spike cave 10 false cbf29ce484222325 -1695043350
+sulfur_spike cave 11 false cbf29ce484222325 -1884899970
+sulfur_spike cave 12 false cbf29ce484222325 1613211912
+sulfur_spike cave 13 false cbf29ce484222325 1742978744
+sulfur_spike cave 14 false cbf29ce484222325 241775916
+sulfur_spike cave 15 false cbf29ce484222325 601473971
+dripstone_cluster cave 0 true abe966499e49971b 358620640
+dripstone_cluster cave 1 true c0c4bba8f973f80c -70457962
+dripstone_cluster cave 2 true e1b733c88c30ba65 -556071478
+dripstone_cluster cave 3 true f5f92136defc561d -440732980
+dripstone_cluster cave 4 true 5c8559e972680f2f -175097115
+dripstone_cluster cave 5 true 69fa20bb7555e6a -2094345344
+dripstone_cluster cave 6 true 7b60c23e1f601ef 2135844023
+dripstone_cluster cave 7 true da4f59624a274007 1423500567
+dripstone_cluster cave 8 true eb904e72a9920e50 1596947235
+dripstone_cluster cave 9 true 4ac30824351de666 -878798897
+dripstone_cluster cave 10 true 8291e307653fb4cd 1463322401
+dripstone_cluster cave 11 true a5dfaac9fa345bcc -1655164615
+dripstone_cluster cave 12 true dd0ae806a84c4692 1842848599
+dripstone_cluster cave 13 true 2bbcc8d46f6a8c0e -715702896
+dripstone_cluster cave 14 true 44cb61c66ca9011a 1992073155
+dripstone_cluster cave 15 true 249c9ed1c97d9988 -1483142454
+sulfur_spike_cluster cave 0 true cbf29ce484222325 382098072
+sulfur_spike_cluster cave 1 true cbf29ce484222325 1051701965
+sulfur_spike_cluster cave 2 true cbf29ce484222325 -2098023593
+sulfur_spike_cluster cave 3 true cbf29ce484222325 -457596513
+sulfur_spike_cluster cave 4 true cbf29ce484222325 -414504373
+sulfur_spike_cluster cave 5 true cbf29ce484222325 701660057
+sulfur_spike_cluster cave 6 true cbf29ce484222325 1606879123
+sulfur_spike_cluster cave 7 true cbf29ce484222325 1510347503
+sulfur_spike_cluster cave 8 true cbf29ce484222325 -701447494
+sulfur_spike_cluster cave 9 true cbf29ce484222325 -75335992
+sulfur_spike_cluster cave 10 true cbf29ce484222325 1396521152
+sulfur_spike_cluster cave 11 true cbf29ce484222325 -628413855
+sulfur_spike_cluster cave 12 true cbf29ce484222325 278677299
+sulfur_spike_cluster cave 13 true cbf29ce484222325 -1256380268
+sulfur_spike_cluster cave 14 true cbf29ce484222325 1332897214
+sulfur_spike_cluster cave 15 true cbf29ce484222325 1470479383
+large_dripstone cave 0 true 4d11982163938a29 1214367099
+large_dripstone cave 1 true 17427a8eb33f3291 -984655399
+large_dripstone cave 2 true 9bf715078fc495c0 -921934402
+large_dripstone cave 3 true 37a2c4f3cc4a4b3d 1001182983
+large_dripstone cave 4 true 57177b0b94d83819 942813138
+large_dripstone cave 5 true c3754566aa9982d9 -1079962218
+large_dripstone cave 6 true 153b43bfd0a50a0 1921389401
+large_dripstone cave 7 true b8f0fa426e6245 690139286
+large_dripstone cave 8 true cbf29ce484222325 -767554551
+large_dripstone cave 9 true 1ef5112a40289830 341302811
+large_dripstone cave 10 true bf5149e0b6d8c48c 2040685316
+large_dripstone cave 11 true 6f66446fa1cb3d8a 1305805431
+large_dripstone cave 12 true 47bf7da2c46b9711 1475499539
+large_dripstone cave 13 true f16901bce1ee9bc3 544748010
+large_dripstone cave 14 true a3aa01e34aaa067b 23343131
+large_dripstone cave 15 true 132bbfde555672f1 -688875735
+rooted_azalea_tree root 0 true 707697076bfe5c15 -1079287298
+rooted_azalea_tree root 1 true 62f35e4e7d27187c -1580892313
+rooted_azalea_tree root 2 true eeba48985ed3474 -1682405941
+rooted_azalea_tree root 3 true 704ffd6093d18d67 1390892964
+rooted_azalea_tree root 4 true ddc446ef8c1e330f 1157762225
+rooted_azalea_tree root 5 true ac856975f3469ea -1336595366
+rooted_azalea_tree root 6 true aa1522fa18a38835 -1221955585
+rooted_azalea_tree root 7 true 6375865339b6f0d7 1345950223
+rooted_azalea_tree root 8 true f55b790732c382e8 -1931850593
+rooted_azalea_tree root 9 true 221c7d0d239e6d0d -7627698
+rooted_azalea_tree root 10 true e43e190ef8d9762c 633226998
+rooted_azalea_tree root 11 true 4fcac625e31e4fe -1122625091
+rooted_azalea_tree root 12 true 54416ffbaa679cdf -640793409
+rooted_azalea_tree root 13 true e52e0fe1c610031c -50441570
+rooted_azalea_tree root 14 true 3ddfc54b21761575 1755649584
+rooted_azalea_tree root 15 true cb1dce7f85125be 336714575
+rooted_sulfur_spring root 0 true 7416e57fea19bace -912306337 78ae7ab328eab889
+rooted_sulfur_spring root 1 true 82305487880be7e5 -1592021474 2cf526ae53a03311
+rooted_sulfur_spring root 2 true 2ae126869d24e404 -1843438025 ab097aa7100596
+rooted_sulfur_spring root 3 true 3883d433edb9fa3e -1818968806 b5b8f365059a134d
+rooted_sulfur_spring root 4 true c6922a6cd566bd7e 1000380353 511c331346d23bf2
+rooted_sulfur_spring root 5 true e4bd633bfb2d826d -1797188198 7684934cbe4741e8
+rooted_sulfur_spring root 6 true 637fb40b75e9b9e2 -459104358 d7395e7cbe73bb76
+rooted_sulfur_spring root 7 true 52537f8f189fc67d 360644879 5c5946166eee4ab2
+rooted_sulfur_spring root 8 true 6dce87edd23bd707 -1990268164 9045bb4465f31bbd
+rooted_sulfur_spring root 9 true 8e24206233c79ec6 -1305352993 a9d20ebf339772d2
+rooted_sulfur_spring root 10 true bfdc99ac3b64bd26 -152542783 cbf24e4f7a113150
+rooted_sulfur_spring root 11 true 18c0b9640cdd30f9 600594741 ea1f5c156bebadaa
+rooted_sulfur_spring root 12 true 2b6cf57e4bb14c9b -2037392883 621f27fcb937c482
+rooted_sulfur_spring root 13 true a269ccaa833a01f1 2084667495 dee8e464d06d9fd5
+rooted_sulfur_spring root 14 true 657480bb11ecbfed -1307579659 a06bd9dd7d99780d
+rooted_sulfur_spring root 15 true d4f2fd3a21f1abcc 25580194 706b8a77b6ea69f0
+monster_room room 0 true 2ac6acb9fc27163f 1390903521 9c548baa74e55a33
+monster_room room 1 true 83dc731b332bd3ed -1629569156 e74def33a46e40b
+monster_room room 2 true fc2796d6a63407af 904073534 2a75cf5d018cd21f
+monster_room room 3 true b90e30df9f9dedfd 1045390927 c47b2aa163a5c368
+monster_room room 4 true 51be7752b65bf33d 1859327754 d59a20a4fcd93708
+monster_room room 5 true b2c7904b3cb8efa9 1242817011 5d6fe7ddf4a65876
+monster_room room 6 true 1c793feecc49c26c 256793556 649aaca85343d40d
+monster_room room 7 true 8db1992a2e01f9b0 -2043831809 402d70c064fb1438
+monster_room room 8 true 59f7781c980bf5e4 -308067860 914c3db4597307a6
+monster_room room 9 true fb97feb59cf6a01 -1846414841 f74efc7fb83fa240
+monster_room room 10 true 4d99fa0cd5827f1b 938193501 9916d09b1099a3da
+monster_room room 11 true f6c761f68e6ffe2a 224284457 92713bf139db6b38
+monster_room room 12 true 5c05a2836b7971e1 -322484215 f6b719a1d802164
+monster_room room 13 true 88434a472fee79b7 1023004404 3447e2aa293bbbc8
+monster_room room 14 true a4892fd3f29ed217 -1913767887 654c9bd0d606e8c4
+monster_room room 15 true a87f35ca7b0079db 1873616895 855bd142077c3e4
+sculk_patch_deep_dark cave 0 false 59427612188a3dcf -665118826 1055d35c2aba4f22
+sculk_patch_deep_dark cave 1 false c1c589ecae4a7c93 1064394815
+sculk_patch_deep_dark cave 2 true 848953e904399c52 -551598301 5c6a51917f179ea5
+sculk_patch_deep_dark cave 3 false ec7f7a2beda916ae -586985847 b6c51fb6859560ea
+sculk_patch_deep_dark cave 4 false f847867b780b4007 -1841647683 4a648a0a05d53e1b
+sculk_patch_deep_dark cave 5 true 473cb5470916cc80 1653637910 8202fa3ee02c4b9
+sculk_patch_deep_dark cave 6 false 1b4fae56092978bf 1491144424
+sculk_patch_deep_dark cave 7 false 72f5e615b162125a 376844025 b3d54ad663228667
+sculk_patch_deep_dark cave 8 false 8fd8de418a4ec3d7 -1500471975
+sculk_patch_deep_dark cave 9 true 9e1beabf603fea3d 1270745011 251d5cb12c9402f1
+sculk_patch_deep_dark cave 10 false 7e5362e13cba82a6 -2146815364 32ad27008daf2661
+sculk_patch_deep_dark cave 11 true 2ecd9409fba64d03 1490164955 c692f103f27eb32d
+sculk_patch_deep_dark cave 12 true ab2f22d426d7566a -568239694 7c333ae3573f129b
+sculk_patch_deep_dark cave 13 false d9c89c11211a430b 2094530870 f0a65e87a14aebba
+sculk_patch_deep_dark cave 14 true 98b30df05768bdf7 -1749033741 9d908140e100d1f5
+sculk_patch_deep_dark cave 15 true 1dbc49ffdb6bc1aa 430616351 d8712b3e61393c0d
+desert_well solid 0 true db2cc2fc16d675cf 2068248694 69e00f9e9c2aaec
+desert_well solid 1 true efaca3f51ba182ef -1386631930 2638c9c1c9d42339
+desert_well solid 2 true 862418e8fd9441fb -1126493216 e7a01833f12aa488
+desert_well solid 3 true 71f7517883bf0feb 166831741 b808cffc6df509a3
+desert_well solid 4 true b39054cef05ab277 290717455 510bbf616453a242
+desert_well solid 5 true bab6c99461a80b7 977784316 b664d18d09b38268
+desert_well solid 6 true fad50ee56000d723 1249468662 63c28da930f20791
+desert_well solid 7 true 66be84ae7a1b960b -618179645 9940dc0292d5673b
+desert_well solid 8 true 68d81b7cd98f7007 -264299784 86391ae0308c09bf
+desert_well solid 9 true ff99448df7b0294f 213305343 d34874dcc5d3293b
+desert_well solid 10 true dd00971cf14ca56f 634500803 d75b8b6af8432325
+desert_well solid 11 true ec5e7186a953f647 -2085822866 a121ac03cdcaf002
+desert_well solid 12 true fc39893427d77f73 755962948 cbb68db366e905bf
+desert_well solid 13 true bf43ec3cd8f22347 -41539756 3aee077c5f9740f8
+desert_well solid 14 true ae61c970264b7f -1610361861 25a00d6ca969f47c
+desert_well solid 15 true d6cd9219b9adcbbb 115652222 ab1c6d31b55f2f7f
+fossil_coal solid 0 true 3cbbcc79b2edd055 -88704965
+fossil_coal solid 1 true 7bfd161b5982fd8a -1506657626
+fossil_coal solid 2 true 7e9c071f6cf7df8f 2008432720
+fossil_coal solid 3 true 6445dc28f6425a63 -424711941
+fossil_coal solid 4 true e0af4739035fcec9 686495313
+fossil_coal solid 5 true 2080d9e46ca9abd2 -724201677
+fossil_coal solid 6 true da3d5e6b936035a5 26020170
+fossil_coal solid 7 true 902497ec7d772e58 -1294825397
+fossil_coal solid 8 true 40a31e448a88d38f 1644571950
+fossil_coal solid 9 true 4da23747aead4d49 2011465158
+fossil_coal solid 10 true 599836528e54d977 -1298507909
+fossil_coal solid 11 true 7e568c9259fd9da1 1499269067
+fossil_coal solid 12 true f9ab06d6d58a059 -391709454
+fossil_coal solid 13 true 88ceabea94b317c3 -339871663
+fossil_coal solid 14 true 6f98274a6eb78834 719062697
+fossil_coal solid 15 true d320aa37481b2dc7 711491753
+fossil_diamonds solid 0 true fe0c569fcb8420b5 -88704965
+fossil_diamonds solid 1 true 831f23411020e922 -1506657626
+fossil_diamonds solid 2 true fcb5a58db99ed40f 2008432720
+fossil_diamonds solid 3 true e4ba1920ce432f93 -424711941
+fossil_diamonds solid 4 true 9ef5922706ffda61 686495313
+fossil_diamonds solid 5 true 4865b1439d72d99a -724201677
+fossil_diamonds solid 6 true cbc8c00e782ce1cd 26020170
+fossil_diamonds solid 7 true 28f92069d06be7f0 -1294825397
+fossil_diamonds solid 8 true 511ccc5b78cdc817 1644571950
+fossil_diamonds solid 9 true f61e683fa8772909 2011465158
+fossil_diamonds solid 10 true 5ccfa4b8183f99c7 -1298507909
+fossil_diamonds solid 11 true 39a5be6fe662fdf9 1499269067
+fossil_diamonds solid 12 true 59d226dabdbf5a39 -391709454
+fossil_diamonds solid 13 true 3a68a7c3640c4a2b -339871663
+fossil_diamonds solid 14 true e5e8cea519a39fac 719062697
+fossil_diamonds solid 15 true 91977770cd16a567 711491753
+super_birch_bees grass 0 true c187ee8cabeae5a2 1046537383 6d6e9f78f2208646
+super_birch_bees grass 1 true 976abe4d2f2d6e1e -1564649304 20f14cf44ce856a3
+super_birch_bees grass 2 true ed7dd5f9a7225545 -988428536 10e7a49ac459c244
+super_birch_bees grass 3 true a0578f18248f6ead 767920490 e5a40613fb2e1771
+super_birch_bees grass 4 true c84c899ebd5fda4c 2106989052 66f444033a7709a0
+super_birch_bees grass 5 true 5c69ce62c3a93559 189865214 22ad4d733a9f8a34
+super_birch_bees grass 6 true 24079b88da42a186 -1437544470 158e99ea2e047d50
+super_birch_bees grass 7 true c6b9ee139347e1ec 1742949743 aec3ad064ffbe666
+super_birch_bees grass 8 true 966c8a7090275821 2136084339 302732aa5349032d
+super_birch_bees grass 9 true 6d9f1dc4ec50db86 772575208 ed495761372973b1
+super_birch_bees grass 10 true 65fb7e0c14b37038 -1805549910 21ea906694dd0c41
+super_birch_bees grass 11 true c57687c1f4be7c76 -847820519 75166fd80a60a5f6
+super_birch_bees grass 12 true 90da8b090999237 1443206082 26a07b667f0879d6
+super_birch_bees grass 13 true 99644ee6ec8c5e8f -1174925181 d09774ad1ce98fd1
+super_birch_bees grass 14 true 657f1d414b362dcf 195348738 1f72df4fb04dafda
+super_birch_bees grass 15 true ef33d2dff8708d15 1068514885 7fc71fcb98b73df

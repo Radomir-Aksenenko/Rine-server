@@ -21,6 +21,7 @@ public class FeatureShapes {
             var collision = state.getCollisionShape(level, pos);
             if (state.isCollisionShapeFullBlock(level, pos)) masks[i] |= 64;
             if (state.canBeReplaced()) masks[i] |= (byte)128;
+            if (state.isSolidRender()) masks[i + 1] |= (byte)128;
             for (var face : Direction.values()) {
                 int bit = 1 << face.ordinal();
                 if (Block.isFaceFull(support, face) || Block.isFaceFull(collision, face)) masks[i] |= bit;

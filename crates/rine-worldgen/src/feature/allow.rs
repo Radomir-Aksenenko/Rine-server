@@ -62,12 +62,13 @@ impl Rule<'_> {
     /// A block predicate tree (`block_predicate_filter`, `allowed_placement`): every type is ported.
     fn block_predicate(&self, p: &Value) -> bool {
         let Some(ty) = p["type"].as_str() else { return false };
-        if !self.predicates.contains(&ty) {
+        if !(self.predicates.contains(&ty) || self.expanded && matches!(ty, "minecraft:solid" | "minecraft:volume_match" | "minecraft:has_sturdy_face")) {
             return false;
         }
         match ty {
             "minecraft:all_of" | "minecraft:any_of" => p["predicates"].as_array().is_some_and(|l| l.iter().all(|x| self.block_predicate(x))),
             "minecraft:not" => self.block_predicate(&p["predicate"]),
+            "minecraft:volume_match" => self.block_predicate(&p["match"]),
             // `would_survive` is ported for the blocks of `vegetation.rs` only (the sapling and propagule paths are not
             // in the allow list).
             "minecraft:would_survive" => p["state"].as_str().is_some_and(|s| {
@@ -132,12 +133,19 @@ impl Rule<'_> {
             list.iter().all(|m| {
                 let ty = m["type"].as_str().unwrap_or("");
                 if !(self.placements.contains(&ty) || self.expanded && matches!(ty,
-                    "minecraft:environment_scan" | "minecraft:count_on_every_layer" | "minecraft:surface_water_depth_filter"))
+                    "minecraft:environment_scan" | "minecraft:count_on_every_layer" | "minecraft:surface_water_depth_filter"
+                    | "minecraft:randomly_selected" | "minecraft:random_chance"))
                     || (!top && ty == "minecraft:biome")
                 {
                     return false;
                 }
-                ty != "minecraft:block_predicate_filter" || self.block_predicate(&m["predicate"])
+                match ty {
+                    "minecraft:block_predicate_filter" => self.block_predicate(&m["predicate"]),
+                    "minecraft:randomly_selected" => m["placements"].as_array().is_some_and(|items| {
+                        !items.is_empty() && items.iter().all(|item| item["type"] == "minecraft:offset")
+                    }),
+                    _ => true,
+                }
             })
         });
         placements_ok && self.feature(&p["feature"])
@@ -149,11 +157,13 @@ impl Rule<'_> {
             None => r,
         };
         let Some(ty) = cfg["type"].as_str() else { return false };
-        let pale_oak = r.as_str().is_some_and(|name| name.starts_with("minecraft:pale_oak"));
+        let extra_tree = r.as_str().is_some_and(|name| name.starts_with("minecraft:pale_oak") || name == "minecraft:azalea_tree");
         if !(self.types.contains(&ty) || self.expanded && (matches!(ty,
             "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" | "minecraft:overlay"
-            | "minecraft:random_neighbor_spread" | "minecraft:huge_fungus" | "minecraft:no_op" | "minecraft:random_selector")
-            || ty == "minecraft:tree" && pale_oak))
+            | "minecraft:random_neighbor_spread" | "minecraft:huge_fungus" | "minecraft:no_op" | "minecraft:random_selector"
+            | "minecraft:monster_room" | "minecraft:root_system" | "minecraft:speleothem" | "minecraft:speleothem_cluster"
+            | "minecraft:large_dripstone" | "minecraft:fossil" | "minecraft:template" | "minecraft:sculk_patch")
+            || ty == "minecraft:tree" && extra_tree))
         {
             return false;
         }
@@ -180,6 +190,7 @@ impl Rule<'_> {
             "minecraft:weighted_random_selector" => cfg["features"].as_array().is_some_and(|l| l.iter().all(|e| sub(&e["data"]))),
             "minecraft:overlay" => cfg["features"].as_array().map_or_else(|| sub(&cfg["features"]), |l| l.iter().all(sub)),
             "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" => sub(&cfg["vegetation_feature"]),
+            "minecraft:root_system" => sub(&cfg["feature"]) && self.block_predicate(&cfg["allowed_tree_position"]),
             _ => true,
         }
     }

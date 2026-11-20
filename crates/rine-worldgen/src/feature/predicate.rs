@@ -25,6 +25,7 @@ pub enum BlockPredicate {
     AllOf(Vec<BlockPredicate>),
     AnyOf(Vec<BlockPredicate>),
     Not(Box<BlockPredicate>),
+    Volume { min: [i32; 3], max: [i32; 3], predicate: Box<BlockPredicate> },
     /// `would_survive` for a sapling or mangrove propagule: `state.canSurvive(level, origin + offset)`. A standing
     /// state needs the block below in `support` (`VegetationBlock.canSurvive`). A hanging mangrove propagule needs
     /// the block above in `hanging` and nothing else (`MangrovePropaguleBlock.canSurvive`).
@@ -119,6 +120,19 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
             Ok(if ty == "minecraft:all_of" { BlockPredicate::AllOf(list) } else { BlockPredicate::AnyOf(list) })
         }
         "minecraft:not" => Ok(BlockPredicate::Not(Box::new(parse(&v["predicate"], tag_names, pal)?))),
+        "minecraft:volume_match" => {
+            let bound = |key: &str| {
+                let a = v[key].as_array().filter(|a| a.len() == 3).ok_or("volume_match bounds")?;
+                let coord = |i: usize| a[i].as_i64().filter(|n| (-16..=16).contains(n)).map(|n| n as i32).ok_or("volume_match coordinate");
+                Ok::<_, &str>([coord(0)?, coord(1)?, coord(2)?])
+            };
+            let min = bound("min")?;
+            let max = bound("max")?;
+            if min.iter().zip(max).any(|(&a, b)| a > b) {
+                return Err("volume_match min exceeds max".into());
+            }
+            Ok(BlockPredicate::Volume { min, max, predicate: Box::new(parse(&v["match"], tag_names, pal)?) })
+        }
         "minecraft:would_survive" => {
             let state = v["state"].as_str().ok_or("would_survive state")?;
             let (name, props) = split_state(state);
@@ -183,6 +197,18 @@ impl BlockPredicate {
             BlockPredicate::AllOf(list) => list.iter().all(|p| p.test(region, x, y, z)),
             BlockPredicate::AnyOf(list) => list.iter().any(|p| p.test(region, x, y, z)),
             BlockPredicate::Not(p) => !p.test(region, x, y, z),
+            BlockPredicate::Volume { min, max, predicate } => {
+                for dx in min[0]..=max[0] {
+                    for dz in min[2]..=max[2] {
+                        for dy in min[1]..=max[1] {
+                            if !predicate.test(region, x + dx, y + dy, z + dz) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+                true
+            }
             BlockPredicate::WouldSurvive { offset, support, hanging } => {
                 let (px, py, pz) = (x + offset[0], y + offset[1], z + offset[2]);
                 match hanging {

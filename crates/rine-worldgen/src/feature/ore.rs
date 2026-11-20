@@ -52,13 +52,21 @@ pub struct OreFeature {
 
 /// `Mth.sin(float)`: a 65536-entry table indexed by `(int)(x * 10430.378...)`.
 pub fn mth_sin(x: f64) -> f32 {
+    trig_sample(x * 10430.378350470453)
+}
+
+pub(super) fn mth_cos(x: f64) -> f32 {
+    trig_sample(x * 10430.378350470453 + 16384.0)
+}
+
+fn trig_sample(index: f64) -> f32 {
     static TABLE: OnceLock<Vec<f32>> = OnceLock::new();
     let table = TABLE.get_or_init(|| {
         (0..65536)
             .map(|i| (i as f64 / 10430.378350470453).sin() as f32)
             .collect()
     });
-    table[((x * 10430.378350470453) as i64 & 65535) as usize]
+    table[(index as i64 & 65535) as usize]
 }
 
 /// `Mth.ceil(float)`.

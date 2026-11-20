@@ -12,16 +12,17 @@ const DOUBLE_MULTIPLIER: f32 = 1.110223E-16_f32;
 pub struct WorldgenRng {
     src: Xoroshiro,
     direct: bool,
+    gaussian: Option<f64>,
 }
 
 impl WorldgenRng {
     /// `new WorldgenRandom(new XoroshiroRandomSource(seed))`.
     pub fn new(seed: i64) -> Self {
-        WorldgenRng { src: Xoroshiro::new(seed), direct: false }
+        WorldgenRng { src: Xoroshiro::new(seed), direct: false, gaussian: None }
     }
 
     pub fn direct(src: Xoroshiro) -> Self {
-        Self { src, direct: true }
+        Self { src, direct: true, gaussian: None }
     }
 
     pub fn source(self) -> Xoroshiro {
@@ -99,6 +100,26 @@ impl WorldgenRng {
         let lower = self.next(27);
         let combined = ((upper as i64) << 27) + lower as i64;
         ((combined as f32) * DOUBLE_MULTIPLIER) as f64
+    }
+
+    pub fn next_gaussian(&mut self) -> f64 {
+        if self.direct {
+            return self.src.next_gaussian();
+        }
+        // WorldgenRandom reseeds the wrapped source, leaving the legacy cache intact.
+        if let Some(value) = self.gaussian.take() {
+            return value;
+        }
+        loop {
+            let x = 2.0 * self.next_double() - 1.0;
+            let y = 2.0 * self.next_double() - 1.0;
+            let squared = x * x + y * y;
+            if squared > 0.0 && squared < 1.0 {
+                let scale = (-2.0 * squared.ln() / squared).sqrt();
+                self.gaussian = Some(y * scale);
+                return x * scale;
+            }
+        }
     }
 
     /// `WorldgenRandom.setDecorationSeed(seed, blockX, blockZ)`. Takes block coordinates (the chunk origin).

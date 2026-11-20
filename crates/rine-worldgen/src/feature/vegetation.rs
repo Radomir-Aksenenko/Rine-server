@@ -13,6 +13,7 @@ use super::state::{Fluid, Palette};
 /// Survival class of a vegetation block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Survival {
+    Always,
     /// `VegetationBlock.canSurvive`: the block below is in `supports_vegetation`.
     Vegetation,
     /// `DryVegetationBlock.mayPlaceOn`: the block below is in `supports_dry_vegetation`.
@@ -33,6 +34,7 @@ pub enum Survival {
 /// Survival class of a block name, `None` for blocks the port does not classify.
 pub fn kind_of_name(name: &str) -> Option<Survival> {
     Some(match name {
+        "minecraft:tuff" | "minecraft:sculk_catalyst" => Survival::Always,
         "minecraft:poppy" | "minecraft:dandelion" | "minecraft:short_grass" | "minecraft:fern"
         | "minecraft:allium" | "minecraft:azure_bluet" | "minecraft:blue_orchid" | "minecraft:cornflower"
         | "minecraft:lily_of_the_valley" | "minecraft:oxeye_daisy" | "minecraft:red_tulip" | "minecraft:pink_tulip"
@@ -224,6 +226,7 @@ fn survive_with(tags: &Tags, at: &dyn Fn(i32, i32, i32) -> u16, s: u16) -> bool 
     let block = tags.block_of(s);
     let below = at(0, -1, 0);
     match v.kind_of_block(block) {
+        Survival::Always => true,
         Survival::Vegetation => tags.has(below, v.tag_vegetation),
         Survival::DryVegetation => tags.has(below, v.tag_dry),
         kind @ (Survival::DoublePlant | Survival::SmallDripleaf) => {

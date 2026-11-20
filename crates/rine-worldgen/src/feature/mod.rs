@@ -18,6 +18,15 @@
 pub mod allow;
 pub mod column;
 pub mod disk;
+pub mod block_entity;
+mod monster_room;
+mod root_system;
+mod speleothem;
+mod speleothem_cluster;
+mod large_dripstone;
+mod fossil;
+mod structure_template;
+mod sculk_patch;
 pub mod heightmap;
 pub mod huge_mushroom;
 pub mod ice;
@@ -62,6 +71,14 @@ const FEATURES_JSON: &str = include_str!("../../assets/worldgen/features.json");
 const DECORATION_STEPS: usize = 11;
 
 enum Configured {
+    MonsterRoom(monster_room::MonsterRoom),
+    RootSystem(root_system::RootSystem),
+    Speleothem(speleothem::Speleothem),
+    SpeleothemCluster(speleothem_cluster::SpeleothemCluster),
+    LargeDripstone(large_dripstone::LargeDripstone),
+    Fossil(fossil::Fossil),
+    Template(structure_template::TemplateFeature),
+    SculkPatch(Box<sculk_patch::SculkPatch>),
     Unported,
     Ore(OreFeature),
     Disk(Disk),
@@ -272,6 +289,14 @@ impl<'a> Compiler<'a> {
         let tn = &self.tag_names;
         match ty {
             "minecraft:ore" => Ok(Configured::Ore(self.ore(cfg)?)),
+            "minecraft:monster_room" => Ok(Configured::MonsterRoom(monster_room::MonsterRoom::compile(&mut self.pal, tn)?)),
+            "minecraft:root_system" => Ok(Configured::RootSystem(root_system::RootSystem::compile(cfg, self)?)),
+            "minecraft:speleothem" => Ok(Configured::Speleothem(speleothem::Speleothem::compile(cfg, self)?)),
+            "minecraft:speleothem_cluster" => Ok(Configured::SpeleothemCluster(speleothem_cluster::SpeleothemCluster::compile(cfg, self)?)),
+            "minecraft:large_dripstone" => Ok(Configured::LargeDripstone(large_dripstone::LargeDripstone::compile(cfg, self)?)),
+            "minecraft:fossil" => Ok(Configured::Fossil(fossil::Fossil::compile(cfg, self)?)),
+            "minecraft:template" => Ok(Configured::Template(structure_template::TemplateFeature::compile(cfg, self)?)),
+            "minecraft:sculk_patch" => Ok(Configured::SculkPatch(Box::new(sculk_patch::SculkPatch::compile(cfg, self)?))),
             "minecraft:disk" => Ok(Configured::Disk(Disk {
                 state: state_provider::parse(&cfg["state_provider"], tn, &mut self.pal)?,
                 target: predicate::parse(&cfg["target"], tn, &mut self.pal)?,
@@ -359,6 +384,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 Ok(Configured::SimpleBlock(simple_block::SimpleBlock {
+                    catalyst: names.iter().any(|name| name == "minecraft:sculk_catalyst").then(|| self.pal.block("minecraft:sculk_catalyst")),
                     to_place: state_provider::parse(provider, tn, &mut self.pal)?,
                     schedule_tick: cfg["schedule_tick"].as_bool().unwrap_or(false),
                 }))
@@ -727,18 +753,20 @@ impl Decorator {
     /// from the centre may land in all nine chunks; the nine are updated in place. `wg` holds the
     /// terrain-end worldgen heights of the nine chunks (`wg_heights` of their protos).
     pub fn decorate(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights]) -> Result<Vec<(region::Pos, u16)>, String> {
-        Ok(self.decorate_window(o, seed, cx, cz, chunks, wg, &mut Vec::new()))
+        Ok(self.decorate_window(o, seed, cx, cz, chunks, wg, &mut Vec::new(), &mut Default::default()))
     }
 
     pub(crate) fn decorate_window(
         &self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights],
         final_heights: &mut Vec<i32>,
+        block_entities: &mut region::WindowBlockEntities,
     ) -> Vec<(region::Pos, u16)> {
         let presence = present_biomes(chunks);
         let mut region = Region::new(
             &self.tags, &self.placed_in_biome, o, self.min_y, self.height, cx, cz, chunks, wg,
             std::mem::take(final_heights),
         );
+        region.block_entities = std::mem::take(block_entities);
         if let Some(crate::random::AnyRng::Xoro(rng)) = self.level_random.as_ref().map(|factory| factory.at(cx * 16, 0, cz * 16)) {
             region.set_level_random(WorldgenRng::direct(rng));
         }
@@ -766,6 +794,7 @@ impl Decorator {
         // Only the block ids change here. The palette of the output is `palette()` (the overworld palette
         // plus the feature states); callers read the chunks with that palette, so it is not cloned per call.
         let scheduled = region.take_scheduled();
+        *block_entities = std::mem::take(&mut region.block_entities);
         *final_heights = region.take_final_heights();
         let out = region.into_blocks();
         for (dst, src) in chunks.iter_mut().zip(out) {
@@ -811,6 +840,14 @@ impl Decorator {
             Configured::Unported => false,
             Configured::Ore(f) => f.place(region, rng, pos),
             Configured::Disk(f) => f.place(region, rng, pos),
+            Configured::MonsterRoom(f) => f.place(region, rng, pos),
+            Configured::RootSystem(f) => f.place(self, region, rng, pos),
+            Configured::Speleothem(f) => f.place(region, rng, pos),
+            Configured::SpeleothemCluster(f) => f.place(region, rng, pos),
+            Configured::LargeDripstone(f) => f.place(region, rng, pos),
+            Configured::Fossil(f) => f.place(region, rng, pos),
+            Configured::Template(f) => f.place(region, rng, pos),
+            Configured::SculkPatch(f) => f.place(region, rng, pos),
             Configured::Spring(f) => f.place(region, pos),
             Configured::BlockColumn(f) => f.place(region, rng, pos),
             Configured::BlueIce(f) => f.place(region, rng, pos),

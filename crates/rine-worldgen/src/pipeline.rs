@@ -14,12 +14,15 @@
 //! its proto without the features its neighbours wrote (see `full_chunk`). A handed-over chunk leaves a
 //! final marker (in memory and, at `persist`, in the store) so its decoration never runs a second time.
 
+pub mod slot_codec;
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 
 use crate::feature::allow::generation;
 use crate::feature::heightmap::WgHeights;
-use crate::feature::region::Pos;
+use crate::feature::region::{ChunkBlockEntities, Pos, WindowBlockEntities};
+pub use crate::feature::block_entity::{BlockEntity, BlockEntityData};
 use crate::feature::Decorator;
 use crate::overworld::{ChunkBlocks, Overworld};
 
@@ -44,6 +47,7 @@ pub struct FullChunk {
     pub cz: i32,
     pub blocks: ChunkBlocks,
     pub block_ticks: Vec<(Pos, u16)>,
+    pub block_entities: Vec<BlockEntity>,
 }
 
 /// A partial chunk as written to a `SlotStore`. Block and tick states index `palette`, biomes index
@@ -60,6 +64,24 @@ pub struct SavedSlot {
     pub wg: WgHeights,
     pub heights: Vec<i32>,
     pub ticks: Vec<(Pos, u16)>,
+    pub block_entities: Vec<BlockEntity>,
+}
+
+/// Append after the tick list in a persisted partial slot. Empty lists have no suffix.
+pub fn write_block_entity_suffix(out: &mut Vec<u8>, entities: &[BlockEntity]) -> serde_json::Result<()> {
+    if !entities.is_empty() {
+        serde_json::to_writer(out, entities)?;
+    }
+    Ok(())
+}
+
+/// Read the bytes left after the tick list. Old slot data ends there.
+pub fn read_block_entity_suffix(rest: &[u8]) -> serde_json::Result<Vec<BlockEntity>> {
+    if rest.is_empty() {
+        Ok(Vec::new())
+    } else {
+        serde_json::from_slice(rest)
+    }
 }
 
 /// Durable storage of partial chunks, keyed by chunk position.
@@ -87,6 +109,7 @@ struct Slot {
     /// Requests that need this chunk in memory (spilling skips it).
     pins: u32,
     ticks: Vec<(Pos, u16)>,
+    block_entities: ChunkBlockEntities,
     /// Stand-in proto of a handed-over chunk, only read by a neighbour's decoration after a hard stop lost the
     /// frontier. Its writes are dropped (the real chunk is saved), it is never stored.
     ghost: bool,
@@ -215,7 +238,7 @@ impl Pipeline {
             let p = self.proto(cx, cz);
             let mut blocks = p.chunk;
             blocks.palette = self.decorator.palette().to_vec();
-            return Arc::new(FullChunk { cx, cz, blocks, block_ticks: Vec::new() });
+            return Arc::new(FullChunk { cx, cz, blocks, block_ticks: Vec::new(), block_entities: Vec::new() });
         }
         let area: Vec<(i32, i32)> = (-2..=2).flat_map(|dz| (-2..=2).map(move |dx| (cx + dx, cz + dz))).collect();
         self.ensure(&area);
@@ -291,7 +314,7 @@ impl Pipeline {
             }
             if claimed.is_empty() && !waiting {
                 for p in area {
-                    if let Some(s) = g.slots.get_mut(p) {
+                    if let Some(s) = g.slots.get_mut(p).filter(|s| !s.ghost) {
                         s.pins += 1;
                     }
                 }
@@ -335,6 +358,7 @@ impl Pipeline {
                 dirty: false,
                 pins: 0,
                 ticks: Vec::new(),
+                block_entities: Default::default(),
                 ghost: false,
             })
         };
@@ -379,6 +403,7 @@ impl Pipeline {
                             dirty: false,
                             pins: 0,
                             ticks: Vec::new(),
+                            block_entities: Default::default(),
                             ghost: true,
                         }
                     })
@@ -399,8 +424,10 @@ impl Pipeline {
         let mut chunks = Vec::with_capacity(9);
         let mut wg = Vec::with_capacity(9);
         let mut heights = Vec::with_capacity(9 * HEIGHT_VALUES);
-        for p in &window {
+        let mut block_entities = WindowBlockEntities::default();
+        for (j, p) in window.iter().enumerate() {
             let s = g.slots.get_mut(p).expect("pinned");
+            block_entities[j] = std::mem::take(&mut s.block_entities);
             chunks.push(ChunkBlocks {
                 min_y: self.overworld_min_y(),
                 height: self.overworld_height(),
@@ -419,14 +446,15 @@ impl Pipeline {
         drop(g);
         // `present_biomes` reads the biome list length from the first chunk.
         chunks[0].biome_palette = self.biome_names.clone();
-        let scheduled = self.decorator.decorate_window(&self.overworld, self.seed, cx, cz, &mut chunks, &wg, &mut heights);
+        let scheduled = self.decorator.decorate_window(&self.overworld, self.seed, cx, cz, &mut chunks, &wg, &mut heights, &mut block_entities);
         let mut g = self.lock();
-        for (j, (p, chunk)) in window.iter().zip(chunks).enumerate() {
+        for (j, ((p, chunk), entities)) in window.iter().zip(chunks).zip(block_entities).enumerate() {
             let s = g.slots.get_mut(p).expect("pinned");
             s.blocks = Some(chunk.blocks);
             s.biomes = chunk.biomes;
             s.heights.copy_from_slice(&heights[j * HEIGHT_VALUES..(j + 1) * HEIGHT_VALUES]);
             if !s.ghost {
+                s.block_entities = entities;
                 s.touched = true;
                 s.dirty = true;
             }
@@ -458,7 +486,7 @@ impl Pipeline {
         let mut g = self.lock();
         let slot = g.slots.remove(&(cx, cz)).expect("pinned");
         for p in area {
-            if let Some(s) = g.slots.get_mut(p) {
+            if let Some(s) = g.slots.get_mut(p).filter(|s| !s.ghost) {
                 s.pins -= 1;
             }
         }
@@ -478,6 +506,7 @@ impl Pipeline {
                 biomes: slot.biomes,
             },
             block_ticks: slot.ticks,
+            block_entities: slot.block_entities.into_values().collect(),
         }
     }
 
@@ -607,6 +636,7 @@ impl Pipeline {
             wg: s.wg.clone(),
             heights: s.heights.clone(),
             ticks: s.ticks.clone(),
+            block_entities: s.block_entities.values().cloned().collect(),
         }
     }
 
@@ -631,6 +661,7 @@ impl Pipeline {
             dirty: false,
             pins: 0,
             ticks: saved.ticks.iter().map(|&(p, v)| (p, map(v, &remap))).collect(),
+            block_entities: saved.block_entities.iter().map(|entity| (entity.pos, entity.clone())).collect(),
             ghost: false,
         }
     }
@@ -647,6 +678,7 @@ fn final_marker() -> SavedSlot {
         wg: [Vec::new(), Vec::new()],
         heights: Vec::new(),
         ticks: Vec::new(),
+        block_entities: Vec::new(),
     }
 }
 
@@ -682,6 +714,49 @@ mod tests {
     }
 
     const REQUESTS: [(i32, i32); 6] = [(0, 0), (1, 0), (0, 1), (3, 0), (1, 1), (2, 2)];
+
+    #[test]
+    fn block_entity_suffix_reads_legacy_slots_and_preserves_signed_loot_seed() {
+        let entity = BlockEntity {
+            pos: (-1, 64, 16),
+            type_id: "minecraft:chest".into(),
+            data: BlockEntityData::Loot { table: "minecraft:chests/simple_dungeon".into(), seed: i64::MIN + 1 },
+        };
+        let mut bytes = vec![0, 1];
+        let start = bytes.len();
+        write_block_entity_suffix(&mut bytes, std::slice::from_ref(&entity)).unwrap();
+        assert_eq!(read_block_entity_suffix(&bytes[start..]).unwrap(), [entity]);
+        assert!(read_block_entity_suffix(&[]).unwrap().is_empty());
+        assert!(read_block_entity_suffix(&bytes[start..bytes.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn slot_block_entities_survive_restart_and_reach_full_chunk() {
+        let make = || Pipeline::with_features(Arc::new(Overworld::new(8)), &|id| id == "minecraft:monster_room").unwrap();
+        let store = MemStore::default();
+        let pos = (16, 300, 0);
+        let p = make().with_store(Box::new(store.clone()));
+        p.ensure(&[(1, 0)]);
+        let chest = p.palette().iter().position(|s| s.starts_with("minecraft:chest[facing=north")).unwrap() as u16;
+        let entity = BlockEntity {
+            pos,
+            type_id: "minecraft:chest".into(),
+            data: BlockEntityData::Loot { table: "minecraft:chests/simple_dungeon".into(), seed: -199 },
+        };
+        {
+            let mut g = p.lock();
+            let slot = g.slots.get_mut(&(1, 0)).unwrap();
+            slot.blocks.as_mut().unwrap()[((pos.1 - p.overworld_min_y()) * 256) as usize] = chest;
+            slot.block_entities.insert(pos, entity.clone());
+            slot.touched = true;
+            slot.dirty = true;
+            slot.pins -= 1;
+        }
+        p.persist();
+        drop(p);
+        let resumed = make().with_store(Box::new(store));
+        assert!(resumed.full_chunk(1, 0).block_entities.contains(&entity));
+    }
 
     /// Each chunk is decorated exactly once, and a final has all nine neighbours decorated.
     #[test]
@@ -734,7 +809,7 @@ mod tests {
                     let mut chunks: Vec<ChunkBlocks> = win.iter().map(|q| world[q].0.clone()).collect();
                     let wg: Vec<WgHeights> = win.iter().map(|q| world[q].1.clone()).collect();
                     let mut heights: Vec<i32> = win.iter().flat_map(|q| world[q].2.clone()).collect();
-                    let ticks = r.decorator.decorate_window(&r.overworld, r.seed, nx, nz, &mut chunks, &wg, &mut heights);
+                    let ticks = r.decorator.decorate_window(&r.overworld, r.seed, nx, nz, &mut chunks, &wg, &mut heights, &mut Default::default());
                     for (j, q) in win.iter().enumerate() {
                         let e = world.get_mut(q).unwrap();
                         e.0.blocks = std::mem::take(&mut chunks[j].blocks);
