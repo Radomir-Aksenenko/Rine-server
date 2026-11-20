@@ -153,15 +153,23 @@ impl World {
         let saving = self.saving.clone();
         spawn_background(move || {
             let in_flight = saving.lock().get(&pos).map(|c| Chunk::clone(c));
+            // `dirty` means "differs from disk": a loaded chunk, one whose queued write is
+            // still running, and a freshly saved generated chunk are all clean. Otherwise
+            // every save rewrote every loaded chunk.
             let (mut chunk, block_ticks) = match in_flight.or_else(|| store.load(pos)) {
-                Some(c) => (c, Vec::new()),
+                Some(mut c) => {
+                    c.dirty = false;
+                    (c, Vec::new())
+                }
                 None => {
                     let (mut c, block_ticks) = gen.generate_with_ticks(pos);
                     rine_world::light::light_chunk(&mut c);
-                    // Vanilla decoration depends on request order: the chunk is saved here, off the tick,
-                    // and never regenerated.
+                    // Saved here, off the tick. Vanilla decoration depends on request order,
+                    // so such a chunk is never regenerated; the legacy generator's chunk
+                    // would be written at its first save or unload anyway.
+                    store.save(&c);
+                    c.dirty = false;
                     if gen.saves_generated() {
-                        store.save(&c);
                         gen.chunk_saved(pos);
                     }
                     (c, block_ticks)
@@ -326,6 +334,9 @@ impl World {
                 s.sky = sky;
                 s.block_light = bl;
             }
+            // light is stored with the chunk; a save between the block change and this
+            // result must not leave the old light on disk
+            slot.chunk.dirty = true;
             slot.frame = None;
             if !slot.viewers.is_empty() {
                 let mut b = BytesMut::new();
@@ -366,20 +377,32 @@ impl World {
             if let Some(mut s) = self.chunks.remove(&p) {
                 self.redstone.chunk_unloaded(p.x, p.z, &mut s.chunk);
                 if s.chunk.dirty {
-                    let store = self.store.clone();
-                    let chunk: Arc<Chunk> = Arc::from(s.chunk);
-                    let saving = self.saving.clone();
-                    saving.lock().insert(p, Arc::clone(&chunk));
-                    spawn_background(move || {
-                        store.save(&chunk);
-                        let mut g = saving.lock();
-                        if g.get(&chunk.pos).is_some_and(|c| Arc::ptr_eq(c, &chunk)) {
-                            g.remove(&chunk.pos);
-                        }
-                    });
+                    self.queue_save(Arc::from(s.chunk));
                 }
             }
         }
+    }
+
+    /// Write `chunk` on the background pool. `saving` holds the newest snapshot per
+    /// position, and an entry exists exactly while one writer for it runs: a newer
+    /// snapshot replaces the entry and that writer writes again, so two writes of one
+    /// chunk never overlap and the last one always lands.
+    fn queue_save(&self, chunk: Arc<Chunk>) {
+        let pos = chunk.pos;
+        if self.saving.lock().insert(pos, chunk).is_some() {
+            return;
+        }
+        let store = self.store.clone();
+        let saving = self.saving.clone();
+        spawn_background(move || loop {
+            let Some(c) = saving.lock().get(&pos).cloned() else { return };
+            store.save(&c);
+            let mut g = saving.lock();
+            if g.get(&pos).is_some_and(|n| Arc::ptr_eq(n, &c)) {
+                g.remove(&pos);
+                return;
+            }
+        });
     }
 
     /// Saves the changed chunks, then writes the decoration frontier in the background.
@@ -407,19 +430,25 @@ impl World {
         while !saving.lock().is_empty() {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+        self.store.flush();
     }
 
+    /// Queue every changed chunk for a background write. The game thread only takes
+    /// a snapshot of each (vanilla serializes the chunk on its main thread too and
+    /// leaves the disk to its IO worker); `save-all` used to write them all here and
+    /// stalled the tick for seconds after a burst of new chunks.
     fn save_chunks(&mut self) {
-        use rayon::prelude::*;
         super::blockinv::flush_all(self);
-        let store = self.store.clone();
-        self.chunks.par_iter_mut().for_each(|(_, s)| {
+        let mut snaps = Vec::new();
+        for s in self.chunks.values_mut() {
             if s.chunk.dirty {
-                store.save(&s.chunk);
                 s.chunk.dirty = false;
+                snaps.push(Arc::new(Chunk::clone(&s.chunk)));
             }
-        });
-        self.store.flush();
+        }
+        for c in snaps {
+            self.queue_save(c);
+        }
     }
 }
 
@@ -430,4 +459,68 @@ fn b_light_update(b: &mut BytesMut, c: &Chunk) {
     b.w_varint(c.pos.x);
     b.w_varint(c.pos.z);
     rine_world::encode::write_light(c, b);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load(w: &mut World, pos: ChunkPos) {
+        w.request(pos);
+        while !w.chunks.contains_key(&pos) {
+            w.collect_loaded(0);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// A chunk equal to what is on disk is clean, so a save writes only edited chunks
+    /// (`save-all` used to rewrite every loaded chunk on the game thread).
+    #[test]
+    fn only_edited_chunks_are_saved() {
+        rine_data::init();
+        let dir = std::env::temp_dir().join(format!("rine-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let dir_s = dir.to_string_lossy().into_owned();
+        let stone = rine_data::get().blocks.parse_state("minecraft:stone").expect("stone");
+        let (a, b) = (ChunkPos::new(40, 40), ChunkPos::new(41, 40));
+        let p = BlockPos::new(a.x * 16 + 3, 250, a.z * 16 + 5);
+        {
+            let mut w = World::new(1, &dir_s, false);
+            load(&mut w, a);
+            load(&mut w, b);
+            // generated chunks are written by the worker and come back clean
+            assert!(!w.chunks[&a].chunk.dirty && !w.chunks[&b].chunk.dirty);
+            assert!(w.store.load(b).is_some());
+            w.set_block(p, stone);
+            assert!(w.chunks[&a].chunk.dirty && !w.chunks[&b].chunk.dirty);
+            w.save_all();
+            assert!(!w.chunks[&a].chunk.dirty);
+            w.save_all_blocking();
+        }
+        let mut w = World::new(1, &dir_s, false);
+        load(&mut w, a);
+        assert!(!w.chunks[&a].chunk.dirty, "a loaded chunk is clean");
+        assert_eq!(w.get_block(p.x, p.y, p.z), stone, "the edit reached the disk");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Snapshots queued while a write runs end with the newest one on disk.
+    #[test]
+    fn newest_queued_snapshot_lands() {
+        rine_data::init();
+        let dir = std::env::temp_dir().join(format!("rine-saveq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let w = World::new(1, &dir.to_string_lossy(), false);
+        let pos = ChunkPos::new(-7, 3);
+        for i in 1..=50u16 {
+            let mut c = Chunk::new(pos);
+            c.set(0, 0, 0, i);
+            w.queue_save(Arc::new(c));
+        }
+        while !w.saving.lock().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(w.store.load(pos).expect("saved").get(0, 0, 0), 50);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -357,7 +357,14 @@ impl Game {
                 return;
             }
             match self.wake_rx.recv_timeout(deadline - now) {
-                Ok(()) => self.pump(),
+                Ok(()) => {
+                    let t = Instant::now();
+                    self.pump();
+                    let ms = t.elapsed().as_secs_f64() * 1000.0;
+                    if ms > 10.0 && std::env::var_os("RINE_PROFILE").is_some() {
+                        eprintln!("PROFILE pump tick {} took {ms:.1}", self.tick);
+                    }
+                }
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => return,
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     std::thread::sleep(deadline.saturating_duration_since(Instant::now()));

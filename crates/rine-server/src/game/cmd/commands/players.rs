@@ -812,7 +812,8 @@ fn stop(x: &mut Ctx) -> CmdResult<i32> {
 
 fn save_all(x: &mut Ctx, flush: bool) -> CmdResult<i32> {
     x.success(Text::key("commands.save.saving"), false);
-    playerdata::save_all(x.g, true);
+    // background writes; `flush` waits for them below
+    playerdata::save_all(x.g, false);
     if flush {
         x.g.world.save_all_blocking();
         playerdata::flush();
