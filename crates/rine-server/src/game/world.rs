@@ -107,7 +107,7 @@ impl World {
             pending: AHashSet::new(),
             tx,
             rx,
-            generator: Arc::new(Generator::with_options(seed, vanilla_vegetation)),
+            generator: Arc::new(Generator::for_world(seed, vanilla_vegetation, dir)),
             store: Arc::new(RegionStore::open(dir)),
             changes: AHashMap::new(),
             touched: Vec::new(),
@@ -143,10 +143,11 @@ impl World {
                 None => {
                     let (mut c, block_ticks) = gen.generate_with_ticks(pos);
                     rine_world::light::light_chunk(&mut c);
+                    // Vanilla decoration depends on request order: the chunk is saved, never regenerated.
+                    c.dirty |= gen.saves_generated();
                     (c, block_ticks)
                 }
             };
-            chunk.dirty = chunk.dirty || false;
             let rs_scan = super::redstone::load_scan(&chunk);
             let mut b = BytesMut::with_capacity(16 * 1024);
             rine_world::encode::encode_chunk_packet(&chunk, &mut b);
@@ -365,6 +366,8 @@ impl World {
             }
         });
         self.store.flush();
+        // After the chunks: the frontier and the chunks it was decorated against land at one save point.
+        self.generator.persist();
     }
 }
 

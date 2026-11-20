@@ -9,6 +9,7 @@ mod decor;
 mod grid;
 mod noise;
 mod ores;
+mod slots;
 mod terrain;
 mod trees;
 
@@ -87,6 +88,15 @@ impl Generator {
     /// grass, flowers and moss). Changes newly generated chunks and is about 3x slower
     /// per chunk, so it is off unless the owner turns it on (`rine.toml`).
     pub fn with_options(seed: i64, vanilla_vegetation: bool) -> Self {
+        Self::build(seed, vanilla_vegetation, None)
+    }
+
+    /// As `with_options`, keeping the vanilla decoration frontier under `<world_dir>/worldgen`.
+    pub fn for_world(seed: i64, vanilla_vegetation: bool, world_dir: &str) -> Self {
+        Self::build(seed, vanilla_vegetation, Some(world_dir))
+    }
+
+    fn build(seed: i64, vanilla_vegetation: bool, world_dir: Option<&str>) -> Self {
         let data = rine_data::init();
         let b = &data.blocks;
         let reg = data.registries.synced("minecraft:worldgen/biome");
@@ -145,7 +155,10 @@ impl Generator {
             None
         } else {
             match rine_worldgen::pipeline::Pipeline::with_features(Arc::clone(&vanilla), &rine_worldgen::feature::allow::live_generation) {
-                Ok(pipeline) => Some(pipeline),
+                Ok(pipeline) => Some(match world_dir {
+                    Some(dir) => pipeline.with_store(Box::new(slots::DiskSlots::open(dir))),
+                    None => pipeline,
+                }),
                 Err(error) => {
                     eprintln!("failed to compile vegetation decoration: {error}");
                     None
@@ -173,6 +186,19 @@ impl Generator {
             biome_vanilla,
             biome_precip,
             pale_garden: reg.id("minecraft:pale_garden").and_then(|id| u8::try_from(id).ok()),
+        }
+    }
+
+    /// Generated chunks depend on the order they were requested in (vanilla decoration): the caller must
+    /// save every generated chunk, since asking again does not rebuild the same chunk.
+    pub fn saves_generated(&self) -> bool {
+        self.vegetation.is_some()
+    }
+
+    /// Writes the decoration frontier. Call after the generated chunks are saved, at every world save.
+    pub fn persist(&self) {
+        if let Some(p) = &self.vegetation {
+            p.persist();
         }
     }
 
@@ -425,8 +451,13 @@ mod tests {
 
     #[test]
     fn timing_64_chunks() {
+        timing(false);
+        timing(true);
+    }
+
+    fn timing(vanilla: bool) {
         rine_data::init();
-        let g = Generator::new(2024);
+        let g = Generator::with_options(2024, vanilla);
         let _ = g.generate(ChunkPos::new(100, 100)); // warm-up
         let n = 64;
         let start = Instant::now();
@@ -444,6 +475,6 @@ mod tests {
             }
         }
         let ms = start.elapsed().as_secs_f64() * 1000.0 / n as f64;
-        println!("gen: {ms:.3} ms/chunk over {n} chunks (underground air cells in y -50..40: {underground_air})");
+        println!("gen (vanilla_vegetation={vanilla}): {ms:.3} ms/chunk over {n} chunks (underground air cells in y -50..40: {underground_air})");
     }
 }
