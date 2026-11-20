@@ -247,6 +247,38 @@ pub struct Tree {
 }
 
 impl Tree {
+    /// Whether node `id` gives the same value at every y of a column (no Y gradient, every noise sampled
+    /// with a zero y scale, no interpolation or surface search). Conservative: `false` when unsure.
+    pub fn y_free(&self, id: u32) -> bool {
+        fn walk(t: &Tree, id: u32, memo: &mut Vec<Option<bool>>) -> bool {
+            if let Some(v) = memo[id as usize] {
+                return v;
+            }
+            let mut all = |ids: &[u32], memo: &mut Vec<Option<bool>>| ids.iter().all(|&c| walk(t, c, memo));
+            let v = match &t.nodes[id as usize] {
+                Node::Const(_) | Node::Opaque(_) => true,
+                Node::Passthrough(a) | Node::AddC(a, _) | Node::SubC(_, a) | Node::MulC(a, _) | Node::DivC(_, a) => all(&[*a], memo),
+                Node::MinC(a, _) | Node::MaxC(a, _) | Node::Unary(_, a) | Node::Clamp(a, _, _) => all(&[*a], memo),
+                Node::Add(a, b) | Node::Sub(a, b) | Node::Mul(a, b) | Node::Div(a, b) => all(&[*a, *b], memo),
+                Node::Min(a, b, _) | Node::Max(a, b, _) => all(&[*a, *b], memo),
+                Node::Lerp(a, b, c) => all(&[*a, *b, *c], memo),
+                Node::RangeChoice { input, in_range, out_range, .. } => all(&[*input, *in_range, *out_range], memo),
+                Node::IntervalSelect { input, children, .. } => all(&[*input], memo) && all(children, memo),
+                Node::Spline { coords, .. } => all(coords, memo),
+                Node::NoiseSample { y, .. } => *y == 0.0,
+                Node::ShiftedXz { shift_x, shift_z, y, .. } => *y == 0.0 && all(&[*shift_x, *shift_z], memo),
+                Node::ShiftedXyz { .. } => false,
+                Node::ShiftB { .. } => true,
+                Node::Gradient { axis, .. } => *axis != Axis::Y,
+                Node::Interpolated(_) | Node::FindTopSurface { .. } => false,
+                Node::Cache { input, .. } => all(&[*input], memo),
+            };
+            memo[id as usize] = Some(v);
+            v
+        }
+        walk(self, id, &mut vec![None; self.nodes.len()])
+    }
+
     /// `sampleValue` at one block position.
     pub fn value(&self, id: u32, ctx: &mut Ctx, x: i32, y: i32, z: i32) -> f32 {
         match &self.nodes[id as usize] {

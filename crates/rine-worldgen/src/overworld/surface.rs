@@ -2,6 +2,7 @@
 //! tree per solid block with the `MaterialRuleContext` state, and runs the eroded-badlands and
 //! frozen-ocean extensions. Heights follow the WORLD_SURFACE_WG heightmap, updated by every placed block.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use crate::density::volume::Vol;
@@ -55,6 +56,10 @@ struct Eval<'a, 'b> {
     stone_above: i32,
     stone_below: i32,
     water_height: i32,
+    /// `MaterialRuleContext` memoizes the biome per block (`biome` supplier reset by `updateY`) and the
+    /// column values per `updateXZ`; the rule tree asks for them many times per block.
+    biome_memo: Cell<(i32, i32, i32, u16)>,
+    noise2d_memo: RefCell<Vec<(usize, i32, i32, f64)>>,
 }
 
 impl<'a, 'b> Eval<'a, 'b> {
@@ -89,6 +94,31 @@ impl<'a, 'b> Eval<'a, 'b> {
 
     fn noise(&self, idx: usize, x: f64, y: f64, z: f64) -> f64 {
         self.o.tree().noises[idx].get_value(x, y, z) as f64
+    }
+
+    /// A 2D noise (y = 0) at a column, memoized for the current column.
+    fn noise2d(&self, idx: usize, bx: i32, bz: i32) -> f64 {
+        let mut memo = self.noise2d_memo.borrow_mut();
+        if let Some(&(_, _, _, v)) = memo.iter().find(|m| m.0 == idx && m.1 == bx && m.2 == bz) {
+            return v;
+        }
+        let v = self.noise(idx, bx as f64, 0.0, bz as f64);
+        if memo.first().is_some_and(|m| m.1 != bx || m.2 != bz) {
+            memo.clear();
+        }
+        memo.push((idx, bx, bz, v));
+        v
+    }
+
+    /// `BiomeManager.getBiome` at a block, memoized for the last block asked.
+    fn biome(&self, bx: i32, by: i32, bz: i32) -> u16 {
+        let (mx, my, mz, b) = self.biome_memo.get();
+        if (mx, my, mz) == (bx, by, bz) {
+            return b;
+        }
+        let b = self.biomes.fiddled(bx, by, bz);
+        self.biome_memo.set((bx, by, bz, b));
+        b
     }
 
     fn surface_depth_at(&self, bx: i32, bz: i32) -> i32 {
@@ -133,19 +163,19 @@ impl<'a, 'b> Eval<'a, 'b> {
     }
 
     fn surface_secondary(&self, bx: i32, bz: i32) -> f64 {
-        self.noise(self.o.noises.surface_secondary, bx as f64, 0.0, bz as f64)
+        self.noise2d(self.o.noises.surface_secondary, bx, bz)
     }
 
     /// `MaterialSystem.getBand`.
     fn band(&self, bx: i32, by: i32, bz: i32) -> Blk {
-        let offset = java_round(self.noise(self.o.noises.clay_bands_offset, bx as f64, 0.0, bz as f64) as f32 * 4.0f32);
+        let offset = java_round(self.noise2d(self.o.noises.clay_bands_offset, bx, bz) as f32 * 4.0f32);
         let len = 192;
         let i = (by + offset + len).rem_euclid(len);
         self.o.bands()[i as usize]
     }
 
     fn warm(&self, bx: i32, by: i32, bz: i32) -> bool {
-        let biome = self.biomes.fiddled(bx, by, bz);
+        let biome = self.biome(bx, by, bz);
         self.o
             .biome_source()
             .warm_enough_to_rain(biome, bx, by, bz, self.o.sea_level())
@@ -196,12 +226,11 @@ impl<'a, 'b> Eval<'a, 'b> {
         let o = self.o;
         match &o.conds[c as usize] {
             Cond::Biome(list) => {
-                let biome = self.biomes.fiddled(bx, by, bz);
+                let biome = self.biome(bx, by, bz);
                 list.contains(&biome)
             }
             Cond::NoiseThreshold { noise, min, max, is_3d } => {
-                let y = if *is_3d { by as f64 } else { 0.0 };
-                let value = self.noise(*noise, bx as f64, y, bz as f64);
+                let value = if *is_3d { self.noise(*noise, bx as f64, by as f64, bz as f64) } else { self.noise2d(*noise, bx, bz) };
                 value >= *min && value <= *max
             }
             Cond::VerticalGradient { rng, true_at, false_at } => {
@@ -426,6 +455,8 @@ pub(crate) fn build<'a>(
         stone_above: 0,
         stone_below: 0,
         water_height: i32::MIN,
+        biome_memo: Cell::new((i32::MIN, i32::MIN, i32::MIN, 0)),
+        noise2d_memo: RefCell::new(Vec::new()),
     };
     let root = o.root_rule;
     let frozen = [biome_id(o, "minecraft:frozen_ocean"), biome_id(o, "minecraft:deep_frozen_ocean")];
@@ -535,6 +566,8 @@ pub(crate) fn top_material<'a>(
         stone_above: 0,
         stone_below: 0,
         water_height: i32::MIN,
+        biome_memo: Cell::new((i32::MIN, i32::MIN, i32::MIN, 0)),
+        noise2d_memo: RefCell::new(Vec::new()),
     };
     let lx = bx - cx * 16;
     let lz = bz - cz * 16;

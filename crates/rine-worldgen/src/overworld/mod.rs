@@ -16,7 +16,8 @@ mod surface;
 
 pub(crate) use surface::top_material;
 
-use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 
@@ -117,7 +118,16 @@ pub struct Overworld {
     bands: [Blk; 192],
     interner: Interner,
     ids: Ids,
+    /// Stored chunk biomes by chunk position. A chunk's biomes are a pure function of the seed, so the
+    /// 3x3 neighbourhoods of the surface step and the decoration share them instead of recomputing the
+    /// climate of nine chunks per chunk. FIFO-evicted.
+    biome_grids: Mutex<(HashMap<(i32, i32), Arc<[u16]>>, VecDeque<(i32, i32)>)>,
+    /// `Tree::y_free` of the six climate roots, in `compute_grid` order.
+    climate_y_free: [bool; 6],
 }
+
+/// Chunk biome grids kept in memory (3 KiB each).
+const BIOME_GRIDS: usize = 4096;
 
 fn load_json(rel: &str) -> Value {
     serde_json::from_str(bundled(rel).expect("bundled json")).expect("valid bundled json")
@@ -127,83 +137,96 @@ fn clamp_qy(qy: i32, min_qy: i32, count: i32) -> i32 {
     qy.clamp(min_qy, min_qy + count - 1)
 }
 
-/// Stored chunk biomes for one 4x96x4 quart block, computed from its climate volume.
-struct ClimateGrid {
-    vol: Vol,
-    targets: Vec<climate::Target>,
-    biomes: RefCell<Vec<u16>>,
+/// Index of chunk-local quart `(lx, ly, lz)` in a stored biome grid (`Vol::index` of the climate volume).
+#[inline]
+fn grid_index(qy_count: i32, lx: i32, ly: i32, lz: i32) -> usize {
+    (ly + (lx + lz * QUARTS) * qy_count) as usize
 }
-
-const UNKNOWN: u16 = u16::MAX;
 
 /// The 3x3 chunk neighbourhood used by the surface step (`WorldGenRegion.getNoiseBiome`).
 pub(crate) struct BiomeMap<'a> {
     o: &'a Overworld,
     cx: i32,
     cz: i32,
-    grids: Vec<ClimateGrid>,
+    grids: [Arc<[u16]>; 9],
 }
 
-impl ClimateGrid {
-    fn new(o: &Overworld, gx: i32, gz: i32) -> Self {
-        let qy_count = o.height / 4;
-        let vol = Vol::with_step(QUARTS, qy_count, QUARTS, gx * 16, o.min_y, gz * 16, 4, 4, 4);
-        let mut ctx = Samplers {
-            tree: &o.tree,
-            ctx: Ctx::cached(o.tree.cache_count),
-        };
-        let size = vol.size();
-        let mut fields = [vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size]];
-        let roots = [
-            o.router.temperature,
-            o.router.vegetation,
-            o.router.continents,
-            o.router.erosion,
-            o.router.depth,
-            o.router.ridges,
-        ];
-        for (root, buf) in roots.iter().zip(fields.iter_mut()) {
-            ctx.volume(*root, &vol, buf);
+impl Overworld {
+    /// Stored biomes of chunk `(gx, gz)`, indexed by `grid_index`: `noise_biome` of every quart of its climate
+    /// volume. Cached; two threads may compute the same grid, the result is the same.
+    pub(crate) fn chunk_biomes(&self, gx: i32, gz: i32) -> Arc<[u16]> {
+        if let Some(g) = self.biome_grids.lock().unwrap_or_else(|e| e.into_inner()).0.get(&(gx, gz)) {
+            return Arc::clone(g);
         }
-        let mut targets = Vec::with_capacity(size);
-        for i in 0..size {
-            targets.push(Biomes::target(
-                fields[0][i],
-                fields[1][i],
-                fields[2][i],
-                fields[3][i],
-                fields[4][i],
-                fields[5][i],
-            ));
+        let grid = compute_grid(self, gx, gz);
+        let mut c = self.biome_grids.lock().unwrap_or_else(|e| e.into_inner());
+        let (map, order) = &mut *c;
+        if let Some(g) = map.get(&(gx, gz)) {
+            return Arc::clone(g);
         }
-        ClimateGrid {
-            vol,
-            biomes: RefCell::new(vec![UNKNOWN; size]),
-            targets,
+        while map.len() >= BIOME_GRIDS {
+            match order.pop_front() {
+                Some(old) => {
+                    map.remove(&old);
+                }
+                None => break,
+            }
         }
+        order.push_back((gx, gz));
+        map.insert((gx, gz), Arc::clone(&grid));
+        grid
     }
+}
 
-    /// Biome index at chunk-local quart `(lx, ly, lz)` (ly relative to the grid bottom).
-    fn at(&self, o: &Overworld, lx: i32, ly: i32, lz: i32) -> u16 {
-        let i = self.vol.index(lx, ly, lz);
-        let cached = self.biomes.borrow()[i];
-        if cached != UNKNOWN {
-            return cached;
+/// The climate volume of one chunk (4x96x4 quarts) and the biome of every quart.
+fn compute_grid(o: &Overworld, gx: i32, gz: i32) -> Arc<[u16]> {
+    let qy_count = o.height / 4;
+    let vol = Vol::with_step(QUARTS, qy_count, QUARTS, gx * 16, o.min_y, gz * 16, 4, 4, 4);
+    let mut ctx = Samplers {
+        tree: &o.tree,
+        ctx: Ctx::cached(o.tree.cache_count),
+    };
+    let size = vol.size();
+    let mut fields = [vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size], vec![0f32; size]];
+    let roots = [
+        o.router.temperature,
+        o.router.vegetation,
+        o.router.continents,
+        o.router.erosion,
+        o.router.depth,
+        o.router.ridges,
+    ];
+    // Climate fields that do not vary with y (all but depth) are sampled on one quart layer and copied
+    // up the column: same values, 1/96 of the noise work.
+    let flat = Vol::with_step(QUARTS, 1, QUARTS, gx * 16, o.min_y, gz * 16, 4, 4, 4);
+    let mut layer = vec![0f32; flat.size()];
+    for ((root, buf), &y_free) in roots.iter().zip(fields.iter_mut()).zip(&o.climate_y_free) {
+        if !y_free {
+            ctx.volume(*root, &vol, buf);
+            continue;
         }
-        let b = o.biomes.noise_biome(&self.targets[i]);
-        self.biomes.borrow_mut()[i] = b;
-        b
+        ctx.volume(*root, &flat, &mut layer);
+        for lz in 0..QUARTS {
+            for lx in 0..QUARTS {
+                let v = layer[flat.index(lx, 0, lz)];
+                for ly in 0..qy_count {
+                    buf[vol.index(lx, ly, lz)] = v;
+                }
+            }
+        }
     }
+    debug_assert_eq!(vol.index(1, 2, 3), grid_index(qy_count, 1, 2, 3));
+    (0..size)
+        .map(|i| {
+            let target = Biomes::target(fields[0][i], fields[1][i], fields[2][i], fields[3][i], fields[4][i], fields[5][i]);
+            o.biomes.noise_biome(&target)
+        })
+        .collect()
 }
 
 impl<'a> BiomeMap<'a> {
     pub(crate) fn new(o: &'a Overworld, cx: i32, cz: i32) -> Self {
-        let mut grids = Vec::with_capacity(9);
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                grids.push(ClimateGrid::new(o, cx + dx, cz + dz));
-            }
-        }
+        let grids = std::array::from_fn(|i| o.chunk_biomes(cx + (i % 3) as i32 - 1, cz + (i / 3) as i32 - 1));
         BiomeMap { o, cx, cz, grids }
     }
 
@@ -216,7 +239,7 @@ impl<'a> BiomeMap<'a> {
         let (dx, dz) = (gx - self.cx, gz - self.cz);
         assert!((-1..=1).contains(&dx) && (-1..=1).contains(&dz), "quart outside the 3x3 chunk region");
         let grid = &self.grids[((dz + 1) * 3 + (dx + 1)) as usize];
-        grid.at(self.o, qx - gx * 4, qy - min_qy, qz - gz * 4)
+        grid[grid_index(self.o.height / 4, qx - gx * 4, qy - min_qy, qz - gz * 4)]
     }
 
     /// `BiomeManager.getBiome(x, y, z)` over this region.
@@ -357,9 +380,13 @@ impl Overworld {
         };
         let aquifer_rng = root_random.from_hash_of("minecraft:aquifer").fork_positional();
 
+        let tree = builder.into_tree();
+        let climate_y_free = [router.temperature, router.vegetation, router.continents, router.erosion, router.depth, router.ridges]
+            .map(|r| tree.y_free(r));
         Overworld {
             seed,
-            tree: builder.into_tree(),
+            tree,
+            climate_y_free,
             min_y,
             height,
             sea_level,
@@ -376,6 +403,7 @@ impl Overworld {
             bands,
             interner,
             ids,
+            biome_grids: Mutex::new((HashMap::new(), VecDeque::new())),
         }
     }
 
@@ -414,10 +442,10 @@ impl Overworld {
     pub fn biome_at(&self, qx: i32, qy: i32, qz: i32) -> &str {
         let cx = qx.div_euclid(4);
         let cz = qz.div_euclid(4);
-        let grid = ClimateGrid::new(self, cx, cz);
+        let grid = self.chunk_biomes(cx, cz);
         let min_qy = self.min_y >> 2;
         let qy = clamp_qy(qy, min_qy, self.height / 4);
-        let b = grid.at(self, qx - cx * 4, qy - min_qy, qz - cz * 4);
+        let b = grid[grid_index(self.height / 4, qx - cx * 4, qy - min_qy, qz - cz * 4)];
         &self.biomes.names[b as usize]
     }
 
@@ -530,7 +558,7 @@ impl Overworld {
         for qy in 0..qy_count {
             for qz in 0..4 {
                 for qx in 0..4 {
-                    let b = own.at(self, qx, qy, qz);
+                    let b = own[grid_index(qy_count, qx, qy, qz)];
                     biomes[((qy * 4 + qz) * 4 + qx) as usize] = b;
                 }
             }
@@ -547,3 +575,11 @@ impl Overworld {
     }
 }
 
+#[cfg(test)]
+mod y_free_test {
+    #[test]
+    fn climate_fields_except_depth_are_flat() {
+        let o = super::Overworld::new(1);
+        assert_eq!(o.climate_y_free, [true, true, true, true, false, true]);
+    }
+}
