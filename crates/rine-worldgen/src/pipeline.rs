@@ -234,13 +234,13 @@ impl Pipeline {
             return Arc::new(FullChunk { cx, cz, blocks, block_ticks: Vec::new() });
         }
         let area: Vec<(i32, i32)> = (-2..=2).flat_map(|dz| (-2..=2).map(move |dx| (cx + dx, cz + dz))).collect();
-        self.ensure(&area);
+        let pinned = self.ensure(&area);
         for dz in -1..=1 {
             for dx in -1..=1 {
                 self.decorate_once(cx + dx, cz + dz);
             }
         }
-        let chunk = Arc::new(self.take(cx, cz, &area));
+        let chunk = Arc::new(self.take(cx, cz, &pinned));
         let mut f = self.finals.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(existing) = f.0.get(&(cx, cz)) {
             return Arc::clone(existing);
@@ -281,9 +281,9 @@ impl Pipeline {
         }
     }
 
-    /// Makes every position of `area` resident and pins it. Builds missing chunks outside the lock; a chunk
+    /// Makes every position of `area` resident and pins the slots it holds (returned). Builds missing chunks outside the lock; a chunk
     /// another thread is building is waited for, so parallel requests share the work.
-    fn ensure(&self, area: &[(i32, i32)]) {
+    fn ensure(&self, area: &[(i32, i32)]) -> Vec<(i32, i32)> {
         let mut g = self.lock();
         loop {
             let mut claimed = Vec::new();
@@ -306,12 +306,14 @@ impl Pipeline {
                 }
             }
             if claimed.is_empty() && !waiting {
+                let mut pinned = Vec::with_capacity(area.len());
                 for p in area {
                     if let Some(s) = g.slots.get_mut(p) {
                         s.pins += 1;
+                        pinned.push(*p);
                     }
                 }
-                return;
+                return pinned;
             }
             if claimed.is_empty() {
                 g = self.changed.wait(g).unwrap_or_else(|e| e.into_inner());
@@ -469,11 +471,12 @@ impl Pipeline {
         self.overworld.height()
     }
 
-    /// Removes the final chunk from the scheduler, unpins the rest of `area` and spills if over capacity.
-    fn take(&self, cx: i32, cz: i32, area: &[(i32, i32)]) -> FullChunk {
+    /// Removes the final chunk from the scheduler, unpins the positions `ensure` pinned (`pinned`; stand-ins
+    /// that decoration created afterwards were never pinned by it) and spills if over capacity.
+    fn take(&self, cx: i32, cz: i32, pinned: &[(i32, i32)]) -> FullChunk {
         let mut g = self.lock();
         let slot = g.slots.remove(&(cx, cz)).expect("pinned");
-        for p in area {
+        for p in pinned {
             if let Some(s) = g.slots.get_mut(p) {
                 s.pins -= 1;
             }
