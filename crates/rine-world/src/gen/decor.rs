@@ -93,7 +93,7 @@ fn water_next(corners: &Corners, seed: u64, x: i32, z: i32) -> bool {
 
 /// Ground cover on the vanilla terrain: same rules as `place`, but checks the
 /// actual ground block and finds water from the chunk's own cells.
-pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[Column], legacy_grass: bool) {
+pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[Column]) {
     let (ox, oz) = (cx * 16, cz * 16);
     for lz in 0..16i32 {
         for lx in 0..16i32 {
@@ -140,7 +140,7 @@ pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols
             };
             if r >= grass_p + tall_p + flower_p && col.biome == Biome::Plains && r2 > 0.998 {
                 grid.set(lx, y, lz, ids.pumpkin);
-            } else if legacy_grass {
+            } else {
                 if r < grass_p {
                     grid.set(lx, y, lz, ids.short_grass);
                 } else if r < grass_p + tall_p {

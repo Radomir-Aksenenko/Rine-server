@@ -125,6 +125,8 @@ pub struct Decorator {
     pale_moss_patch: Option<usize>,
     waterlogged: Vec<Option<u16>>,
     level_random: Option<crate::random::Positional>,
+    /// Top-level placed features `Decorator::vanilla` could not compile (`name: error`), kept as no-ops.
+    skipped: Vec<String>,
 }
 
 fn bundle() -> &'static Value {
@@ -498,14 +500,26 @@ impl Decorator {
     /// Like [`Decorator::new`] with an explicit feature bundle (`features.json` layout). The tree golden bundles
     /// synthetic placed features with matching biome lists (`tools/noise-golden/make_tree_golden.js`).
     pub fn new_from(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
-        Self::compile_decoration(bundle, o, allow, false)
+        Self::compile_decoration(bundle, o, allow, false, false)
     }
 
     pub(crate) fn production(o: &Overworld, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
-        Self::compile_decoration(bundle(), o, allow, true)
+        Self::compile_decoration(bundle(), o, allow, true, false)
     }
 
-    fn compile_decoration(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool, full_order: bool) -> Result<Self, String> {
+    /// The full vanilla decoration: every placed feature of the biome lists. A feature that does not compile
+    /// (an unported type) becomes a no-op in its sorted slot and is listed by [`Decorator::skipped`]; the
+    /// other features keep their vanilla order and seeds.
+    pub(crate) fn vanilla(o: &Overworld) -> Result<Self, String> {
+        Self::compile_decoration(bundle(), o, &|_| true, true, true)
+    }
+
+    /// Placed features [`Decorator::vanilla`] left out, as `name: error`.
+    pub fn skipped(&self) -> &[String] {
+        &self.skipped
+    }
+
+    fn compile_decoration(bundle: &Value, o: &Overworld, allow: &dyn Fn(&str) -> bool, full_order: bool, lenient: bool) -> Result<Self, String> {
         let biome_names: Vec<String> = o.biome_names().to_vec();
         let block_tags: HashMap<String, Vec<String>> = bundle["blockTags"]
             .as_object()
@@ -528,6 +542,7 @@ impl Decorator {
 
         // Production preserves FeatureSorter indices even when a feature cannot yet execute.
         let mut excluded = HashMap::new();
+        let mut failed: std::collections::BTreeMap<&str, String> = std::collections::BTreeMap::new();
         let mut biome_lists: Vec<Vec<Vec<usize>>> = Vec::with_capacity(biome_names.len());
         for name in &biome_names {
             let steps = bundle["biomes"][name].as_array().ok_or_else(|| format!("biome {name} not bundled"))?;
@@ -536,8 +551,25 @@ impl Decorator {
                 let mut ids = Vec::new();
                 for f in step.as_array().unwrap() {
                     let f = f.as_str().unwrap();
-                    if allow(f) {
-                        ids.push(c.placed_named(f)?);
+                    let compiled = if !allow(f) {
+                        None
+                    } else if lenient {
+                        if failed.contains_key(f) {
+                            None
+                        } else {
+                            match c.placed_named(f) {
+                                Ok(id) => Some(id),
+                                Err(e) => {
+                                    failed.insert(f, e);
+                                    None
+                                }
+                            }
+                        }
+                    } else {
+                        Some(c.placed_named(f)?)
+                    };
+                    if let Some(id) = compiled {
+                        ids.push(id);
                     } else if full_order {
                         let index = *excluded.entry(f).or_insert_with(|| {
                             let index = c.placed.len();
@@ -570,6 +602,7 @@ impl Decorator {
 
         let mut dec = finish(c, &block_tags, o.min_y(), o.height(), steps, placed_in_biome, in_step, HashMap::new())?;
         dec.level_random = Some(o.root_random().from_hash_of("minecraft:worldgen_region_random").fork_positional());
+        dec.skipped = failed.into_iter().map(|(name, e)| format!("{name}: {e}")).collect();
         Ok(dec)
     }
 
@@ -904,10 +937,6 @@ fn finish(
     in_step: Vec<Vec<Vec<bool>>>,
     grower_ids: HashMap<String, usize>,
 ) -> Result<Decorator, String> {
-    // The tree tables and the tag and fluid tables cover the final palette.
-    if let Some(ts) = c.tree_states.as_mut() {
-        ts.finish(&c.pal);
-    }
     // Vegetation survival tables read the final palette (both half variants of the double plants included).
     let veg = vegetation::VegTable::build(&mut c.pal, &c.tag_names)?;
     let mut waterlogged = Vec::new();
@@ -919,9 +948,11 @@ fn finish(
     }
     let mut tags = Tags::new(&c.pal, block_tags);
     tags.set_vegetation(veg);
+    // The tree tables cover the final palette: built after everything above that interns states.
     let tree_env = match c.tree_states.take() {
-        Some(states) => {
+        Some(mut states) => {
             let air = c.pal.intern("minecraft:air");
+            states.finish(&c.pal);
             Some(tree::TreeEnv { states, tags: tree::TreeTags::new(&tags)?, air })
         }
         None => None,
@@ -941,6 +972,7 @@ fn finish(
         pale_moss_patch: c.pale_moss_patch,
         waterlogged,
         level_random: None,
+        skipped: Vec::new(),
     })
 }
 

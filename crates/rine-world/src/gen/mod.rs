@@ -70,7 +70,6 @@ pub struct Generator {
     biome_vanilla: Vec<u16>,
     /// Synced biome id -> `Biome.hasPrecipitation`.
     biome_precip: Vec<bool>,
-    pale_garden: Option<u8>,
     /// Chunks generated before the world asked for them (spawn search). With vanilla decoration a chunk
     /// cannot be generated twice, so they wait here for the world's request.
     reserved: parking_lot::Mutex<std::collections::HashMap<ChunkPos, (Chunk, Vec<(rine_protocol::BlockPos, u16)>)>>,
@@ -157,13 +156,21 @@ impl Generator {
         let vegetation = if !vanilla_vegetation {
             None
         } else {
-            match rine_worldgen::pipeline::Pipeline::with_features(Arc::clone(&vanilla), &rine_worldgen::feature::allow::live_generation) {
-                Ok(pipeline) => Some(match world_dir {
+            match rine_worldgen::pipeline::Pipeline::vanilla(Arc::clone(&vanilla)) {
+                Ok(pipeline) => Some({
+                    let skipped = pipeline.skipped();
+                    if !skipped.is_empty() {
+                        let names: Vec<&str> = skipped.iter().map(|s| s.split_once(": ").map_or(s.as_str(), |(n, _)| n)).collect();
+                        eprintln!("worldgen: {} vanilla placed features are not ported yet and are skipped: {}", names.len(), names.join(", "));
+                    }
+                    match world_dir {
                     Some(dir) => pipeline.with_store(Box::new(slots::DiskSlots::open(dir))),
                     None => pipeline,
+                    }
                 }),
                 Err(error) => {
-                    eprintln!("failed to compile vegetation decoration: {error}");
+                    // Loud: the world falls back to the legacy generator. `vanilla_pipeline_compiles` guards this.
+                    eprintln!("ERROR: failed to compile vanilla decoration, using the legacy generator: {error}");
                     None
                 }
             }
@@ -188,7 +195,6 @@ impl Generator {
             biome_ids,
             biome_vanilla,
             biome_precip,
-            pale_garden: reg.id("minecraft:pale_garden").and_then(|id| u8::try_from(id).ok()),
             reserved: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
@@ -290,32 +296,33 @@ impl Generator {
         for (i, &v) in cb.blocks.iter().enumerate().take(grid.data.len()) {
             grid.data[i] = pal[v as usize];
         }
-        // columns: surface = highest motion-blocking non-fluid block, biome there
         let b = &rine_data::get().blocks;
         let qh = (cb.height / 4) as usize;
-        let mut cols = [Column { surface: MIN_Y, biome: Biome::Plains }; 256];
-        let mut legacy_trees = [true; 256];
-        for lz in 0..16i32 {
-            for lx in 0..16i32 {
-                let mut y = MIN_Y + cb.height - 1;
-                while y > MIN_Y {
-                    let st = grid.get(lx, y, lz);
-                    if !b.is_air(st) && !b.has(st, rine_data::blocks::flag::NO_COLLISION) {
-                        break;
+        // Vanilla decoration already placed ores, trees and plants; the legacy approximations only run
+        // with `vanilla_vegetation = false`.
+        if self.vegetation.is_none() {
+            // columns: surface = highest motion-blocking non-fluid block, biome there
+            let mut cols = [Column { surface: MIN_Y, biome: Biome::Plains }; 256];
+            for lz in 0..16i32 {
+                for lx in 0..16i32 {
+                    let mut y = MIN_Y + cb.height - 1;
+                    while y > MIN_Y {
+                        let st = grid.get(lx, y, lz);
+                        if !b.is_air(st) && !b.has(st, rine_data::blocks::flag::NO_COLLISION) {
+                            break;
+                        }
+                        y -= 1;
                     }
-                    y -= 1;
+                    let qy = (((y + 1 - MIN_Y) >> 2) as usize).min(qh - 1);
+                    let bi = cb.biomes[(qy * 4 + (lz as usize >> 2)) * 4 + (lx as usize >> 2)];
+                    let name = cb.biome_palette[bi as usize].as_str();
+                    cols[(lz * 16 + lx) as usize] = Column { surface: y, biome: biome::from_vanilla(name) };
                 }
-                let qy = (((y + 1 - MIN_Y) >> 2) as usize).min(qh - 1);
-                let bi = cb.biomes[(qy * 4 + (lz as usize >> 2)) * 4 + (lx as usize >> 2)];
-                let name = cb.biome_palette[bi as usize].as_str();
-                let column = (lz * 16 + lx) as usize;
-                cols[column] = Column { surface: y, biome: biome::from_vanilla(name) };
-                legacy_trees[column] = self.vegetation.is_none() || self.pale_garden != Some(bmap[bi as usize]);
             }
+            ores::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
+            trees::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
+            decor::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
         }
-        ores::place(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols);
-        trees::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols, &legacy_trees);
-        decor::place_local(&mut grid, &self.ids, self.seed, pos.x, pos.z, &cols, self.vegetation.is_none());
 
         let mut chunk = Chunk::new(pos);
         for sy in 0..SECTIONS {
@@ -504,6 +511,12 @@ mod tests {
         let below = c.get(x, y - 1, z);
         assert!(!b.is_air(below) && !b.has(below, rine_data::blocks::flag::WATER), "no solid ground under spawn");
         assert!(b.is_air(c.get(x, y, z)));
+    }
+
+    #[test]
+    fn vanilla_pipeline_compiles() {
+        rine_data::init();
+        assert!(Generator::with_options(7, true).vegetation.is_some(), "vanilla decoration fell back to the legacy generator");
     }
 
     #[test]

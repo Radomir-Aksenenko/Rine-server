@@ -152,20 +152,16 @@ fn grow(w: &mut Writer, rng: &mut Rng, kind: Kind, x: i32, y: i32, z: i32) {
     }
 }
 
-/// Trees on the vanilla terrain, kept inside this chunk (trunks at least 3
-/// blocks from the edge) until vanilla feature placement is ported.
-pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[super::terrain::Column], enabled: &[bool; 256]) {
+/// Legacy trees on the undecorated vanilla terrain (`vanilla_vegetation = false`), kept inside this chunk
+/// (trunks at least 3 blocks from the edge).
+pub fn place_local(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[super::terrain::Column]) {
     for k in 0..CANDIDATES * 2 {
         let mut rng = Rng::new(hash(seed, cx as i64, cz as i64, k as i64, SALT_TREE));
         let lx = rng.range(3, 13);
         let lz = rng.range(3, 13);
         let roll = rng.next_f32() * 1.6;
         let pick = rng.next_f32();
-        let column = (lz * 16 + lx) as usize;
-        if !enabled[column] {
-            continue;
-        }
-        let col = cols[column];
+        let col = cols[(lz * 16 + lx) as usize];
         let Some(kind) = choose(col.biome, roll, pick) else {
             continue;
         };

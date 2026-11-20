@@ -133,10 +133,26 @@ impl Pipeline {
     }
 
     pub fn with_features(overworld: Arc<Overworld>, allow: &dyn Fn(&str) -> bool) -> Result<Self, String> {
-        let seed = overworld.seed();
         let decorator = Decorator::production(&overworld, allow)?;
+        Ok(Self::from_decorator(overworld, decorator))
+    }
+
+    /// The full vanilla decoration (`Decorator::vanilla`): unported placed features are no-ops, listed by
+    /// [`Pipeline::skipped`].
+    pub fn vanilla(overworld: Arc<Overworld>) -> Result<Self, String> {
+        let decorator = Decorator::vanilla(&overworld)?;
+        Ok(Self::from_decorator(overworld, decorator))
+    }
+
+    /// Placed features left out of the decoration (`name: error`).
+    pub fn skipped(&self) -> &[String] {
+        self.decorator.skipped()
+    }
+
+    fn from_decorator(overworld: Arc<Overworld>, decorator: Decorator) -> Self {
+        let seed = overworld.seed();
         let biome_names = overworld.biome_names().to_vec();
-        Ok(Pipeline {
+        Pipeline {
             seed,
             overworld,
             decorator,
@@ -147,7 +163,7 @@ impl Pipeline {
             capacity: SLOT_CAPACITY,
             palette_index: OnceLock::new(),
             biome_names,
-        })
+        }
     }
 
     /// Keeps the partial frontier in `store` (spills and `persist`). Without a store partial chunks stay
@@ -659,10 +675,20 @@ const _: fn() = || {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::allow::live_generation;
-
     fn pipe(seed: i64) -> Pipeline {
-        Pipeline::with_features(Arc::new(Overworld::new(seed)), &live_generation).expect("pipeline")
+        Pipeline::vanilla(Arc::new(Overworld::new(seed))).expect("pipeline")
+    }
+
+    #[test]
+    fn vanilla_decoration_runs_trees_and_ores() {
+        let p = pipe(1);
+        let skipped: Vec<&str> = p.skipped().iter().map(|s| s.split_once(": ").map_or(s.as_str(), |(name, _)| name)).collect();
+        for name in ["minecraft:trees_plains", "minecraft:trees_birch", "minecraft:trees_jungle", "minecraft:trees_taiga",
+            "minecraft:trees_savanna", "minecraft:trees_mangrove", "minecraft:trees_cherry", "minecraft:dark_forest_vegetation",
+            "minecraft:ore_iron_upper", "minecraft:ore_diamond", "minecraft:ore_coal_upper", "minecraft:flower_plains"] {
+            assert!(!skipped.contains(&name), "{name} skipped: {:?}", p.skipped());
+        }
+        println!("skipped {}: {skipped:?}", skipped.len());
     }
 
     /// Store in memory, shared between pipelines to model a restart.
