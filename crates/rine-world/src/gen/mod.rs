@@ -199,6 +199,13 @@ impl Generator {
         self.vegetation.is_some()
     }
 
+    /// The world saved generated chunk `pos`: record it as final in the frontier store right away.
+    pub fn chunk_saved(&self, pos: ChunkPos) {
+        if let Some(p) = &self.vegetation {
+            p.mark_stored(pos.x, pos.z);
+        }
+    }
+
     /// Writes the decoration frontier. Call after the generated chunks are saved, at every world save.
     pub fn persist(&self) {
         if let Some(p) = &self.vegetation {

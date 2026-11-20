@@ -162,6 +162,7 @@ impl World {
                     // and never regenerated.
                     if gen.saves_generated() {
                         store.save(&c);
+                        gen.chunk_saved(pos);
                     }
                     (c, block_ticks)
                 }

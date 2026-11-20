@@ -576,6 +576,42 @@ impl Overworld {
 }
 
 #[cfg(test)]
+mod identity_test {
+    /// Proto output (blocks, biomes, palette) of a few chunks across the seed space, pinned by SHA-256.
+    /// Proto speedups must keep these digests: the values were taken before the biome-grid cache, the flat
+    /// climate layer and the surface memo, and stayed the same through them.
+    #[test]
+    fn proto_digests_are_pinned() {
+        let o = super::Overworld::new(-4172144997902289642);
+        let mut got = Vec::new();
+        for (cx, cz) in [(-100, -150), (11, -150), (159, -97), (-63, 9), (85, 115), (122, 168)] {
+            let (c, _mask) = o.generate_carved(cx, cz);
+            let mut bytes = Vec::with_capacity(c.blocks.len() * 2 + c.biomes.len() * 2);
+            for v in c.blocks.iter().chain(&c.biomes) {
+                bytes.extend_from_slice(&v.to_le_bytes());
+            }
+            for n in c.palette.iter().chain(&c.biome_palette) {
+                bytes.extend_from_slice(n.as_bytes());
+                bytes.push(0);
+            }
+            let d = super::sha256::digest(&bytes);
+            got.push(d[..8].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        }
+        let expect: [&str; 6] = EXPECT;
+        assert_eq!(got, expect);
+    }
+
+    const EXPECT: [&str; 6] = [
+        "89ce27308f973a84",
+        "d1dc17a7246728c4",
+        "80001516c4240c5d",
+        "20065323724d1e95",
+        "cfa449213e22e488",
+        "0f2aaa8caa75aa1b",
+    ];
+}
+
+#[cfg(test)]
 mod y_free_test {
     #[test]
     fn climate_fields_except_depth_are_flat() {

@@ -6,6 +6,7 @@
 use rine_worldgen::pipeline::{SavedSlot, SlotStore};
 use std::path::PathBuf;
 
+/// Magic, then one uncompressed byte (1 = final marker), then the LZ4 payload.
 const MAGIC: &[u8; 4] = b"RWG1";
 
 pub struct DiskSlots {
@@ -27,17 +28,26 @@ impl DiskSlots {
 impl SlotStore for DiskSlots {
     fn load(&self, cx: i32, cz: i32) -> Option<SavedSlot> {
         let data = std::fs::read(self.path(cx, cz)).ok()?;
-        if data.len() < 8 || &data[..4] != MAGIC {
+        if data.len() < 9 || &data[..4] != MAGIC {
             return None;
         }
-        let raw = lz4_flex::decompress_size_prepended(&data[4..]).ok()?;
+        let raw = lz4_flex::decompress_size_prepended(&data[5..]).ok()?;
         decode(&raw)
+    }
+
+    fn is_final(&self, cx: i32, cz: i32) -> bool {
+        use std::io::Read;
+        let mut head = [0u8; 5];
+        std::fs::File::open(self.path(cx, cz)).and_then(|mut f| f.read_exact(&mut head)).is_ok()
+            && &head[..4] == MAGIC
+            && head[4] == 1
     }
 
     fn save(&self, cx: i32, cz: i32, slot: &SavedSlot) {
         let raw = encode(slot);
         let mut out = Vec::with_capacity(raw.len() / 3 + 8);
         out.extend_from_slice(MAGIC);
+        out.push(slot.final_chunk as u8);
         out.extend_from_slice(&lz4_flex::compress_prepend_size(&raw));
         let path = self.path(cx, cz);
         if let Some(parent) = path.parent() {
@@ -215,8 +225,10 @@ mod tests {
         assert_eq!(back.palette[back.ticks[0].1 as usize], "minecraft:b3");
         assert_eq!((back.biomes.clone(), back.wg.clone(), back.heights.clone()), (slot.biomes.clone(), slot.wg.clone(), slot.heights.clone()));
         let marker = SavedSlot { final_chunk: true, blocks: Vec::new(), palette: Vec::new(), ..slot };
+        assert!(!store.is_final(-1, 0));
         store.save(-1, 0, &marker);
         assert!(store.load(-1, 0).expect("marker").final_chunk);
+        assert!(store.is_final(-1, 0) && !store.is_final(5, 5));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

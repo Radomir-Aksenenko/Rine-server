@@ -65,6 +65,10 @@ pub struct SavedSlot {
 /// Durable storage of partial chunks, keyed by chunk position.
 pub trait SlotStore: Send + Sync {
     fn load(&self, cx: i32, cz: i32) -> Option<SavedSlot>;
+    /// Whether the record is a final marker; stores override it to skip decoding a partial record.
+    fn is_final(&self, cx: i32, cz: i32) -> bool {
+        self.load(cx, cz).is_some_and(|s| s.final_chunk)
+    }
     fn save(&self, cx: i32, cz: i32, slot: &SavedSlot);
     fn delete(&self, cx: i32, cz: i32);
 }
@@ -83,6 +87,9 @@ struct Slot {
     /// Requests that need this chunk in memory (spilling skips it).
     pins: u32,
     ticks: Vec<(Pos, u16)>,
+    /// Stand-in proto of a handed-over chunk, only read by a neighbour's decoration after a hard stop lost the
+    /// frontier. Its writes are dropped (the real chunk is saved), it is never stored.
+    ghost: bool,
 }
 
 #[derive(Default)]
@@ -244,7 +251,18 @@ impl Pipeline {
             return false;
         }
         drop(g);
-        self.store.as_ref().and_then(|s| s.load(cx, cz)).is_some_and(|s| s.final_chunk)
+        self.store.as_ref().is_some_and(|s| s.is_final(cx, cz))
+    }
+
+    /// The caller saved final chunk `(cx, cz)`: its final marker goes to the store now, so markers never lag
+    /// behind saved chunks (a hard stop between saves would otherwise decorate it a second time).
+    pub fn mark_stored(&self, cx: i32, cz: i32) {
+        let Some(store) = self.store.as_ref() else { return };
+        store.save(cx, cz, &final_marker());
+        let mut g = self.lock();
+        if let Some(stored) = g.finals.get_mut(&(cx, cz)) {
+            *stored = true;
+        }
     }
 
     /// Makes every position of `area` resident and pins it. Builds missing chunks outside the lock; a chunk
@@ -317,6 +335,7 @@ impl Pipeline {
                 dirty: false,
                 pins: 0,
                 ticks: Vec::new(),
+                ghost: false,
             })
         };
         // Sequential on purpose: callers already run in parallel (the server's chunk pool), and threads per
@@ -329,12 +348,49 @@ impl Pipeline {
     fn decorate_once(&self, cx: i32, cz: i32) {
         let window: [(i32, i32); 9] = std::array::from_fn(|i| (cx + (i % 3) as i32 - 1, cz + (i / 3) as i32 - 1));
         let mut g = self.lock();
+        let mut ghosts: Vec<(i32, i32)> = Vec::new();
         loop {
             // A handed-over chunk was decorated before it became final.
             if g.finals.contains_key(&(cx, cz)) || g.slots[&(cx, cz)].decorated {
+                for p in &ghosts {
+                    if let Some(s) = g.slots.get_mut(p) {
+                        s.pins -= 1;
+                    }
+                }
                 return;
             }
-            debug_assert!(window.iter().all(|p| !g.finals.contains_key(p)), "a final's neighbours are all decorated");
+            // A final's neighbours are all decorated, so a final in the window means a hard stop lost the
+            // frontier. Decorate against stand-in protos of those finals rather than fail.
+            let missing: Vec<(i32, i32)> = window.iter().copied().filter(|p| !g.slots.contains_key(p)).collect();
+            if !missing.is_empty() {
+                drop(g);
+                eprintln!("worldgen: chunk {cx},{cz} decorates next to handed-over chunks {missing:?}; their part of its features is lost");
+                let built: Vec<Slot> = missing
+                    .iter()
+                    .map(|&(x, z)| {
+                        let p = self.proto(x, z);
+                        Slot {
+                            blocks: Some(p.chunk.blocks),
+                            biomes: p.chunk.biomes,
+                            wg: p.wg,
+                            heights: p.heights,
+                            decorated: true,
+                            touched: false,
+                            dirty: false,
+                            pins: 0,
+                            ticks: Vec::new(),
+                            ghost: true,
+                        }
+                    })
+                    .collect();
+                g = self.lock();
+                for (p, slot) in missing.into_iter().zip(built) {
+                    let s = g.slots.entry(p).or_insert(slot);
+                    s.pins += 1;
+                    ghosts.push(p);
+                }
+                continue;
+            }
             if window.iter().all(|p| g.slots[p].blocks.is_some()) {
                 break;
             }
@@ -370,12 +426,19 @@ impl Pipeline {
             s.blocks = Some(chunk.blocks);
             s.biomes = chunk.biomes;
             s.heights.copy_from_slice(&heights[j * HEIGHT_VALUES..(j + 1) * HEIGHT_VALUES]);
-            s.touched = true;
-            s.dirty = true;
+            if !s.ghost {
+                s.touched = true;
+                s.dirty = true;
+            }
         }
         for (pos, state) in scheduled {
-            if let Some(s) = g.slots.get_mut(&(pos.0 >> 4, pos.2 >> 4)) {
+            if let Some(s) = g.slots.get_mut(&(pos.0 >> 4, pos.2 >> 4)).filter(|s| !s.ghost) {
                 s.ticks.push((pos, state));
+            }
+        }
+        for p in &ghosts {
+            if let Some(s) = g.slots.get_mut(p) {
+                s.pins -= 1;
             }
         }
         g.slots.get_mut(&(cx, cz)).expect("pinned").decorated = true;
@@ -452,7 +515,7 @@ impl Pipeline {
         while g.slots.len() > target {
             let Some(p) = g.order.pop_front() else { break };
             let Some(s) = g.slots.get(&p) else { continue };
-            if s.pins > 0 || s.blocks.is_none() || (s.touched && self.store.is_none()) {
+            if s.pins > 0 || s.blocks.is_none() || (s.touched && !s.ghost && self.store.is_none()) {
                 keep.push_back(p);
                 continue;
             }
@@ -507,9 +570,6 @@ impl Pipeline {
         }
         let mut finals: Vec<(i32, i32)> = g.finals.iter().filter(|(_, &stored)| !stored).map(|(&p, _)| p).collect();
         finals.sort_unstable();
-        for p in &finals {
-            g.finals.insert(*p, true);
-        }
         drop(g);
         // Two writers: enough for the disk, little CPU taken from the tick and the generator.
         let threads = 2;
@@ -523,19 +583,16 @@ impl Pipeline {
                 });
             }
         });
-        let marker = SavedSlot {
-            final_chunk: true,
-            decorated: true,
-            palette: Vec::new(),
-            blocks: Vec::new(),
-            biome_palette: Vec::new(),
-            biomes: Vec::new(),
-            wg: [Vec::new(), Vec::new()],
-            heights: Vec::new(),
-            ticks: Vec::new(),
-        };
-        for p in finals {
+        let marker = final_marker();
+        for p in &finals {
             store.save(p.0, p.1, &marker);
+        }
+        // Only now may `note_final` forget these markers: they are on disk.
+        let mut g = self.lock();
+        for p in finals {
+            if let Some(stored) = g.finals.get_mut(&p) {
+                *stored = true;
+            }
         }
     }
 
@@ -574,7 +631,22 @@ impl Pipeline {
             dirty: false,
             pins: 0,
             ticks: saved.ticks.iter().map(|&(p, v)| (p, map(v, &remap))).collect(),
+            ghost: false,
         }
+    }
+}
+
+fn final_marker() -> SavedSlot {
+    SavedSlot {
+        final_chunk: true,
+        decorated: true,
+        palette: Vec::new(),
+        blocks: Vec::new(),
+        biome_palette: Vec::new(),
+        biomes: Vec::new(),
+        wg: [Vec::new(), Vec::new()],
+        heights: Vec::new(),
+        ticks: Vec::new(),
     }
 }
 
@@ -703,6 +775,22 @@ mod tests {
             assert!(e.blocks.blocks == g.blocks.blocks, "blocks of {},{}", e.cx, e.cz);
             assert_eq!(e.block_ticks, g.block_ticks);
         }
+    }
+
+    /// A hard stop after the world saved a chunk (no `persist`): its marker is already stored, so the next
+    /// run does not decorate it again.
+    #[test]
+    fn marker_survives_a_hard_stop() {
+        let store = MemStore::default();
+        let a = pipe(8).with_store(Box::new(store.clone()));
+        a.full_chunk(0, 0);
+        a.mark_stored(0, 0);
+        drop(a);
+        let b = pipe(8).with_store(Box::new(store.clone()));
+        b.full_chunk(1, 0);
+        assert!(!b.lock().decorations.contains_key(&(0, 0)), "decorated twice");
+        // (1, 0) itself was decorated against a stand-in of (0, 0), which never becomes a stored record.
+        assert!(b.lock().slots.get(&(0, 0)).is_none_or(|s| s.ghost && !s.touched));
     }
 
     /// Spilling under a tiny capacity changes nothing in the result.

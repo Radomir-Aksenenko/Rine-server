@@ -188,6 +188,30 @@ mod be_tests {
     use super::*;
     use rine_protocol::nbt::Tag;
 
+    /// With vanilla decoration every chunk comes back from disk after a restart (it is never regenerated),
+    /// so the stored chunk must equal the generated and lit one: blocks, biomes, light, heightmaps.
+    #[test]
+    fn generated_chunk_round_trips() {
+        rine_data::init();
+        let g = crate::gen::Generator::with_options(31337, true);
+        for pos in [ChunkPos::new(0, 0), ChunkPos::new(-9, 14)] {
+            let mut c = g.generate(pos);
+            crate::light::light_chunk(&mut c);
+            let back = decode(pos, &encode(&c)).expect("decodes");
+            for (sy, (a, b)) in c.sections.iter().zip(&back.sections).enumerate() {
+                assert!((0..4096).all(|i| a.get(i) == b.get(i)), "blocks of section {sy}");
+                assert_eq!(a.biomes, b.biomes, "biomes of section {sy}");
+                assert_eq!(a.sky, b.sky, "sky light of section {sy}");
+                assert_eq!(a.block_light, b.block_light, "block light of section {sy}");
+                assert_eq!((a.non_air, a.fluids, a.ticking), (b.non_air, b.fluids, b.ticking), "counts of section {sy}");
+            }
+            assert_eq!(c.motion_blocking, back.motion_blocking);
+            assert_eq!(c.world_surface, back.world_surface);
+            assert_eq!(c.motion_blocking_no_leaves, back.motion_blocking_no_leaves);
+            assert_eq!(c.block_entities.len(), back.block_entities.len());
+        }
+    }
+
     #[test]
     fn block_entities_round_trip() {
         rine_data::init();
