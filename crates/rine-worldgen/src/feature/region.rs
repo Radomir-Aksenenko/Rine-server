@@ -25,7 +25,7 @@ pub struct Tags {
     fluid_of: Vec<Fluid>,
     /// `Heightmap.Types` predicates as bit masks (see `heightmap::Kind::bit`).
     opaque: Vec<u8>,
-    shapes: Vec<[u8; 2]>,
+    shapes: Vec<[u8; 3]>,
     /// Vegetation survival tables (`vegetation::VegTable`), installed after the palette is final.
     pub(crate) veg: super::vegetation::VegTable,
 }
@@ -129,6 +129,30 @@ impl Tags {
     pub fn replaceable(&self, state: u16) -> bool {
         self.shapes[state as usize][0] & 128 != 0
     }
+
+    pub fn solid_render(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 1 != 0
+    }
+
+    pub fn liquid(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 2 != 0
+    }
+
+    pub fn collision_full_up(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 4 != 0
+    }
+
+    pub fn sturdy_down_center(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 8 != 0
+    }
+
+    pub fn fluid_full(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 16 != 0
+    }
+
+    pub(crate) fn snowy(&self, state: u16) -> Option<u16> {
+        self.veg.snowy[state as usize]
+    }
 }
 
 pub type Pos = (i32, i32, i32);
@@ -140,6 +164,9 @@ pub trait LiveRegion {
     fn set(&mut self, pos: Pos, state: u16, flags: u32) -> bool;
     fn destroy(&mut self, pos: Pos);
     fn schedule(&mut self, pos: Pos, state: u16);
+    fn raw_brightness(&self, _pos: Pos) -> u8 {
+        15
+    }
 }
 
 struct DecorationBiomes<'a> {
@@ -438,12 +465,21 @@ impl<'a> Region<'a> {
 
     /// `level.getBiome(pos).hasFeature(top)`.
     pub fn biome_has_feature(&self, x: i32, y: i32, z: i32, placed: usize) -> bool {
-        let Some(b) = &self.biomes else { return false };
+        self.biome_at(x, y, z).is_some_and(|(_, biome)| self.placed_in_biome[biome as usize][placed])
+    }
+
+    pub(crate) fn biome_at(&self, x: i32, y: i32, z: i32) -> Option<(&Overworld, u16)> {
+        let b = self.biomes.as_ref()?;
         let (qx, qy, qz) = b.overworld.biome_quart(x, y, z);
-        let Some(chunk) = self.chunk_index(qx * 4, qz * 4) else { return false };
+        let chunk = self.chunk_index(qx * 4, qz * 4)?;
         let local_y = (qy - (self.min_y >> 2)).clamp(0, (self.height >> 2) - 1);
         let index = ((local_y * 4 + (qz & 3)) * 4 + (qx & 3)) as usize;
-        let biome = b.quarts[chunk][index] as usize;
-        self.placed_in_biome[biome][placed]
+        Some((b.overworld, b.quarts[chunk][index]))
+    }
+
+    // FEATURES precedes INITIALIZE_LIGHT. The visible block light is zero and the
+    // uninitialized Overworld sky light is 15 (SkyLightSectionStorage.getLightValue).
+    pub(crate) fn feature_raw_brightness(&self, pos: Pos) -> u8 {
+        self.live.as_ref().map_or(15, |live| live.raw_brightness(pos))
     }
 }

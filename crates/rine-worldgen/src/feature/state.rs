@@ -19,6 +19,12 @@ pub enum Fluid {
     FlowingLava,
 }
 
+impl Fluid {
+    pub(crate) fn is_water(self) -> bool {
+        matches!(self, Self::Water | Self::FlowingWater)
+    }
+}
+
 pub struct Palette {
     states: Vec<String>,
     state_index: HashMap<String, u16>,
@@ -184,6 +190,8 @@ fn fluid_of(name: &str, props: Option<&str>) -> Fluid {
             Some(l) if l != 0 => Fluid::FlowingLava,
             _ => Fluid::Lava,
         },
+        "minecraft:seagrass" | "minecraft:tall_seagrass" | "minecraft:kelp"
+        | "minecraft:kelp_plant" | "minecraft:bubble_column" => Fluid::Water,
         _ if waterlogged => Fluid::Water,
         _ => Fluid::Empty,
     }
@@ -216,6 +224,6 @@ mod tests {
         assert_eq!(p.block_name(p.block_of()[w as usize]), "minecraft:water");
         let kelp = p.default_state("minecraft:kelp");
         assert_eq!(p.states()[kelp as usize], "minecraft:kelp[age=0]");
-        assert_eq!(p.fluid_of()[kelp as usize], Fluid::Empty);
+        assert_eq!(p.fluid_of()[kelp as usize], Fluid::Water);
     }
 }

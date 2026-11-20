@@ -17,6 +17,7 @@ pub enum TemperatureModifier {
 pub struct Biomes {
     pub names: Vec<String>,
     pub base_temperature: Vec<f32>,
+    pub(crate) precipitation: Vec<bool>,
     pub modifier: Vec<TemperatureModifier>,
     pub list: ParameterList,
     /// Quantized parameter points in list order, with biome index (for tests).
@@ -60,6 +61,7 @@ impl Biomes {
     pub fn overworld(seed: i64) -> Self {
         let mut names = Vec::new();
         let mut base_temperature = Vec::new();
+        let mut precipitation = Vec::new();
         let mut modifier = Vec::new();
         let mut points: Vec<(Space, u16)> = Vec::new();
         for line in BUNDLE.lines() {
@@ -68,6 +70,10 @@ impl Biomes {
                 Some(&"B") => {
                     names.push(f[1].to_string());
                     base_temperature.push(parse_f32(f[2]));
+                    precipitation.push(!matches!(f[1],
+                        "minecraft:desert" | "minecraft:badlands" | "minecraft:eroded_badlands"
+                        | "minecraft:wooded_badlands" | "minecraft:savanna" | "minecraft:savanna_plateau"
+                        | "minecraft:windswept_savanna"));
                     modifier.push(match f[3] {
                         "none" => TemperatureModifier::None,
                         "frozen" => TemperatureModifier::Frozen,
@@ -106,6 +112,7 @@ impl Biomes {
         Biomes {
             names,
             base_temperature,
+            precipitation,
             modifier,
             list,
             points: points_copy,

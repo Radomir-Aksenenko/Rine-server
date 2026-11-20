@@ -434,6 +434,10 @@ impl Overworld {
         self.biomes.temperature(biome, x, y, z, self.sea_level)
     }
 
+    pub(crate) fn biome_has_precipitation(&self, biome: u16) -> bool {
+        self.biomes.precipitation[biome as usize]
+    }
+
     pub fn biome_quart(&self, x: i32, y: i32, z: i32) -> (i32, i32, i32) {
         self.biomes.fiddled_quart(x, y, z)
     }

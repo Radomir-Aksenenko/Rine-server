@@ -248,7 +248,12 @@ collectTags(blockStateProviders);
  'minecraft:supports_dry_vegetation', 'minecraft:cannot_support_seagrass',
  'minecraft:replaceable_by_mushrooms', 'minecraft:supports_crimson_fungus', 'minecraft:supports_warped_fungus',
  'minecraft:supports_crimson_roots', 'minecraft:supports_warped_roots', 'minecraft:supports_nether_sprouts',
- 'minecraft:supports_azalea', 'minecraft:supports_small_dripleaf'].forEach((t) => tagRefs.add(t));
+ 'minecraft:supports_azalea', 'minecraft:supports_small_dripleaf',
+ 'minecraft:supports_cactus', 'minecraft:supports_lily_pad', 'minecraft:supports_sugar_cane',
+ 'minecraft:supports_sugar_cane_adjacently', 'minecraft:supports_bamboo',
+ 'minecraft:beneath_bamboo_podzol_replaceable', 'minecraft:cannot_support_snow_layer',
+ 'minecraft:support_override_snow_layer', 'minecraft:unstable_bottom_center',
+ 'minecraft:overrides_mushroom_light_requirement'].forEach((t) => tagRefs.add(t));
 for (const t of tagRefs) flattenTag(t);
 
 // Block property tables from the 26.3 block report: ordered property values and the default state, for

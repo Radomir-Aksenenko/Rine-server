@@ -34,9 +34,13 @@ pub mod tree;
 pub mod simple_block;
 pub mod vegetation;
 mod huge_fungus;
+mod bamboo;
+mod block_blob;
+mod freeze;
 mod moss_carpet;
 mod shape;
 mod vegetation_patch;
+mod vines;
 #[cfg(test)]
 mod samples;
 
@@ -79,6 +83,10 @@ enum Configured {
     Sequence(Vec<usize>),
     /// `SimpleBlockFeature` (`minecraft:simple_block`).
     SimpleBlock(simple_block::SimpleBlock),
+    Bamboo(bamboo::Bamboo),
+    BlockBlob(block_blob::BlockBlob),
+    Freeze(freeze::Freeze),
+    Vines(vines::Vines),
     /// `minecraft:tree`.
     Tree(tree::TreeFeature),
     /// `minecraft:fallen_tree`.
@@ -272,6 +280,16 @@ impl<'a> Compiler<'a> {
         let tn = &self.tag_names;
         match ty {
             "minecraft:ore" => Ok(Configured::Ore(self.ore(cfg)?)),
+            "minecraft:bamboo" => Ok(Configured::Bamboo(bamboo::Bamboo::compile(
+                cfg["probability"].as_f64().filter(|p| (0.0..=1.0).contains(p)).ok_or("bamboo probability")? as f32,
+                tn, &mut self.pal,
+            )?)),
+            "minecraft:block_blob" => Ok(Configured::BlockBlob(block_blob::BlockBlob {
+                state: state_provider::state_of(&cfg["state"], &mut self.pal)?,
+                can_place_on: predicate::parse(&cfg["can_place_on"], tn, &mut self.pal)?,
+            })),
+            "minecraft:freeze_top_layer" => Ok(Configured::Freeze(freeze::Freeze::compile(tn, &mut self.pal)?)),
+            "minecraft:vines" => Ok(Configured::Vines(vines::Vines::compile(&mut self.pal)?)),
             "minecraft:disk" => Ok(Configured::Disk(Disk {
                 state: state_provider::parse(&cfg["state_provider"], tn, &mut self.pal)?,
                 target: predicate::parse(&cfg["target"], tn, &mut self.pal)?,
@@ -877,6 +895,10 @@ impl Decorator {
                 true
             }
             Configured::SimpleBlock(f) => f.place(region, rng, pos),
+            Configured::Bamboo(f) => f.place(region, rng, pos),
+            Configured::BlockBlob(f) => f.place(region, rng, pos),
+            Configured::Freeze(f) => f.place(region, pos),
+            Configured::Vines(f) => f.place(region, pos),
             Configured::Sequence(list) => {
                 for &q in list {
                     if !self.run_placed(q, region, rng, pos, None) {

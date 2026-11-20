@@ -15,6 +15,7 @@ use super::vegetation;
 pub enum BlockPredicate {
     True,
     Solid([i32; 3]),
+    Replaceable([i32; 3]),
     SturdyFace { offset: [i32; 3], face: usize },
     /// `matching_blocks`: the state's block is one of `blocks` (block indices).
     MatchingBlocks { offset: [i32; 3], blocks: Vec<u16> },
@@ -85,6 +86,7 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
     match ty {
         "minecraft:true" => Ok(BlockPredicate::True),
         "minecraft:solid" => Ok(BlockPredicate::Solid(offset_of(v)?)),
+        "minecraft:replaceable" => Ok(BlockPredicate::Replaceable(offset_of(v)?)),
         "minecraft:has_sturdy_face" => {
             let direction = super::column::direction_of(v["direction"].as_str().ok_or("direction")?)?;
             let face = super::shape::DIRECTIONS.iter().position(|&d| d == direction).ok_or("invalid face")?;
@@ -164,6 +166,7 @@ impl BlockPredicate {
         match self {
             BlockPredicate::True => true,
             BlockPredicate::Solid([dx, dy, dz]) => region.tags.solid(region.get_block(x + dx, y + dy, z + dz)),
+            BlockPredicate::Replaceable([dx, dy, dz]) => region.tags.replaceable(region.get_block(x + dx, y + dy, z + dz)),
             BlockPredicate::SturdyFace { offset: [dx, dy, dz], face } => {
                 region.tags.sturdy(region.get_block(x + dx, y + dy, z + dz), *face)
             }

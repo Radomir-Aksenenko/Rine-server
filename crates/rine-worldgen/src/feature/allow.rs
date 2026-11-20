@@ -62,16 +62,15 @@ impl Rule<'_> {
     /// A block predicate tree (`block_predicate_filter`, `allowed_placement`): every type is ported.
     fn block_predicate(&self, p: &Value) -> bool {
         let Some(ty) = p["type"].as_str() else { return false };
-        if !self.predicates.contains(&ty) {
+        if !(self.predicates.contains(&ty) || self.expanded && matches!(ty, "minecraft:solid" | "minecraft:has_sturdy_face" | "minecraft:replaceable")) {
             return false;
         }
         match ty {
             "minecraft:all_of" | "minecraft:any_of" => p["predicates"].as_array().is_some_and(|l| l.iter().all(|x| self.block_predicate(x))),
             "minecraft:not" => self.block_predicate(&p["predicate"]),
-            // `would_survive` is ported for the blocks of `vegetation.rs` only (the sapling and propagule paths are not
-            // in the allow list).
             "minecraft:would_survive" => p["state"].as_str().is_some_and(|s| {
-                self.simple_block_name(s) || self.expanded && s == "minecraft:pale_oak_sapling"
+                let block = s.split('[').next().unwrap_or(s);
+                self.simple_block_name(s) || self.expanded && (block.ends_with("_sapling") || block == "minecraft:mangrove_propagule")
             }),
             _ => true,
         }
@@ -149,11 +148,11 @@ impl Rule<'_> {
             None => r,
         };
         let Some(ty) = cfg["type"].as_str() else { return false };
-        let pale_oak = r.as_str().is_some_and(|name| name.starts_with("minecraft:pale_oak"));
-        if !(self.types.contains(&ty) || self.expanded && (matches!(ty,
+        if !(self.types.contains(&ty) || self.expanded && matches!(ty,
             "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" | "minecraft:overlay"
-            | "minecraft:random_neighbor_spread" | "minecraft:huge_fungus" | "minecraft:no_op" | "minecraft:random_selector")
-            || ty == "minecraft:tree" && pale_oak))
+            | "minecraft:random_neighbor_spread" | "minecraft:huge_fungus" | "minecraft:no_op" | "minecraft:random_selector"
+            | "minecraft:tree" | "minecraft:fallen_tree" | "minecraft:huge_red_mushroom" | "minecraft:huge_brown_mushroom"
+            | "minecraft:block_blob" | "minecraft:bamboo" | "minecraft:freeze_top_layer" | "minecraft:vines"))
         {
             return false;
         }
@@ -180,6 +179,7 @@ impl Rule<'_> {
             "minecraft:weighted_random_selector" => cfg["features"].as_array().is_some_and(|l| l.iter().all(|e| sub(&e["data"]))),
             "minecraft:overlay" => cfg["features"].as_array().map_or_else(|| sub(&cfg["features"]), |l| l.iter().all(sub)),
             "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" => sub(&cfg["vegetation_feature"]),
+            "minecraft:block_blob" => self.block_predicate(&cfg["can_place_on"]),
             _ => true,
         }
     }
