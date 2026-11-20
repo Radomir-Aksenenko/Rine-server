@@ -86,7 +86,12 @@ const featureOk = (ref) => {
 };
 const placedOk = (p, top) => !!p && placementOk(p.placement, top) && featureOk(p.feature);
 const subOk = (r) => (typeof r === "string" ? placedOk(bundle.placed[r], false) : placedOk(r, false));
-const allowed = (placedName) => placedOk(bundle.placed[placedName], true);
+// RINE_FEATURE_ALLOW_LIST: a file with one placed feature name per line replaces the rule (the full vanilla
+// decoration golden lists every feature the Rust decoration compiles, see feature_golden.rs).
+const ALLOW_LIST = process.env.RINE_FEATURE_ALLOW_LIST
+    ? new Set(fs.readFileSync(process.env.RINE_FEATURE_ALLOW_LIST, 'utf8').split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean))
+    : null;
+const allowed = (placedName) => (ALLOW_LIST ? ALLOW_LIST.has(placedName) : placedOk(bundle.placed[placedName], true));
 
 const packDir = path.join(out, 'data', 'minecraft', 'worldgen', 'biome');
 fs.mkdirSync(packDir, { recursive: true });

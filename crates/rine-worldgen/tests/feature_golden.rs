@@ -414,3 +414,88 @@ fn final_chunk_order(o: &Overworld, dec: &Decorator, cache: &mut HashMap<(i32, i
     centre.palette = dec.palette().to_vec();
     centre
 }
+
+/// Writes the placed features the live decoration compiles (`Pipeline::vanilla` minus its skipped list), one per
+/// line, to `RINE_WRITE_ALLOW_LIST`. `make_feature_datapack.js` with `RINE_FEATURE_ALLOW_LIST` pointing at that file
+/// makes the vanilla datapack for `full_decoration_matches_vanilla_server`.
+#[test]
+fn write_full_decoration_allow_list() {
+    let Ok(path) = std::env::var("RINE_WRITE_ALLOW_LIST") else {
+        return;
+    };
+    let pipeline = rine_worldgen::pipeline::Pipeline::vanilla(Arc::new(Overworld::new(SEED))).expect("pipeline");
+    let skipped: std::collections::HashSet<&str> =
+        pipeline.skipped().iter().map(|s| s.split_once(": ").map_or(s.as_str(), |(n, _)| n)).collect();
+    let bundle: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/features.json")).expect("features.json");
+    let mut names = std::collections::BTreeSet::new();
+    for steps in bundle["biomes"].as_object().expect("biomes").values() {
+        for step in steps.as_array().expect("steps") {
+            for f in step.as_array().expect("step") {
+                let f = f.as_str().expect("name");
+                if !skipped.contains(f) {
+                    names.insert(f.to_string());
+                }
+            }
+        }
+    }
+    let text: String = names.iter().map(|n| format!("{n}\n")).collect();
+    std::fs::write(path, text).expect("write allow list");
+}
+
+/// Full-state golden of the whole live decoration: the vanilla server decorates with exactly the placed features
+/// listed in `RINE_FEATURE_ALLOW_LIST` (see `write_full_decoration_allow_list`), `RINE_FULL_GOLDEN` is its dump.
+/// Reports mismatches per golden/mine block pair; the 5x5 raster order may differ from the vanilla server's chunk
+/// order, so features that read blocks of neighbouring decorations can show order-only mismatches
+/// (`RINE_TREE_ORDER=reverse` tells them apart).
+#[test]
+fn full_decoration_matches_vanilla_server() {
+    let (Ok(golden_path), Ok(list_path)) = (std::env::var("RINE_FULL_GOLDEN"), std::env::var("RINE_FEATURE_ALLOW_LIST")) else {
+        eprintln!("RINE_FULL_GOLDEN or RINE_FEATURE_ALLOW_LIST not set: skipping full decoration golden");
+        return;
+    };
+    let golden = read_golden(&std::fs::read(golden_path).expect("golden file"));
+    let list: std::collections::HashSet<String> =
+        std::fs::read_to_string(list_path).expect("allow list").lines().filter(|l| !l.is_empty()).map(str::to_string).collect();
+    let bundle: serde_json::Value = serde_json::from_str(include_str!("../assets/worldgen/features.json")).expect("features.json");
+    let reverse = std::env::var("RINE_TREE_ORDER").is_ok_and(|v| v == "reverse");
+    let o = Overworld::new(SEED);
+    let dec = Decorator::new(&o, &|n: &str| list.contains(n)).expect("decorator");
+    let mut cache = HashMap::new();
+    let xs: Vec<i32> = golden.chunks.keys().map(|k| k.0).collect();
+    let zs: Vec<i32> = golden.chunks.keys().map(|k| k.1).collect();
+    let (min_x, max_x) = (*xs.iter().min().unwrap(), *xs.iter().max().unwrap());
+    let (min_z, max_z) = (*zs.iter().min().unwrap(), *zs.iter().max().unwrap());
+    let mut keys: Vec<(i32, i32)> = golden
+        .chunks
+        .keys()
+        .copied()
+        .filter(|&(cx, cz)| cx - min_x >= 2 && max_x - cx >= 2 && cz - min_z >= 2 && max_z - cz >= 2)
+        .collect();
+    keys.sort();
+    let mut pairs: HashMap<(String, String), usize> = HashMap::new();
+    let (mut total_blocks, mut total_mismatch) = (0usize, 0usize);
+    for (cx, cz) in keys {
+        let (gpal, gblocks) = &golden.chunks[&(cx, cz)];
+        let gpal: Vec<String> = gpal.iter().map(|s| expand_default(&bundle, s)).collect();
+        let mine = final_chunk_order(&o, &dec, &mut cache, cx, cz, reverse);
+        let mut mismatch = 0usize;
+        for (i, &g) in gblocks.iter().enumerate() {
+            let (a, b) = (gpal[g as usize].as_str(), mine.palette[mine.blocks[i] as usize].as_str());
+            let b = expand_default(&bundle, b);
+            if a != b {
+                mismatch += 1;
+                *pairs.entry((a.to_string(), b)).or_default() += 1;
+            }
+        }
+        total_blocks += gblocks.len();
+        total_mismatch += mismatch;
+        eprintln!("chunk ({cx},{cz}): {mismatch} mismatched blocks");
+    }
+    eprintln!("total: {total_mismatch} / {total_blocks}");
+    let mut top: Vec<_> = pairs.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1));
+    for ((g, m), n) in top.iter().take(40) {
+        eprintln!("  golden {g} | mine {m}: {n}");
+    }
+    assert_eq!(total_mismatch, 0, "decoration differs from vanilla");
+}
