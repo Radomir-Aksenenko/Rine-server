@@ -6,21 +6,27 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.SupportType;
 
 /** Run against the vanilla 26.3 server and libraries with the output path as the only argument. */
 public class FeatureShapes {
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
-        byte[] masks = new byte[Block.BLOCK_STATE_REGISTRY.size() * 2];
+        byte[] masks = new byte[Block.BLOCK_STATE_REGISTRY.size() * 3];
         var level = EmptyBlockGetter.INSTANCE;
         var pos = BlockPos.ZERO;
         for (var state : Block.BLOCK_STATE_REGISTRY) {
-            int i = Block.getId(state) * 2;
+            int i = Block.getId(state) * 3;
             var support = state.getBlockSupportShape(level, pos);
             var collision = state.getCollisionShape(level, pos);
             if (state.isCollisionShapeFullBlock(level, pos)) masks[i] |= 64;
             if (state.canBeReplaced()) masks[i] |= (byte)128;
+            if (state.isSolidRender()) masks[i + 2] |= 1;
+            if (state.liquid()) masks[i + 2] |= 2;
+            if (Block.isFaceFull(collision, Direction.UP)) masks[i + 2] |= 4;
+            if (state.isFaceSturdy(level, pos, Direction.DOWN, SupportType.CENTER)) masks[i + 2] |= 8;
+            if (state.getFluidState().isFull()) masks[i + 2] |= 16;
             for (var face : Direction.values()) {
                 int bit = 1 << face.ordinal();
                 if (Block.isFaceFull(support, face) || Block.isFaceFull(collision, face)) masks[i] |= bit;

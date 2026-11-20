@@ -30,9 +30,9 @@ impl SimpleBlock {
             {
                 return false;
             }
-            let lower = vegetation::copy_waterlogged(tags, vegetation::lower_state(tags, s), region.get_block(x, y, z));
+            let lower = vegetation::copy_waterlogged(tags, vegetation::lower_state(tags, s), || region.get_block(x, y, z));
             region.write(pos, lower, 2);
-            let upper = vegetation::copy_waterlogged(tags, vegetation::upper_state(tags, s), region.get_block(x, y + 1, z));
+            let upper = vegetation::copy_waterlogged(tags, vegetation::upper_state(tags, s), || region.get_block(x, y + 1, z));
             region.write((x, y + 1, z), upper, 2);
         } else if tags.veg.kind_of_block(tags.block_of(s)) == Survival::MossyCarpet {
             if let Some(carpet) = &tags.veg.moss_carpet {
