@@ -6,8 +6,8 @@ use crate::random::{Rng, Xoroshiro};
 
 /// `BitRandomSource.FLOAT_MULTIPLIER` (a float literal).
 const FLOAT_MULTIPLIER: f32 = 5.9604645E-8_f32;
-/// `BitRandomSource.DOUBLE_MULTIPLIER`: declared as `1.110223E-16F`, so it is a float value.
-const DOUBLE_MULTIPLIER: f32 = 1.110223E-16_f32;
+// Vanilla 26.3 BitRandomSource bytecode uses l2d and dmul (2^-53).
+const DOUBLE_MULTIPLIER: f64 = 1.1102230246251565e-16;
 
 pub struct WorldgenRng {
     src: Xoroshiro,
@@ -90,7 +90,7 @@ impl WorldgenRng {
         self.next(24) as f32 * FLOAT_MULTIPLIER
     }
 
-    /// `nextDouble()`: `(long)combined * DOUBLE_MULTIPLIER`, the product is a float widened to double.
+    /// `BitRandomSource.nextDouble()`: combine 53 bits and scale in double precision.
     pub fn next_double(&mut self) -> f64 {
         if self.direct {
             return self.src.next_double();
@@ -98,7 +98,7 @@ impl WorldgenRng {
         let upper = self.next(26);
         let lower = self.next(27);
         let combined = ((upper as i64) << 27) + lower as i64;
-        ((combined as f32) * DOUBLE_MULTIPLIER) as f64
+        combined as f64 * DOUBLE_MULTIPLIER
     }
 
     /// `WorldgenRandom.setDecorationSeed(seed, blockX, blockZ)`. Takes block coordinates (the chunk origin).

@@ -5,14 +5,15 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 import net.minecraft.SharedConstants;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Registry;
+import net.minecraft.core.Holder;
 import net.minecraft.core.registries.Registries;
-import net.minecraft.data.registries.VanillaRegistries;
 import net.minecraft.resources.Identifier;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.resources.RegistryDataLoader;
 import net.minecraft.server.Bootstrap;
 import net.minecraft.server.RegistryLayer;
 import net.minecraft.server.packs.PackType;
@@ -21,6 +22,13 @@ import net.minecraft.server.packs.resources.MultiPackResourceManager;
 import net.minecraft.tags.TagLoader;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.WorldGenLevel;
+import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.LevelHeightAccessor;
+import net.minecraft.world.level.biome.Biome;
+import net.minecraft.world.level.biome.Biomes;
+import net.minecraft.world.level.chunk.PalettedContainerFactory;
+import net.minecraft.world.level.chunk.ProtoChunk;
+import net.minecraft.world.level.chunk.UpgradeData;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
@@ -35,11 +43,20 @@ public class FeatureSamples {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
         try (var packs = new MultiPackResourceManager(PackType.SERVER_DATA, List.of(ServerPacksSource.createVanillaPackSource().fullResources()))) {
-            var builtins = RegistryLayer.createRegistryAccess().getLayer(RegistryLayer.STATIC);
-            TagLoader.loadTagsForExistingRegistries(packs, builtins).forEach(Registry.PendingTags::apply);
+            var layers = RegistryLayer.createRegistryAccess();
+            var tags = TagLoader.loadTagsForExistingRegistries(packs, layers.getLayer(RegistryLayer.STATIC));
+            var context = TagLoader.buildUpdatedLookups(layers.getAccessForLoading(RegistryLayer.WORLD), tags);
+            var lookup = RegistryDataLoader.load(packs, context, RegistryDataLoader.WORLD_REGISTRIES, Runnable::run).join();
+            tags.forEach(tag -> tag.apply());
+            writeSamples(args[0], lookup);
         }
-        var lookup = VanillaRegistries.createWorldLookup();
+    }
+
+    private static void writeSamples(String output, net.minecraft.core.RegistryAccess lookup) throws Exception {
         var registry = lookup.lookupOrThrow(Registries.FEATURE);
+        var biomes = lookup.lookupOrThrow(Registries.BIOME);
+        var plains = biomes.getOrThrow(Biomes.PLAINS);
+        var factory = PalettedContainerFactory.create(lookup);
         var generator = lookup.lookupOrThrow(Registries.WORLD_PRESET).getOrThrow(WorldPresets.NORMAL)
                 .value().createWorldDimensions().overworld();
         Map<String, String> cases = new LinkedHashMap<>();
@@ -57,19 +74,44 @@ public class FeatureSamples {
         cases.put("warped_fungus", "warped");
         cases.put("twisting_vines", "warped");
         cases.put("weeping_vines", "ceiling");
+        var existing = Set.copyOf(cases.keySet());
+        cases.put("lake_lava", "lake");
+        cases.put("sulfur_pool", "lake");
+        cases.put("ice_spike", "snow");
+        cases.put("iceberg_blue", "ocean");
+        cases.put("iceberg_packed", "ocean");
+        cases.put("underwater_magma", "magma");
+        cases.put("warm_ocean_vegetation", "reef");
+        cases.put("glow_lichen", "ceiling");
+        cases.put("sculk_vein", "lichen_water");
+        cases.put("amethyst_geode", "geode");
         StringBuilder out = new StringBuilder();
         for (var entry : cases.entrySet()) {
             var feature = registry.getOrThrow(ResourceKey.create(Registries.FEATURE, Identifier.withDefaultNamespace(entry.getKey()))).value();
-            for (int seed = 0; seed < 16; seed++) {
-                BlockPos origin = new BlockPos(seed * 13 - 80, 64, -47 + seed * 3);
+            boolean checkEffects = !existing.contains(entry.getKey());
+            int count = checkEffects ? 20 : 16;
+            for (int seed = 0; seed < count; seed++) {
+                String scenario = seed < 16 ? entry.getValue() : switch (entry.getValue()) {
+                    case "lake" -> "low";
+                    case "magma", "snow", "geode", "ceiling" -> "open";
+                    case "lichen_water", "reef" -> "buried";
+                    default -> entry.getValue();
+                };
+                BlockPos origin = new BlockPos(seed * 13 - 80, scenario.equals("low") ? -60 : 64, -47 + seed * 3);
                 WorldgenRandom rng = new WorldgenRandom(new XoroshiroRandomSource(seed));
-                Area area = new Area(entry.getValue(), origin, new XoroshiroRandomSource(seed + 100));
+                Area area = new Area(scenario, origin, new XoroshiroRandomSource(seed + 100), plains, factory);
                 boolean placed = feature.place(area.level(), generator, rng, origin);
-                out.append("%s %s %d %b %s %d\n".formatted(entry.getKey(), entry.getValue(), seed, placed,
+                out.append("%s %s %d %b %s %d".formatted(entry.getKey(), scenario, seed, placed,
                         Long.toUnsignedString(area.hash, 16), rng.nextInt()));
+                if (checkEffects) {
+                    for (long value : new long[]{area.flags, area.blockTicks, area.fluidTicks, area.postProcessing}) {
+                        out.append(' ').append(Long.toUnsignedString(value, 16));
+                    }
+                }
+                out.append('\n');
             }
         }
-        Files.writeString(Path.of(args[0]), out);
+        Files.writeString(Path.of(output), out);
     }
 
     private static class Area {
@@ -77,12 +119,21 @@ public class FeatureSamples {
         private final String scenario;
         private final BlockPos origin;
         private final RandomSource random;
+        private final Holder<Biome> biome;
+        private final PalettedContainerFactory factory;
+        private final Map<ChunkPos, ProtoChunk> chunks = new HashMap<>();
         private long hash = 0xcbf29ce484222325L;
+        private long flags = hash;
+        private long blockTicks = hash;
+        private long fluidTicks = hash;
+        private long postProcessing = hash;
 
-        Area(String scenario, BlockPos origin, RandomSource random) {
+        Area(String scenario, BlockPos origin, RandomSource random, Holder<Biome> biome, PalettedContainerFactory factory) {
             this.scenario = scenario;
             this.origin = origin;
             this.random = random;
+            this.biome = biome;
+            this.factory = factory;
         }
 
         private BlockState get(BlockPos p) {
@@ -91,6 +142,25 @@ public class FeatureSamples {
             int x = p.getX() - origin.getX();
             int y = p.getY() - origin.getY();
             int z = p.getZ() - origin.getZ();
+            if (scenario.equals("open")) return Blocks.AIR.defaultBlockState();
+            if (scenario.equals("buried")) return Blocks.STONE.defaultBlockState();
+            if (scenario.equals("lake")) return y < 0 ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState();
+            if (scenario.equals("snow")) {
+                if (y == -1) return Blocks.SNOW_BLOCK.defaultBlockState();
+                if (y < -1) return Blocks.DIRT.defaultBlockState();
+                return Blocks.AIR.defaultBlockState();
+            }
+            if (scenario.equals("reef")) return y < 0 ? Blocks.STONE.defaultBlockState() : Blocks.WATER.defaultBlockState();
+            if (scenario.equals("ocean") || scenario.equals("magma")) {
+                int floor = scenario.equals("magma") ? -3 : -32;
+                if (y <= floor) return Blocks.STONE.defaultBlockState();
+                return y < 0 || scenario.equals("magma") ? Blocks.WATER.defaultBlockState() : Blocks.AIR.defaultBlockState();
+            }
+            if (scenario.equals("lichen_water")) {
+                if (y == -1 || x == -1) return Blocks.STONE.defaultBlockState();
+                return Blocks.WATER.defaultBlockState();
+            }
+            if (scenario.equals("geode")) return (x == 8 || z == -2) ? Blocks.WATER.defaultBlockState() : Blocks.STONE.defaultBlockState();
             if (scenario.equals("ceiling")) return y >= 1 ? Blocks.STONE.defaultBlockState() : Blocks.AIR.defaultBlockState();
             if (scenario.equals("pale") && x == -1 && z == 0 && y >= 0 && y <= 3) return Blocks.STONE.defaultBlockState();
             if (scenario.equals("moss") && x == 1 && z == 0 && y == -1) return Blocks.BEDROCK.defaultBlockState();
@@ -105,11 +175,18 @@ public class FeatureSamples {
             };
         }
 
-        private boolean put(BlockPos p, BlockState state) {
+        private static long mix(long hash, int value) {
+            return (hash ^ value) * 0x100000001b3L;
+        }
+
+        private static long mixPos(long hash, BlockPos p) {
+            return mix(mix(mix(hash, p.getX()), p.getY()), p.getZ());
+        }
+
+        private boolean put(BlockPos p, BlockState state, int updateFlags) {
             if (p.getY() < -64 || p.getY() >= 320) return false;
-            for (int value : new int[]{p.getX(), p.getY(), p.getZ(), Block.getId(state)}) {
-                hash = (hash ^ value) * 0x100000001b3L;
-            }
+            hash = mix(mixPos(hash, p), Block.getId(state));
+            flags = mix(flags, updateFlags);
             cells.put(p.immutable(), state);
             return true;
         }
@@ -123,16 +200,42 @@ public class FeatureSamples {
                         case "isWaterAt" -> get((BlockPos)args[0]).getFluidState().is(Fluids.WATER);
                         case "getMinY" -> -64;
                         case "getHeight" -> 384;
+                        case "getSeaLevel" -> 63;
+                        case "getSeed" -> 0L;
+                        case "getBrightness" -> 0;
+                        case "getBiome" -> biome;
+                        case "isInsideBuildHeight" -> {
+                            int y = args[0] instanceof BlockPos p ? p.getY() : (int)args[0];
+                            yield y >= -64 && y < 320;
+                        }
+                        case "getChunk" -> chunks.computeIfAbsent(ChunkPos.containing((BlockPos)args[0]), p ->
+                                new ProtoChunk(p, UpgradeData.EMPTY, LevelHeightAccessor.create(-64, 384), factory, null) {
+                                    @Override public void markPosForPostProcessing(BlockPos pos) {
+                                        super.markPosForPostProcessing(pos);
+                                        if (isInsideBuildHeight(pos)) Area.this.postProcessing = mixPos(Area.this.postProcessing, pos);
+                                    }
+                                });
                         case "isEmptyBlock" -> get((BlockPos)args[0]).isAir();
                         case "isStateAtPosition" -> ((Predicate<BlockState>)args[1]).test(get((BlockPos)args[0]));
                         case "isOutsideBuildHeight" -> {
                             int y = args[0] instanceof BlockPos p ? p.getY() : (int)args[0];
                             yield y < -64 || y >= 320;
                         }
-                        case "setBlock", "setBlockAndUpdate" -> put((BlockPos)args[0], (BlockState)args[1]);
-                        case "destroyBlock" -> !get((BlockPos)args[0]).isAir() && put((BlockPos)args[0], Blocks.AIR.defaultBlockState());
+                        case "setBlock" -> put((BlockPos)args[0], (BlockState)args[1], (int)args[2]);
+                        case "setBlockAndUpdate" -> put((BlockPos)args[0], (BlockState)args[1], Block.UPDATE_ALL);
+                        case "destroyBlock" -> !get((BlockPos)args[0]).isAir() && put((BlockPos)args[0], Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
                         case "getRandom" -> random;
-                        case "scheduleTick" -> null;
+                        case "scheduleTick" -> {
+                            var p = (BlockPos)args[0];
+                            var type = args[1];
+                            if (type instanceof Block b) {
+                                blockTicks = mix(mixPos(blockTicks, p), Block.getId(b.defaultBlockState()));
+                            } else {
+                                int fluid = type == Fluids.WATER ? 1 : type == Fluids.FLOWING_WATER ? 2 : type == Fluids.LAVA ? 3 : 4;
+                                fluidTicks = mix(mixPos(fluidTicks, p), fluid);
+                            }
+                            yield null;
+                        }
                         default -> throw new UnsupportedOperationException(method.toString());
                     });
         }

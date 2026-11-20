@@ -291,7 +291,7 @@ impl Pipeline {
             }
             if claimed.is_empty() && !waiting {
                 for p in area {
-                    if let Some(s) = g.slots.get_mut(p) {
+                    if let Some(s) = g.slots.get_mut(p).filter(|s| !s.ghost) {
                         s.pins += 1;
                     }
                 }
@@ -458,7 +458,8 @@ impl Pipeline {
         let mut g = self.lock();
         let slot = g.slots.remove(&(cx, cz)).expect("pinned");
         for p in area {
-            if let Some(s) = g.slots.get_mut(p) {
+            // A ghost may appear during decoration after the request's pins were acquired.
+            if let Some(s) = g.slots.get_mut(p).filter(|s| !s.ghost) {
                 s.pins -= 1;
             }
         }

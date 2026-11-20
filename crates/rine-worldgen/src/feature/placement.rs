@@ -88,6 +88,9 @@ pub enum Modifier {
     BlockPredicate(BlockPredicate),
     EnvironmentScan { dy: i32, target: BlockPredicate, allowed: BlockPredicate, steps: i32 },
     SurfaceWaterDepth(i32),
+    SurfaceRelativeThreshold { kind: Kind, min: i32, max: i32 },
+    RandomChance(f32),
+    Cuboid { xz: IntProvider, y: IntProvider, edges: bool, interior: bool },
     /// `offset` (`OffsetPlacement`).
     Offset(IntProvider, IntProvider, IntProvider),
     /// `heightmap` (`HeightmapPlacement`): the column's height, when above the build bottom.
@@ -191,39 +194,43 @@ pub fn sample_height(p: &HeightProvider, rng: &mut WorldgenRng, min_gen_y: i32, 
 /// `top` is the placed-feature id for `biome` checks (`PlacementContext.topFeature`); nested placements
 /// have none, and vanilla throws for `biome` there, so that case is a bug in the data and panics.
 pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32), top: Option<usize>, out: &mut Vec<(i32, i32, i32)>) {
+    modify_with(m, region, rng, origin, top, |p| out.push(p));
+}
+
+pub(super) fn modify_with(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: (i32, i32, i32), top: Option<usize>, mut out: impl FnMut((i32, i32, i32))) {
     let (ox, oy, oz) = origin;
     match m {
         Modifier::Count(p) => {
             // RepeatingPlacement.modify: count(random, origin) then emit origin count times.
             let count = sample_int(p, rng);
             for _ in 0..count {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::RarityFilter(chance) => {
             // PlacementFilter.modify: shouldPlace(random) -> emit origin.
             if rng.next_float() < 1.0f32 / *chance as f32 {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::InSquare => {
             let x = rng.next_int_bound(16) + ox;
             let z = rng.next_int_bound(16) + oz;
-            out.push((x, oy, z));
+            out((x, oy, z));
         }
         Modifier::HeightRange(p) => {
             let y = sample_height(p, rng, region.min_y(), region.height());
-            out.push((ox, y, oz));
+            out((ox, y, oz));
         }
         Modifier::Biome => {
             let top = top.expect("biome filter on a nested placed feature");
             if region.biome_has_feature(ox, oy, oz, top) {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::BlockPredicate(p) => {
             if p.test(region, ox, oy, oz) {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::EnvironmentScan { dy, target, allowed, steps } => {
@@ -233,7 +240,7 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
             }
             for _ in 0..*steps {
                 if target.test(region, ox, y, oz) {
-                    out.push((ox, y, oz));
+                    out((ox, y, oz));
                     return;
                 }
                 y += dy;
@@ -245,7 +252,7 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
                 }
             }
             if target.test(region, ox, y, oz) {
-                out.push((ox, y, oz));
+                out((ox, y, oz));
             }
         }
         Modifier::CountOnEveryLayer { count, empty_blocks, bedrock } => {
@@ -275,7 +282,7 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
                         floors
                     });
                     if let Some(&y) = column.get(layer) {
-                        out.push((x, y, z));
+                        out((x, y, z));
                         found = true;
                     }
                     attempt += 1;
@@ -285,25 +292,53 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
                 }
             }
         }
+        Modifier::RandomChance(chance) => {
+            if rng.next_float() < *chance {
+                out(origin);
+            }
+        }
+        Modifier::Cuboid { xz, y, edges, interior } => {
+            let height = sample_int(y, rng);
+            let width = sample_int(xz, rng);
+            let length = sample_int(xz, rng);
+            for x in 0..=width {
+                let edge_x = x == 0 || x == width;
+                for y in 0..=height {
+                    let edge_y = y == 0 || y == height;
+                    for z in 0..=length {
+                        let boundary_axes = u8::from(edge_x) + u8::from(edge_y) + u8::from(z == 0 || z == length);
+                        if (*edges || boundary_axes < 2) && (*interior || boundary_axes != 0) {
+                            out((ox + x, oy + y, oz + z));
+                        }
+                    }
+                }
+            }
+        }
+        Modifier::SurfaceRelativeThreshold { kind, min, max } => {
+            let delta = oy as i64 - region.height_of(*kind, ox, oz) as i64;
+            if (*min as i64..=*max as i64).contains(&delta) {
+                out(origin);
+            }
+        }
         Modifier::SurfaceWaterDepth(max_depth) => {
             let surface = region.height_of(Kind::WorldSurface, ox, oz);
             let bottom = region.height_of(Kind::OceanFloor, ox, oz);
             if surface - bottom <= *max_depth {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::Offset(x, y, z) => {
             let dx = sample_int(x, rng);
             let dy = sample_int(y, rng);
             let dz = sample_int(z, rng);
-            out.push((ox + dx, oy + dy, oz + dz));
+            out((ox + dx, oy + dy, oz + dz));
         }
         Modifier::NoiseThresholdCount { level, below, above } => {
             // RepeatingPlacement.count: no random draws; the origin is emitted `count` times.
             let noise = biome_info_noise(ox as f64 / 200.0, oz as f64 / 200.0) as f64;
             let count = if noise < *level { *below } else { *above };
             for _ in 0..count {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::NoiseBasedCount { ratio, factor, offset } => {
@@ -311,14 +346,14 @@ pub fn modify(m: &Modifier, region: &mut Region, rng: &mut WorldgenRng, origin: 
             let noise = biome_info_noise(ox as f64 / factor, oz as f64 / factor) as f64;
             let count = ((noise + offset) * *ratio as f64).ceil() as i32;
             for _ in 0..count {
-                out.push(origin);
+                out(origin);
             }
         }
         Modifier::Heightmap(kind) => {
             // HeightmapPlacement.modify: emit (x, height, z) when height > minY; draws no random numbers.
             let height = region.height_of(*kind, ox, oz);
             if height > region.min_y() {
-                out.push((ox, height, oz));
+                out((ox, height, oz));
             }
         }
     }
@@ -413,6 +448,18 @@ pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
         )),
         "minecraft:heightmap" => Ok(Modifier::Heightmap(Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?)),
         "minecraft:surface_water_depth_filter" => Ok(Modifier::SurfaceWaterDepth(v["max_water_depth"].as_i64().ok_or("max_water_depth")? as i32)),
+        "minecraft:random_chance" => Ok(Modifier::RandomChance(v["chance"].as_f64().ok_or("chance")? as f32)),
+        "minecraft:cuboid" => Ok(Modifier::Cuboid {
+            xz: parse_int_provider(&v["xz_size"])?,
+            y: parse_int_provider(&v["y_size"])?,
+            edges: v["include_edges"].as_bool().unwrap_or(true),
+            interior: v["include_interior"].as_bool().unwrap_or(true),
+        }),
+        "minecraft:surface_relative_threshold_filter" => Ok(Modifier::SurfaceRelativeThreshold {
+            kind: Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?,
+            min: v["min_inclusive"].as_i64().unwrap_or(i32::MIN as i64) as i32,
+            max: v["max_inclusive"].as_i64().unwrap_or(i32::MAX as i64) as i32,
+        }),
         "minecraft:noise_threshold_count" => Ok(Modifier::NoiseThresholdCount {
             level: v["noise_level"].as_f64().ok_or("noise_level")?,
             below: v["below_noise"].as_i64().ok_or("below_noise")? as i32,

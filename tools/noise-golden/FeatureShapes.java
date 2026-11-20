@@ -13,6 +13,7 @@ public class FeatureShapes {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
         byte[] masks = new byte[Block.BLOCK_STATE_REGISTRY.size() * 2];
+        byte[] occlusion = new byte[Block.BLOCK_STATE_REGISTRY.size()];
         var level = EmptyBlockGetter.INSTANCE;
         var pos = BlockPos.ZERO;
         for (var state : Block.BLOCK_STATE_REGISTRY) {
@@ -21,12 +22,16 @@ public class FeatureShapes {
             var collision = state.getCollisionShape(level, pos);
             if (state.isCollisionShapeFullBlock(level, pos)) masks[i] |= 64;
             if (state.canBeReplaced()) masks[i] |= (byte)128;
+            if (!collision.getFaceShape(Direction.UP).isEmpty()) occlusion[i / 2] |= 64;
+            if (state.liquid()) occlusion[i / 2] |= (byte)128;
             for (var face : Direction.values()) {
                 int bit = 1 << face.ordinal();
                 if (Block.isFaceFull(support, face) || Block.isFaceFull(collision, face)) masks[i] |= bit;
                 if (state.isFaceSturdy(level, pos, face)) masks[i + 1] |= bit;
+                if (Block.isShapeFullBlock(state.getFaceOcclusionShape(face))) occlusion[i / 2] |= bit;
             }
         }
         Files.write(Path.of(args[0]), masks);
+        if (args.length > 1) Files.write(Path.of(args[1]), occlusion);
     }
 }

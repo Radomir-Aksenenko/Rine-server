@@ -25,7 +25,7 @@ pub struct Tags {
     fluid_of: Vec<Fluid>,
     /// `Heightmap.Types` predicates as bit masks (see `heightmap::Kind::bit`).
     opaque: Vec<u8>,
-    shapes: Vec<[u8; 2]>,
+    shapes: Vec<[u8; 3]>,
     /// Vegetation survival tables (`vegetation::VegTable`), installed after the palette is final.
     pub(crate) veg: super::vegetation::VegTable,
 }
@@ -129,10 +129,35 @@ impl Tags {
     pub fn replaceable(&self, state: u16) -> bool {
         self.shapes[state as usize][0] & 128 != 0
     }
+
+    #[inline]
+    pub(super) fn face_occluding(&self, state: u16, face: usize) -> bool {
+        self.shapes[state as usize][2] & (1 << face) != 0
+    }
+
+    #[inline]
+    pub(super) fn collision_top(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 64 != 0
+    }
+
+    #[inline]
+    pub(super) fn liquid(&self, state: u16) -> bool {
+        self.shapes[state as usize][2] & 128 != 0
+    }
 }
 
 pub type Pos = (i32, i32, i32);
 pub type BlockWrite = (i32, i32, i32, u16, Option<u32>);
+
+/// Deferred effects emitted by a FEATURES pass, in emission order within each list.
+#[derive(Default)]
+pub struct DecorationEffects {
+    /// Block identities are represented by their palette state.
+    pub block_ticks: Vec<(Pos, u16)>,
+    /// Fluid identities retain the source/flowing distinction.
+    pub fluid_ticks: Vec<(Pos, Fluid)>,
+    pub post_processing: Vec<Pos>,
+}
 
 /// Live placement performs each write immediately, including its neighbor updates.
 pub trait LiveRegion {
@@ -152,7 +177,7 @@ pub struct Region<'a> {
     pub tags: &'a Tags,
     live: Option<&'a mut dyn LiveRegion>,
     level_random: Option<super::rng::WorldgenRng>,
-    scheduled: Vec<(Pos, u16)>,
+    effects: DecorationEffects,
     /// `placed_in_biome[biome][placed]`: `Biome.hasFeature` over the biome's full feature lists.
     placed_in_biome: &'a [Vec<bool>],
     /// `None` for the grower views (`grower_region`), which have no overworld biomes.
@@ -174,7 +199,7 @@ pub struct Region<'a> {
 impl<'a> Region<'a> {
     pub fn live(tags: &'a Tags, min_y: i32, height: i32, live: &'a mut dyn LiveRegion) -> Self {
         Self {
-            tags, live: Some(live), level_random: None, scheduled: Vec::new(), min_y, height, cx: 0, cz: 0,
+            tags, live: Some(live), level_random: None, effects: DecorationEffects::default(), min_y, height, cx: 0, cz: 0,
             placed_in_biome: &[], biomes: None, blocks: Vec::new(), wg: Vec::new(),
             fin: Vec::new(), log: None,
         }
@@ -210,12 +235,37 @@ impl<'a> Region<'a> {
         if let Some(live) = self.live.as_mut() {
             live.schedule(pos, state);
         } else if !self.outside_build_height(pos.1) && self.ensure_can_write(pos.0, pos.1, pos.2) {
-            self.scheduled.push((pos, state));
+            self.effects.block_ticks.push((pos, state));
         }
     }
 
-    pub(crate) fn take_scheduled(&mut self) -> Vec<(Pos, u16)> {
-        std::mem::take(&mut self.scheduled)
+    pub fn take_effects(&mut self) -> DecorationEffects {
+        std::mem::take(&mut self.effects)
+    }
+
+    pub(super) fn mark_post_process(&mut self, pos: Pos) {
+        if self.slot(pos.0, pos.1, pos.2).is_some() {
+            self.effects.post_processing.push(pos);
+        }
+    }
+
+    pub(super) fn schedule_fluid(&mut self, pos: Pos, fluid: Fluid) {
+        if self.slot(pos.0, pos.1, pos.2).is_some() {
+            self.effects.fluid_ticks.push((pos, fluid));
+        }
+    }
+
+    pub(super) fn world_seed(&self) -> i64 {
+        self.biomes.as_ref().map_or(0, |b| b.overworld.seed())
+    }
+
+    pub(super) fn mark_above(&mut self, (x, y, z): Pos) {
+        for py in y + 1..=y + 2 {
+            if self.is_air(x, py, z) {
+                break;
+            }
+            self.mark_post_process((x, py, z));
+        }
     }
 
     /// A region for single-feature placement on the live world (saplings): `blocks` are the nine chunks in
@@ -229,7 +279,7 @@ impl<'a> Region<'a> {
             tags,
             live: None,
             level_random: None,
-            scheduled: Vec::new(),
+            effects: DecorationEffects::default(),
             placed_in_biome: &[],
             biomes: None,
             min_y,
@@ -287,7 +337,8 @@ impl<'a> Region<'a> {
         }
         let quarts = std::array::from_fn(|i| chunks[i].biomes.as_slice());
         let biomes = Some(DecorationBiomes { overworld, quarts });
-        Region { tags, live: None, level_random: None, scheduled: Vec::new(), placed_in_biome, biomes, min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
+        Region { tags, live: None, level_random: None, effects: DecorationEffects::default(),
+            placed_in_biome, biomes, min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
     }
 
     pub(crate) fn take_final_heights(&mut self) -> Vec<i32> {
@@ -438,12 +489,22 @@ impl<'a> Region<'a> {
 
     /// `level.getBiome(pos).hasFeature(top)`.
     pub fn biome_has_feature(&self, x: i32, y: i32, z: i32, placed: usize) -> bool {
-        let Some(b) = &self.biomes else { return false };
+        self.biome_at((x, y, z)).is_some_and(|(_, biome)| self.placed_in_biome[biome as usize][placed])
+    }
+
+    fn biome_at(&self, (x, y, z): Pos) -> Option<(&Overworld, u16)> {
+        let b = self.biomes.as_ref()?;
         let (qx, qy, qz) = b.overworld.biome_quart(x, y, z);
-        let Some(chunk) = self.chunk_index(qx * 4, qz * 4) else { return false };
+        let chunk = self.chunk_index(qx * 4, qz * 4)?;
         let local_y = (qy - (self.min_y >> 2)).clamp(0, (self.height >> 2) - 1);
         let index = ((local_y * 4 + (qz & 3)) * 4 + (qx & 3)) as usize;
-        let biome = b.quarts[chunk][index] as usize;
-        self.placed_in_biome[biome][placed]
+        Some((b.overworld, b.quarts[chunk][index] as u16))
+    }
+
+    pub(super) fn should_freeze_water(&self, p: Pos, water: u16) -> bool {
+        let (x, y, z) = p;
+        let state = self.get_block(x, y, z);
+        !self.outside_build_height(y) && self.tags.is_block(state, water) && self.tags.fluid(state) == Fluid::Water
+            && self.biome_at(p).is_some_and(|(o, biome)| o.biome_temperature(biome, x, y, z) < 0.15)
     }
 }

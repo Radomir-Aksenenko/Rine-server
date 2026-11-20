@@ -21,12 +21,13 @@ pub enum Survival {
     /// half below it.
     DoublePlant,
     SmallDripleaf,
-    /// `SeaPickleBlock.mayPlaceOn`: the block below has a sturdy UP face.
+    /// `SeaPickleBlock.mayPlaceOn`: the block below has a collision or sturdy UP face.
     SeaPickle,
     /// `SeagrassBlock.mayPlaceOn`: a sturdy UP face and not `cannot_support_seagrass`.
     Seagrass,
     Carpet,
     MossyCarpet,
+    Unconditional,
     Tagged(usize),
 }
 
@@ -47,6 +48,8 @@ pub fn kind_of_name(name: &str) -> Option<Survival> {
         "minecraft:seagrass" => Survival::Seagrass,
         "minecraft:moss_carpet" => Survival::Carpet,
         "minecraft:pale_moss_carpet" => Survival::MossyCarpet,
+        "minecraft:potent_sulfur" | "minecraft:tube_coral_block" | "minecraft:brain_coral_block"
+        | "minecraft:bubble_coral_block" | "minecraft:fire_coral_block" | "minecraft:horn_coral_block" => Survival::Unconditional,
         "minecraft:azalea" | "minecraft:flowering_azalea" => Survival::Tagged(0),
         "minecraft:crimson_fungus" => Survival::Tagged(1),
         "minecraft:warped_fungus" => Survival::Tagged(2),
@@ -237,9 +240,10 @@ fn survive_with(tags: &Tags, at: &dyn Fn(i32, i32, i32) -> u16, s: u16) -> bool 
                 tags.has(below, v.tag_vegetation)
             }
         }
-        Survival::SeaPickle => tags.sturdy(below, 1),
+        Survival::SeaPickle => tags.collision_top(below) || tags.sturdy(below, 1),
         Survival::Seagrass => tags.sturdy(below, 1) && !tags.has(below, v.tag_no_seagrass),
         Survival::Carpet => !tags.is_air(below),
+        Survival::Unconditional => true,
         Survival::MossyCarpet => v.moss_carpet.as_ref().is_some_and(|carpet| carpet.can_survive(tags, s, below)),
         Survival::Tagged(i) => v.extra_tags[i].is_some_and(|tag| tags.has(below, tag)),
     }
