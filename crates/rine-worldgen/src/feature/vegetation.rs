@@ -21,14 +21,14 @@ pub enum Survival {
     /// half below it.
     DoublePlant,
     SmallDripleaf,
-    /// `SeaPickleBlock.mayPlaceOn`: the block below has a sturdy UP face.
+    /// `SeaPickleBlock.mayPlaceOn`: the block below has a collision or sturdy UP face.
     SeaPickle,
     /// `SeagrassBlock.mayPlaceOn`: a sturdy UP face and not `cannot_support_seagrass`.
     Seagrass,
     TallSeagrass,
     Mushroom,
     SturdyGround,
-    Unrestricted,
+    Unconditional,
     LilyPad,
     SporeBlossom,
     Cactus,
@@ -57,13 +57,15 @@ pub fn kind_of_name(name: &str) -> Option<Survival> {
         "minecraft:tall_seagrass" => Survival::TallSeagrass,
         "minecraft:brown_mushroom" | "minecraft:red_mushroom" => Survival::Mushroom,
         "minecraft:leaf_litter" => Survival::SturdyGround,
-        "minecraft:melon" | "minecraft:pumpkin" => Survival::Unrestricted,
+        "minecraft:melon" | "minecraft:pumpkin" => Survival::Unconditional,
         "minecraft:lily_pad" => Survival::LilyPad,
         "minecraft:spore_blossom" => Survival::SporeBlossom,
         "minecraft:cactus" => Survival::Cactus,
         "minecraft:sugar_cane" => Survival::SugarCane,
         "minecraft:moss_carpet" => Survival::Carpet,
         "minecraft:pale_moss_carpet" => Survival::MossyCarpet,
+        "minecraft:potent_sulfur" | "minecraft:tube_coral_block" | "minecraft:brain_coral_block"
+        | "minecraft:bubble_coral_block" | "minecraft:fire_coral_block" | "minecraft:horn_coral_block" => Survival::Unconditional,
         "minecraft:azalea" | "minecraft:flowering_azalea" => Survival::Tagged(0),
         "minecraft:crimson_fungus" => Survival::Tagged(1),
         "minecraft:warped_fungus" => Survival::Tagged(2),
@@ -275,7 +277,11 @@ pub fn can_survive(region: &Region, s: u16, x: i32, y: i32, z: i32) -> bool {
                 tags.has(below, v.tag_vegetation)
             }
         }
-        Survival::SeaPickle | Survival::SturdyGround => tags.sturdy(below(), 1),
+        Survival::SeaPickle => {
+            let below = below();
+            tags.collision_top(below) || tags.sturdy(below, 1)
+        }
+        Survival::SturdyGround => tags.sturdy(below(), 1),
         Survival::Seagrass => {
             let below = below();
             tags.sturdy(below, 1) && !tags.has(below, v.tag_no_seagrass)
@@ -295,7 +301,7 @@ pub fn can_survive(region: &Region, s: u16, x: i32, y: i32, z: i32) -> bool {
             has(below, v.mushroom_light_override)
                 || region.feature_raw_brightness((x, y, z)) < 13 && tags.solid_render(below)
         }
-        Survival::Unrestricted => true,
+        Survival::Unconditional => true,
         Survival::LilyPad => {
             let below = below();
             let above = at(0, 0, 0);

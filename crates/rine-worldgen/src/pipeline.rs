@@ -308,7 +308,7 @@ impl Pipeline {
             if claimed.is_empty() && !waiting {
                 let mut pinned = Vec::with_capacity(area.len());
                 for p in area {
-                    if let Some(s) = g.slots.get_mut(p) {
+                    if let Some(s) = g.slots.get_mut(p).filter(|s| !s.ghost) {
                         s.pins += 1;
                         pinned.push(*p);
                     }

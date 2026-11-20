@@ -16,6 +16,7 @@ pub enum BlockPredicate {
     True,
     Solid([i32; 3]),
     Replaceable([i32; 3]),
+    InsideBuildHeight(i32),
     SturdyFace { offset: [i32; 3], face: usize },
     /// `matching_blocks`: the state's block is one of `blocks` (block indices).
     MatchingBlocks { offset: [i32; 3], blocks: Vec<u16> },
@@ -87,6 +88,7 @@ pub fn parse(v: &Value, tag_names: &[String], pal: &mut Palette) -> Result<Block
         "minecraft:true" => Ok(BlockPredicate::True),
         "minecraft:solid" => Ok(BlockPredicate::Solid(offset_of(v)?)),
         "minecraft:replaceable" => Ok(BlockPredicate::Replaceable(offset_of(v)?)),
+        "minecraft:inside_world_bounds" => Ok(BlockPredicate::InsideBuildHeight(offset_of(v)?[1])),
         "minecraft:has_sturdy_face" => {
             let direction = super::column::direction_of(v["direction"].as_str().ok_or("direction")?)?;
             let face = super::shape::DIRECTIONS.iter().position(|&d| d == direction).ok_or("invalid face")?;
@@ -165,6 +167,7 @@ impl BlockPredicate {
     pub fn test(&self, region: &Region, x: i32, y: i32, z: i32) -> bool {
         match self {
             BlockPredicate::True => true,
+            BlockPredicate::InsideBuildHeight(dy) => !region.outside_build_height(y + dy),
             BlockPredicate::Solid([dx, dy, dz]) => region.tags.solid(region.get_block(x + dx, y + dy, z + dz)),
             BlockPredicate::Replaceable([dx, dy, dz]) => region.tags.replaceable(region.get_block(x + dx, y + dy, z + dz)),
             BlockPredicate::SturdyFace { offset: [dx, dy, dz], face } => {

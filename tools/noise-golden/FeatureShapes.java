@@ -8,16 +8,18 @@ import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.SupportType;
 
-/** Run against the vanilla 26.3 server and libraries with the output path as the only argument. */
+/** Run against the vanilla 26.3 server and libraries with the shapes and occlusion output paths. */
 public class FeatureShapes {
     public static void main(String[] args) throws Exception {
         SharedConstants.tryDetectVersion();
         Bootstrap.bootStrap();
         byte[] masks = new byte[Block.BLOCK_STATE_REGISTRY.size() * 3];
+        byte[] occlusion = new byte[Block.BLOCK_STATE_REGISTRY.size()];
         var level = EmptyBlockGetter.INSTANCE;
         var pos = BlockPos.ZERO;
         for (var state : Block.BLOCK_STATE_REGISTRY) {
-            int i = Block.getId(state) * 3;
+            int id = Block.getId(state);
+            int i = id * 3;
             var support = state.getBlockSupportShape(level, pos);
             var collision = state.getCollisionShape(level, pos);
             if (state.isCollisionShapeFullBlock(level, pos)) masks[i] |= 64;
@@ -27,12 +29,15 @@ public class FeatureShapes {
             if (Block.isFaceFull(collision, Direction.UP)) masks[i + 2] |= 4;
             if (state.isFaceSturdy(level, pos, Direction.DOWN, SupportType.CENTER)) masks[i + 2] |= 8;
             if (state.getFluidState().isFull()) masks[i + 2] |= 16;
+            if (!collision.getFaceShape(Direction.UP).isEmpty()) occlusion[id] |= 64;
             for (var face : Direction.values()) {
                 int bit = 1 << face.ordinal();
                 if (Block.isFaceFull(support, face) || Block.isFaceFull(collision, face)) masks[i] |= bit;
                 if (state.isFaceSturdy(level, pos, face)) masks[i + 1] |= bit;
+                if (Block.isShapeFullBlock(state.getFaceOcclusionShape(face))) occlusion[id] |= bit;
             }
         }
         Files.write(Path.of(args[0]), masks);
+        Files.write(Path.of(args[1]), occlusion);
     }
 }

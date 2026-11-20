@@ -41,6 +41,13 @@ mod moss_carpet;
 mod shape;
 mod vegetation_patch;
 mod vines;
+mod lake;
+mod spike;
+mod underwater_magma;
+mod coral;
+mod geode;
+mod iceberg;
+mod multiface;
 #[cfg(test)]
 mod samples;
 
@@ -69,6 +76,14 @@ enum Configured {
     Unported,
     Ore(OreFeature),
     Disk(Disk),
+    Lake(Box<lake::Lake>),
+    Spike(spike::Spike),
+    UnderwaterMagma(underwater_magma::UnderwaterMagma),
+    Iceberg(iceberg::Iceberg),
+    Coral(coral::Coral),
+    CoralDecoration(coral::Decoration),
+    Geode(Box<geode::Geode>),
+    Multiface(Box<multiface::Multiface>),
     Spring(Spring),
     BlockColumn(BlockColumn),
     BlueIce(BlueIce),
@@ -292,6 +307,45 @@ impl<'a> Compiler<'a> {
             })),
             "minecraft:freeze_top_layer" => Ok(Configured::Freeze(freeze::Freeze::compile(tn, &mut self.pal)?)),
             "minecraft:vines" => Ok(Configured::Vines(vines::Vines::compile(&mut self.pal)?)),
+            "minecraft:lake" => Ok(Configured::Lake(Box::new(lake::Lake {
+                fluid: state_provider::parse(provider_value(bundle, &cfg["fluid"]), tn, &mut self.pal)?,
+                barrier: state_provider::parse(provider_value(bundle, &cfg["barrier"]), tn, &mut self.pal)?,
+                can_place: predicate::parse(&cfg["can_place_feature"], tn, &mut self.pal)?,
+                replace_fluid: predicate::parse(&cfg["can_replace_with_air_or_fluid"], tn, &mut self.pal)?,
+                replace_barrier: predicate::parse(&cfg["can_replace_with_barrier"], tn, &mut self.pal)?,
+                cave_air: self.pal.default_state("minecraft:cave_air"),
+                ice: self.pal.default_state("minecraft:ice"),
+                water: self.pal.block("minecraft:water"),
+            }))),
+            "minecraft:spike" => Ok(Configured::Spike(spike::Spike {
+                state: state_provider::state_of(&cfg["state"], &mut self.pal)?,
+                on: predicate::parse(&cfg["can_place_on"], tn, &mut self.pal)?,
+                replace: predicate::parse(&cfg["can_replace"], tn, &mut self.pal)?,
+            })),
+            "minecraft:underwater_magma" => Ok(Configured::UnderwaterMagma(underwater_magma::UnderwaterMagma {
+                floor_range: cfg["floor_search_range"].as_i64().ok_or("floor_search_range")? as i32,
+                radius: cfg["placement_radius_around_floor"].as_i64().ok_or("placement_radius_around_floor")? as i32,
+                probability: cfg["placement_probability_per_valid_position"].as_f64().ok_or("placement probability")? as f32,
+                water: self.pal.block("minecraft:water"),
+                magma: self.pal.default_state("minecraft:magma_block"),
+            })),
+            "minecraft:iceberg" => Ok(Configured::Iceberg(iceberg::Iceberg {
+                state: state_provider::state_of(&cfg["state"], &mut self.pal)?,
+                sea_level: self.sea_level,
+                air: self.pal.default_state("minecraft:air"),
+                water: self.pal.default_state("minecraft:water"),
+                snow_block: self.pal.default_state("minecraft:snow_block"),
+                water_block: self.pal.block("minecraft:water"),
+                snow_block_id: self.pal.block("minecraft:snow_block"),
+                ice_block: self.pal.block("minecraft:ice"),
+                snow_layer: self.pal.block("minecraft:snow"),
+                packed_ice: self.pal.block("minecraft:packed_ice"),
+                blue_ice: self.pal.block("minecraft:blue_ice"),
+            })),
+            "minecraft:coral_tree" => Ok(Configured::Coral(coral::Coral::Tree(self.placed_ref(&cfg["feature"])?))),
+            "minecraft:coral_claw" => Ok(Configured::Coral(coral::Coral::Claw(self.placed_ref(&cfg["feature"])?))),
+            "minecraft:geode" => Ok(Configured::Geode(Box::new(geode::Geode::compile(cfg, self)?))),
+            "minecraft:multiface_growth" => Ok(Configured::Multiface(Box::new(multiface::Multiface::compile(cfg, self)?))),
             "minecraft:disk" => Ok(Configured::Disk(Disk {
                 state: state_provider::parse(&cfg["state_provider"], tn, &mut self.pal)?,
                 target: predicate::parse(&cfg["target"], tn, &mut self.pal)?,
@@ -371,6 +425,9 @@ impl<'a> Compiler<'a> {
             }
             "minecraft:simple_block" => {
                 let provider = provider_value(bundle, &cfg["to_place"]);
+                if let Some(decoration) = coral::Decoration::compile(provider, bundle, &mut self.pal)? {
+                    return Ok(Configured::CoralDecoration(decoration));
+                }
                 let mut names = Vec::new();
                 vegetation::provider_names(provider, &mut names)?;
                 for n in &names {
@@ -781,10 +838,22 @@ impl Decorator {
         Ok(self.decorate_window(o, seed, cx, cz, chunks, wg, &mut Vec::new()))
     }
 
+    /// Decorates a chunk window and returns its block ticks, fluid ticks and post-processing positions.
+    pub fn decorate_with_effects(&self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights]) -> region::DecorationEffects {
+        self.decorate_window_with_effects(o, seed, cx, cz, chunks, wg, &mut Vec::new())
+    }
+
     pub(crate) fn decorate_window(
         &self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights],
         final_heights: &mut Vec<i32>,
     ) -> Vec<(region::Pos, u16)> {
+        self.decorate_window_with_effects(o, seed, cx, cz, chunks, wg, final_heights).block_ticks
+    }
+
+    fn decorate_window_with_effects(
+        &self, o: &Overworld, seed: i64, cx: i32, cz: i32, chunks: &mut [ChunkBlocks], wg: &[WgHeights],
+        final_heights: &mut Vec<i32>,
+    ) -> region::DecorationEffects {
         let presence = present_biomes(chunks);
         let mut region = Region::new(
             &self.tags, &self.placed_in_biome, o, self.min_y, self.height, cx, cz, chunks, wg,
@@ -816,13 +885,13 @@ impl Decorator {
 
         // Only the block ids change here. The palette of the output is `palette()` (the overworld palette
         // plus the feature states); callers read the chunks with that palette, so it is not cloned per call.
-        let scheduled = region.take_scheduled();
+        let effects = region.take_effects();
         *final_heights = region.take_final_heights();
         let out = region.into_blocks();
         for (dst, src) in chunks.iter_mut().zip(out) {
             dst.blocks = src;
         }
-        scheduled
+        effects
     }
 
     /// `FeaturePlacer.place` for placed feature `p`: the modifier stack, then the configured feature at
@@ -832,9 +901,17 @@ impl Decorator {
         if pf.modifiers.is_empty() {
             return self.place_configured(p, region, rng, origin);
         }
-        if let [Modifier::BlockPredicate(filter)] = pf.modifiers.as_slice() {
-            return filter.test(region, origin.0, origin.1, origin.2)
-                && self.place_configured(p, region, rng, origin);
+        if pf.modifiers.iter().all(|m| !matches!(m, Modifier::Count(_) | Modifier::CountOnEveryLayer { .. }
+            | Modifier::Cuboid { .. } | Modifier::NoiseThresholdCount { .. } | Modifier::NoiseBasedCount { .. }))
+        {
+            let mut pos = origin;
+            for modifier in &pf.modifiers {
+                let mut output = None;
+                placement::modify_with(modifier, region, rng, pos, top, |q| output = Some(q));
+                let Some(q) = output else { return false };
+                pos = q;
+            }
+            return self.place_configured(p, region, rng, pos);
         }
         let mut placed_any = false;
         let mut stack: Vec<((i32, i32, i32), usize)> = vec![(origin, 0)];
@@ -862,6 +939,14 @@ impl Decorator {
             Configured::Unported => false,
             Configured::Ore(f) => f.place(region, rng, pos),
             Configured::Disk(f) => f.place(region, rng, pos),
+            Configured::Lake(f) => f.place(region, rng, pos),
+            Configured::Spike(f) => f.place(region, rng, pos),
+            Configured::UnderwaterMagma(f) => f.place(region, rng, pos),
+            Configured::Iceberg(f) => f.place(region, rng, pos),
+            Configured::Coral(f) => f.place(region, rng, pos, |p, level, rng, pos| self.run_placed(p, level, rng, pos, None)),
+            Configured::CoralDecoration(f) => f.place(region, rng, pos),
+            Configured::Geode(f) => f.place(region, rng, pos),
+            Configured::Multiface(f) => f.place(region, rng, pos),
             Configured::Spring(f) => f.place(region, pos),
             Configured::BlockColumn(f) => f.place(region, rng, pos),
             Configured::BlueIce(f) => f.place(region, rng, pos),
