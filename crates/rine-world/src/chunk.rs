@@ -157,6 +157,7 @@ impl Section {
     }
 }
 
+#[derive(Clone)]
 pub struct Chunk {
     pub pos: ChunkPos,
     pub sections: Vec<Section>,

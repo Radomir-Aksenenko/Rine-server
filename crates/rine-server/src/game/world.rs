@@ -42,6 +42,11 @@ pub struct Loaded {
 pub struct World {
     pub chunks: AHashMap<ChunkPos, ChunkSlot>,
     pending: AHashSet<ChunkPos>,
+    /// Unloaded chunks whose background save has not finished: a request in that window reads them from
+    /// here, since a generated chunk cannot be generated again (vanilla decoration).
+    saving: Arc<parking_lot::Mutex<AHashMap<ChunkPos, Arc<Chunk>>>>,
+    /// A background write of the decoration frontier is running.
+    persisting: Arc<std::sync::atomic::AtomicBool>,
     tx: Sender<Loaded>,
     rx: Receiver<Loaded>,
     pub generator: Arc<Generator>,
@@ -105,6 +110,8 @@ impl World {
         Self {
             chunks: AHashMap::with_capacity(16384),
             pending: AHashSet::new(),
+            saving: Default::default(),
+            persisting: Default::default(),
             tx,
             rx,
             generator: Arc::new(Generator::for_world(seed, vanilla_vegetation, dir)),
@@ -129,6 +136,12 @@ impl World {
         }
     }
 
+    /// Spawn search over the saved chunks first, the generator for the rest.
+    pub fn find_spawn(&self) -> (i32, i32, i32) {
+        let store = self.store.clone();
+        self.generator.find_spawn_with(move |pos| store.load(pos))
+    }
+
     /// Ask for a chunk to be loaded or generated on the worker pool.
     pub fn request(&mut self, pos: ChunkPos) {
         if self.chunks.contains_key(&pos) || !self.pending.insert(pos) {
@@ -137,14 +150,19 @@ impl World {
         let tx = self.tx.clone();
         let gen = self.generator.clone();
         let store = self.store.clone();
+        let saving = self.saving.clone();
         spawn_background(move || {
-            let (mut chunk, block_ticks) = match store.load(pos) {
+            let in_flight = saving.lock().get(&pos).map(|c| Chunk::clone(c));
+            let (mut chunk, block_ticks) = match in_flight.or_else(|| store.load(pos)) {
                 Some(c) => (c, Vec::new()),
                 None => {
                     let (mut c, block_ticks) = gen.generate_with_ticks(pos);
                     rine_world::light::light_chunk(&mut c);
-                    // Vanilla decoration depends on request order: the chunk is saved, never regenerated.
-                    c.dirty |= gen.saves_generated();
+                    // Vanilla decoration depends on request order: the chunk is saved here, off the tick,
+                    // and never regenerated.
+                    if gen.saves_generated() {
+                        store.save(&c);
+                    }
                     (c, block_ticks)
                 }
             };
@@ -348,14 +366,49 @@ impl World {
                 self.redstone.chunk_unloaded(p.x, p.z, &mut s.chunk);
                 if s.chunk.dirty {
                     let store = self.store.clone();
-                    let chunk = s.chunk;
-                    spawn_background(move || store.save(&chunk));
+                    let chunk: Arc<Chunk> = Arc::from(s.chunk);
+                    let saving = self.saving.clone();
+                    saving.lock().insert(p, Arc::clone(&chunk));
+                    spawn_background(move || {
+                        store.save(&chunk);
+                        let mut g = saving.lock();
+                        if g.get(&chunk.pos).is_some_and(|c| Arc::ptr_eq(c, &chunk)) {
+                            g.remove(&chunk.pos);
+                        }
+                    });
                 }
             }
         }
     }
 
+    /// Saves the changed chunks, then writes the decoration frontier in the background.
     pub fn save_all(&mut self) {
+        self.save_chunks();
+        if self.persisting.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        let gen = self.generator.clone();
+        let busy = self.persisting.clone();
+        spawn_background(move || {
+            gen.persist();
+            busy.store(false, std::sync::atomic::Ordering::Release);
+        });
+    }
+
+    /// `save_all` that returns once everything is on disk (server stop, `save-all flush`).
+    pub fn save_all_blocking(&mut self) {
+        self.save_chunks();
+        while self.persisting.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        self.generator.persist();
+        let saving = self.saving.clone();
+        while !saving.lock().is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    fn save_chunks(&mut self) {
         use rayon::prelude::*;
         super::blockinv::flush_all(self);
         let store = self.store.clone();
@@ -366,8 +419,6 @@ impl World {
             }
         });
         self.store.flush();
-        // After the chunks: the frontier and the chunks it was decorated against land at one save point.
-        self.generator.persist();
     }
 }
 

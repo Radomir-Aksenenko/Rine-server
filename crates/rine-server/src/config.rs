@@ -34,9 +34,10 @@ pub struct Config {
     pub difficulty: String,
     /// `player-idle-timeout` minutes (0 = off).
     pub player_idle_timeout: i32,
-    /// New chunks get vanilla carvers and vegetation from `rine-worldgen`.
-    /// Off by default: it changes newly generated terrain (seams next to old
-    /// chunks) and costs about 3x per chunk (26 -> 86 ms in release).
+    /// New chunks get vanilla carvers and vegetation from `rine-worldgen`
+    /// (about 14 ms per chunk in release, as fast as the legacy generator).
+    /// Chunks generated before keep their terrain; `false` restores the legacy
+    /// generator.
     pub vanilla_vegetation: bool,
 }
 
@@ -65,7 +66,7 @@ impl Default for Config {
             enforce_whitelist: false,
             difficulty: "easy".into(),
             player_idle_timeout: 0,
-            vanilla_vegetation: false,
+            vanilla_vegetation: true,
         }
     }
 }

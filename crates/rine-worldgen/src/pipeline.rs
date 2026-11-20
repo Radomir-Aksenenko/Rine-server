@@ -98,6 +98,8 @@ struct State {
     /// marker is in the store (with the server's own chunk save, at `persist`).
     finals: HashMap<(i32, i32), bool>,
     final_order: VecDeque<(i32, i32)>,
+    /// Finals being built by a `full_chunk` call; a second request for the same chunk waits for it.
+    requests: HashSet<(i32, i32)>,
     #[cfg(test)]
     decorations: HashMap<(i32, i32), u32>,
 }
@@ -175,9 +177,30 @@ impl Pipeline {
     /// decorated yet. The chunk is handed over once: it leaves the scheduler, and a request after it left the
     /// `finals` cache would rebuild it from the proto without its neighbours' features, so the caller saves it.
     pub fn full_chunk(&self, cx: i32, cz: i32) -> Arc<FullChunk> {
-        if let Some(c) = self.finals.lock().unwrap_or_else(|e| e.into_inner()).0.get(&(cx, cz)) {
-            return Arc::clone(c);
+        let cached = || self.finals.lock().unwrap_or_else(|e| e.into_inner()).0.get(&(cx, cz)).cloned();
+        if let Some(c) = cached() {
+            return c;
         }
+        {
+            let mut g = self.lock();
+            while g.requests.contains(&(cx, cz)) {
+                g = self.changed.wait(g).unwrap_or_else(|e| e.into_inner());
+            }
+            // The request that just finished cached its result before releasing the chunk.
+            if let Some(c) = cached() {
+                return c;
+            }
+            g.requests.insert((cx, cz));
+        }
+        let chunk = self.build_final(cx, cz);
+        let mut g = self.lock();
+        g.requests.remove(&(cx, cz));
+        self.changed.notify_all();
+        chunk
+    }
+
+    /// `full_chunk` without the cache and request bookkeeping.
+    fn build_final(&self, cx: i32, cz: i32) -> Arc<FullChunk> {
         if self.is_final(cx, cz) {
             // Handed over before and no longer cached: the neighbours' features are gone. The server saves
             // every generated chunk, so this only happens after a lost save.
@@ -224,8 +247,8 @@ impl Pipeline {
         self.store.as_ref().and_then(|s| s.load(cx, cz)).is_some_and(|s| s.final_chunk)
     }
 
-    /// Makes every position of `area` resident and pins it. Builds missing chunks outside the lock, in
-    /// parallel; a chunk another thread is building is waited for.
+    /// Makes every position of `area` resident and pins it. Builds missing chunks outside the lock; a chunk
+    /// another thread is building is waited for, so parallel requests share the work.
     fn ensure(&self, area: &[(i32, i32)]) {
         let mut g = self.lock();
         loop {
@@ -277,7 +300,7 @@ impl Pipeline {
         }
     }
 
-    /// Store record or fresh proto for each position, in parallel. `None` for a chunk the store marks final.
+    /// Store record or fresh proto for each position. `None` for a chunk the store marks final.
     fn build(&self, positions: &[(i32, i32)]) -> Vec<Option<Slot>> {
         let one = |&(cx, cz): &(i32, i32)| -> Option<Slot> {
             if let Some(saved) = self.store.as_ref().and_then(|s| s.load(cx, cz)) {
@@ -296,15 +319,9 @@ impl Pipeline {
                 ticks: Vec::new(),
             })
         };
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(positions.len());
-        if threads <= 1 {
-            return positions.iter().map(one).collect();
-        }
-        let per = positions.len().div_ceil(threads);
-        std::thread::scope(|s| {
-            let handles: Vec<_> = positions.chunks(per).map(|part| s.spawn(move || part.iter().map(one).collect::<Vec<_>>())).collect();
-            handles.into_iter().flat_map(|h| h.join().expect("proto worker")).collect()
-        })
+        // Sequential on purpose: callers already run in parallel (the server's chunk pool), and threads per
+        // request multiply into hundreds of busy threads after a teleport, starving the tick thread.
+        positions.iter().map(one).collect()
     }
 
     /// `ChunkGenerator.applyBiomeDecoration` for chunk `(cx, cz)` if it has not run yet. The nine chunks
@@ -494,7 +511,8 @@ impl Pipeline {
             g.finals.insert(*p, true);
         }
         drop(g);
-        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 8);
+        // Two writers: enough for the disk, little CPU taken from the tick and the generator.
+        let threads = 2;
         let per = batch.len().div_ceil(threads).max(1);
         std::thread::scope(|s| {
             for part in batch.chunks(per) {
@@ -700,6 +718,18 @@ mod tests {
         for (e, g) in expect.iter().zip(&got) {
             assert!(e.blocks.blocks == g.blocks.blocks, "blocks of {},{}", e.cx, e.cz);
         }
+    }
+
+    /// Many threads asking for the same chunks get one build each, never a second one without decoration.
+    #[test]
+    fn same_chunk_from_many_threads() {
+        let p = pipe(12);
+        let got: Vec<Arc<FullChunk>> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..6).map(|_| s.spawn(|| p.full_chunk(4, 4))).collect();
+            hs.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert!(got.iter().all(|c| Arc::ptr_eq(c, &got[0])));
+        assert!(p.lock().decorations.values().all(|&n| n == 1));
     }
 
     /// Requests from many threads finish, each chunk is decorated once.

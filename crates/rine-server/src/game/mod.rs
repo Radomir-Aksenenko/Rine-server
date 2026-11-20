@@ -104,7 +104,7 @@ impl Game {
     ) -> Self {
         let cfg = &shared.config;
         let world = World::new(cfg.seed, &cfg.world_dir, cfg.vanilla_vegetation);
-        let (sx, sy, sz) = world.generator.find_spawn();
+        let (sx, sy, sz) = world.find_spawn();
         let regs = &rine_data::get().registries;
         let dim_type_id = regs.synced("minecraft:dimension_type").id("minecraft:overworld").unwrap_or(0);
         let clock_ids = regs.synced("minecraft:world_clock").id("minecraft:overworld").into_iter().collect();
@@ -235,7 +235,7 @@ impl Game {
         }
         playerdata::save_all(&self, true);
         playerdata::flush();
-        self.world.save_all();
+        self.world.save_all_blocking();
             cmd::commands::scoreboard::save(&self, &self.shared.config.world_dir.clone());
         tracing::info!("world saved");
         if let Some(h) = self.plugins.take() {

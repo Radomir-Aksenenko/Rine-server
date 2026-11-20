@@ -71,6 +71,9 @@ pub struct Generator {
     /// Synced biome id -> `Biome.hasPrecipitation`.
     biome_precip: Vec<bool>,
     pale_garden: Option<u8>,
+    /// Chunks generated before the world asked for them (spawn search). With vanilla decoration a chunk
+    /// cannot be generated twice, so they wait here for the world's request.
+    reserved: parking_lot::Mutex<std::collections::HashMap<ChunkPos, (Chunk, Vec<(rine_protocol::BlockPos, u16)>)>>,
 }
 
 const FLOWERS: [&str; 5] = ["dandelion", "poppy", "cornflower", "oxeye_daisy", "azure_bluet"];
@@ -186,6 +189,7 @@ impl Generator {
             biome_vanilla,
             biome_precip,
             pale_garden: reg.id("minecraft:pale_garden").and_then(|id| u8::try_from(id).ok()),
+            reserved: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -253,6 +257,13 @@ impl Generator {
     }
 
     pub fn generate_with_ticks(&self, pos: ChunkPos) -> (Chunk, Vec<(rine_protocol::BlockPos, u16)>) {
+        if let Some(c) = self.reserved.lock().remove(&pos) {
+            return c;
+        }
+        self.generate_fresh(pos)
+    }
+
+    fn generate_fresh(&self, pos: ChunkPos) -> (Chunk, Vec<(rine_protocol::BlockPos, u16)>) {
         let generated;
         let raw;
         let (cb, ticks) = match self.vegetation.as_ref() {
@@ -333,9 +344,33 @@ impl Generator {
         terrain::column_at(&self.noise, self.seed, x, z)
     }
 
+    /// A chunk for the spawn search: a saved one from `load`, else generated. With vanilla decoration a
+    /// generated one is kept for the world's later request.
+    fn spawn_probe(&self, pos: ChunkPos, load: &dyn Fn(ChunkPos) -> Option<Chunk>) -> Chunk {
+        if let Some(c) = load(pos) {
+            return c;
+        }
+        let mut reserved = self.reserved.lock();
+        if let Some((c, _)) = reserved.get(&pos) {
+            return c.clone();
+        }
+        drop(reserved);
+        let (chunk, ticks) = self.generate_fresh(pos);
+        if self.saves_generated() {
+            reserved = self.reserved.lock();
+            reserved.insert(pos, (chunk.clone(), ticks));
+        }
+        chunk
+    }
+
     /// A standing position (feet y) near (0, 0): solid dry ground with two
     /// air blocks above, searched outward chunk by chunk on the real terrain.
     pub fn find_spawn(&self) -> (i32, i32, i32) {
+        self.find_spawn_with(|_| None)
+    }
+
+    /// `find_spawn` reading already saved chunks through `load` (a generated chunk is never generated twice).
+    pub fn find_spawn_with(&self, load: impl Fn(ChunkPos) -> Option<Chunk>) -> (i32, i32, i32) {
         let b = &rine_data::get().blocks;
         for r in 0..=16i32 {
             for cz in -r..=r {
@@ -343,7 +378,8 @@ impl Generator {
                     if cx.abs() != r && cz.abs() != r {
                         continue;
                     }
-                    let chunk = self.generate(ChunkPos::new(cx, cz));
+                    let pos = ChunkPos::new(cx, cz);
+                    let chunk = self.spawn_probe(pos, &load);
                     for lz in [8, 4, 12, 0, 15] {
                         for lx in [8, 4, 12, 0, 15] {
                             let mut y = crate::chunk::MAX_Y - 1;
@@ -434,6 +470,20 @@ mod tests {
                 assert_eq!(sa.biomes, sb.biomes);
             }
         }
+    }
+
+    /// With vanilla decoration the spawn search keeps its chunks for the world instead of discarding them.
+    #[test]
+    fn spawn_chunks_are_handed_to_the_world() {
+        rine_data::init();
+        let g = Generator::with_options(42, true);
+        let (x, _, z) = g.find_spawn();
+        let probed = g.reserved.lock().len();
+        assert!(probed > 0);
+        let pos = ChunkPos::of_block(x, z);
+        let expect = blocks_of(&g.reserved.lock()[&pos].0);
+        assert_eq!(blocks_of(&g.generate(pos)), expect);
+        assert_eq!(g.reserved.lock().len(), probed - 1, "taken once");
     }
 
     #[test]
