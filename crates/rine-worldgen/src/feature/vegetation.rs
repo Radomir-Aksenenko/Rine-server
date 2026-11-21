@@ -41,6 +41,7 @@ pub enum Survival {
 /// Survival class of a block name, `None` for blocks the port does not classify.
 pub fn kind_of_name(name: &str) -> Option<Survival> {
     Some(match name {
+        "minecraft:tuff" | "minecraft:sculk_catalyst" => Survival::Unconditional,
         "minecraft:poppy" | "minecraft:dandelion" | "minecraft:short_grass" | "minecraft:fern"
         | "minecraft:allium" | "minecraft:azure_bluet" | "minecraft:blue_orchid" | "minecraft:cornflower"
         | "minecraft:lily_of_the_valley" | "minecraft:oxeye_daisy" | "minecraft:red_tulip" | "minecraft:pink_tulip"

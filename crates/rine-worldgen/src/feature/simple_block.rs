@@ -9,6 +9,7 @@ use super::vegetation::{self, Survival};
 pub struct SimpleBlock {
     pub to_place: StateProvider,
     pub schedule_tick: bool,
+    pub catalyst: Option<u16>,
 }
 
 impl SimpleBlock {
@@ -39,7 +40,9 @@ impl SimpleBlock {
                 carpet.place(region, rng, pos);
             }
         } else {
-            region.write(pos, s, 2);
+            if region.write(pos, s, 2) && self.catalyst == Some(tags.block_of(s)) {
+                region.record_block_entity(pos, "minecraft:sculk_catalyst", super::block_entity::BlockEntityData::SculkCatalyst);
+            }
         }
         if self.schedule_tick {
             region.schedule(pos, region.get_block(x, y, z));

@@ -272,9 +272,11 @@ fn beehive(p: f32, d: &mut DecoratorCtx, ctx: &mut Ctx) {
     if let Some(hive) = found {
         let id = ctx.env.states.id("minecraft:bee_nest", &[("facing", "south")]);
         d.set(ctx, hive, id);
-        let num_bees = 2 + ctx.rng.next_int_bound(2);
-        for _ in 0..num_bees {
-            let _ticks = ctx.rng.next_int_bound(599);
+        if ctx.region.get_block(hive.0, hive.1, hive.2) == id {
+            let num_bees = 2 + ctx.rng.next_int_bound(2);
+            let ticks_in_hive = (0..num_bees).map(|_| ctx.rng.next_int_bound(599)).collect();
+            ctx.region.record_block_entity(hive, "minecraft:beehive",
+                crate::feature::block_entity::BlockEntityData::Beehive { ticks_in_hive });
         }
     }
 }

@@ -62,12 +62,13 @@ impl Rule<'_> {
     /// A block predicate tree (`block_predicate_filter`, `allowed_placement`): every type is ported.
     fn block_predicate(&self, p: &Value) -> bool {
         let Some(ty) = p["type"].as_str() else { return false };
-        if !(self.predicates.contains(&ty) || self.expanded && matches!(ty, "minecraft:solid" | "minecraft:has_sturdy_face" | "minecraft:replaceable" | "minecraft:inside_world_bounds")) {
+        if !(self.predicates.contains(&ty) || self.expanded && matches!(ty, "minecraft:solid" | "minecraft:has_sturdy_face" | "minecraft:replaceable" | "minecraft:inside_world_bounds" | "minecraft:volume_match")) {
             return false;
         }
         match ty {
             "minecraft:all_of" | "minecraft:any_of" => p["predicates"].as_array().is_some_and(|l| l.iter().all(|x| self.block_predicate(x))),
             "minecraft:not" => self.block_predicate(&p["predicate"]),
+            "minecraft:volume_match" => self.block_predicate(&p["match"]),
             "minecraft:would_survive" => p["state"].as_str().is_some_and(|s| {
                 let block = s.split('[').next().unwrap_or(s);
                 self.simple_block_name(s) || self.expanded && (block.ends_with("_sapling") || block == "minecraft:mangrove_propagule")
@@ -137,7 +138,7 @@ impl Rule<'_> {
                 let ty = m["type"].as_str().unwrap_or("");
                 if !(self.placements.contains(&ty) || self.expanded && matches!(ty,
                     "minecraft:environment_scan" | "minecraft:count_on_every_layer" | "minecraft:surface_water_depth_filter"
-                    | "minecraft:surface_relative_threshold_filter" | "minecraft:cuboid" | "minecraft:random_chance"))
+                    | "minecraft:surface_relative_threshold_filter" | "minecraft:cuboid" | "minecraft:randomly_selected" | "minecraft:random_chance"))
                     || (!top && ty == "minecraft:biome")
                 {
                     return false;
@@ -146,6 +147,9 @@ impl Rule<'_> {
                     "minecraft:block_predicate_filter" => self.block_predicate(&m["predicate"]),
                     "minecraft:environment_scan" => self.block_predicate(&m["target_condition"])
                         && m.get("allowed_search_condition").is_none_or(|p| self.block_predicate(p)),
+                    "minecraft:randomly_selected" => m["placements"].as_array().is_some_and(|items| {
+                        !items.is_empty() && items.iter().all(|item| item["type"] == "minecraft:offset")
+                    }),
                     _ => true,
                 }
             })
@@ -165,7 +169,9 @@ impl Rule<'_> {
             | "minecraft:tree" | "minecraft:fallen_tree" | "minecraft:huge_red_mushroom" | "minecraft:huge_brown_mushroom"
             | "minecraft:block_blob" | "minecraft:bamboo" | "minecraft:freeze_top_layer" | "minecraft:vines"
             | "minecraft:lake" | "minecraft:spike" | "minecraft:underwater_magma" | "minecraft:iceberg"
-            | "minecraft:coral_tree" | "minecraft:coral_claw" | "minecraft:geode" | "minecraft:multiface_growth"))
+            | "minecraft:coral_tree" | "minecraft:coral_claw" | "minecraft:geode" | "minecraft:multiface_growth"
+            | "minecraft:monster_room" | "minecraft:root_system" | "minecraft:speleothem" | "minecraft:speleothem_cluster"
+            | "minecraft:large_dripstone" | "minecraft:fossil" | "minecraft:template" | "minecraft:sculk_patch"))
         {
             return false;
         }
@@ -194,6 +200,7 @@ impl Rule<'_> {
             "minecraft:coral_tree" | "minecraft:coral_claw" => sub(&cfg["feature"]),
             "minecraft:vegetation_patch" | "minecraft:waterlogged_vegetation_patch" => sub(&cfg["vegetation_feature"]),
             "minecraft:block_blob" => self.block_predicate(&cfg["can_place_on"]),
+            "minecraft:root_system" => sub(&cfg["feature"]) && self.block_predicate(&cfg["allowed_tree_position"]),
             _ => true,
         }
     }

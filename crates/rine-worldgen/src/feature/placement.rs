@@ -18,6 +18,7 @@ pub enum IntProvider {
     Trapezoid { min: i32, max: i32, plateau: i32 },
     BiasedToBottom { min: i32, max: i32 },
     Clamped { source: Box<IntProvider>, min: i32, max: i32 },
+    ClampedNormal { mean: f32, deviation: f32, min: i32, max: i32 },
     /// `WeightedListInt`: `(provider, weight)` entries; one `nextInt(total)` draw picks the entry.
     Weighted(Vec<(IntProvider, i32)>),
 }
@@ -27,7 +28,8 @@ impl IntProvider {
     pub fn bounds(&self) -> (i32, i32) {
         match self {
             IntProvider::Constant(v) => (*v, *v),
-            IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max } => (*min, *max),
+            IntProvider::Uniform { min, max } | IntProvider::Trapezoid { min, max, .. } | IntProvider::BiasedToBottom { min, max }
+            | IntProvider::ClampedNormal { min, max, .. } => (*min, *max),
             IntProvider::Clamped { source, min, max } => {
                 let (lo, hi) = source.bounds();
                 (lo.max(*min), hi.min(*max))
@@ -93,6 +95,7 @@ pub enum Modifier {
     Cuboid { xz: IntProvider, y: IntProvider, edges: bool, interior: bool },
     /// `offset` (`OffsetPlacement`).
     Offset(IntProvider, IntProvider, IntProvider),
+    RandomlySelected(Vec<Modifier>),
     /// `heightmap` (`HeightmapPlacement`): the column's height, when above the build bottom.
     Heightmap(Kind),
     /// `noise_threshold_count` (`NoiseThresholdCountPlacement`): `below` or `above` by the biome info noise at
@@ -118,6 +121,8 @@ pub fn sample_int(p: &IntProvider, rng: &mut WorldgenRng) -> i32 {
     match *p {
         IntProvider::Constant(v) => v,
         IntProvider::Clamped { ref source, min, max } => sample_int(source, rng).clamp(min, max),
+        IntProvider::ClampedNormal { mean, deviation, min, max } =>
+            (mean + rng.next_gaussian() as f32 * deviation).clamp(min as f32, max as f32) as i32,
         IntProvider::Weighted(_) => unreachable!("handled above"),
         // BiasedToBottomInt.sample: min + nextInt(nextInt(max - min + 1) + 1).
         IntProvider::BiasedToBottom { min, max } => {
@@ -333,6 +338,15 @@ pub(super) fn modify_with(m: &Modifier, region: &mut Region, rng: &mut WorldgenR
             let dz = sample_int(z, rng);
             out((ox + dx, oy + dy, oz + dz));
         }
+        Modifier::RandomlySelected(list) => {
+            let i = rng.next_int_bound(list.len() as i32) as usize;
+            // Rare (randomly_selected only); a Vec avoids recursive generic instantiation.
+            let mut inner = Vec::new();
+            modify(&list[i], region, rng, origin, top, &mut inner);
+            for q in inner {
+                out(q);
+            }
+        }
         Modifier::NoiseThresholdCount { level, below, above } => {
             // RepeatingPlacement.count: no random draws; the origin is emitted `count` times.
             let noise = biome_info_noise(ox as f64 / 200.0, oz as f64 / 200.0) as f64;
@@ -398,6 +412,16 @@ pub fn parse_int_provider(v: &Value) -> Result<IntProvider, String> {
             if min > max { return Err("invalid clamped int bounds".into()); }
             Ok(IntProvider::Clamped { source: Box::new(parse_int_provider(&v["source"])?), min, max })
         }
+        "minecraft:clamped_normal" => {
+            let min = int("min_inclusive")?;
+            let max = int("max_inclusive")?;
+            if min > max { return Err("invalid clamped normal int bounds".into()); }
+            Ok(IntProvider::ClampedNormal {
+                mean: v["mean"].as_f64().ok_or("clamped normal mean")? as f32,
+                deviation: v["deviation"].as_f64().ok_or("clamped normal deviation")? as f32,
+                min, max,
+            })
+        }
         // TrapezoidInt's codec uses "min"/"max" (UniformInt and BiasedToBottomInt use "min_inclusive"/"max_inclusive").
         "minecraft:trapezoid" => Ok(IntProvider::Trapezoid {
             min: int("min")?,
@@ -436,8 +460,13 @@ pub fn parse_height_provider(v: &Value) -> Result<HeightProvider, String> {
 pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
     let ty = v["type"].as_str().ok_or_else(|| format!("placement without type: {v}"))?;
     match ty {
+        "minecraft:randomly_selected" => {
+            let list = v["placements"].as_array().filter(|items| !items.is_empty()).ok_or("randomly_selected placements")?;
+            Ok(Modifier::RandomlySelected(list.iter().map(parse_modifier).collect::<Result<_, _>>()?))
+        }
         "minecraft:count" => Ok(Modifier::Count(parse_int_provider(&v["count"])?)),
         "minecraft:rarity_filter" => Ok(Modifier::RarityFilter(v["chance"].as_i64().ok_or("chance")? as i32)),
+        "minecraft:random_chance" => Ok(Modifier::RandomChance(v["chance"].as_f64().ok_or("chance")? as f32)),
         "minecraft:in_square" => Ok(Modifier::InSquare),
         "minecraft:height_range" => Ok(Modifier::HeightRange(parse_height_provider(&v["height"])?)),
         "minecraft:biome" => Ok(Modifier::Biome),
@@ -448,7 +477,6 @@ pub fn parse_modifier(v: &Value) -> Result<Modifier, String> {
         )),
         "minecraft:heightmap" => Ok(Modifier::Heightmap(Kind::from_name(v["heightmap"].as_str().ok_or("heightmap")?)?)),
         "minecraft:surface_water_depth_filter" => Ok(Modifier::SurfaceWaterDepth(v["max_water_depth"].as_i64().ok_or("max_water_depth")? as i32)),
-        "minecraft:random_chance" => Ok(Modifier::RandomChance(v["chance"].as_f64().ok_or("chance")? as f32)),
         "minecraft:cuboid" => Ok(Modifier::Cuboid {
             xz: parse_int_provider(&v["xz_size"])?,
             y: parse_int_provider(&v["y_size"])?,

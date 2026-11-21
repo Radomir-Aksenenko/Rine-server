@@ -167,6 +167,8 @@ impl Tags {
 
 pub type Pos = (i32, i32, i32);
 pub type BlockWrite = (i32, i32, i32, u16, Option<u32>);
+pub(crate) type ChunkBlockEntities = std::collections::BTreeMap<Pos, super::block_entity::BlockEntity>;
+pub(crate) type WindowBlockEntities = [ChunkBlockEntities; 9];
 
 /// Deferred effects emitted by a FEATURES pass, in emission order within each list.
 #[derive(Default)]
@@ -200,6 +202,7 @@ pub struct Region<'a> {
     live: Option<&'a mut dyn LiveRegion>,
     level_random: Option<super::rng::WorldgenRng>,
     effects: DecorationEffects,
+    pub(crate) block_entities: WindowBlockEntities,
     /// `placed_in_biome[biome][placed]`: `Biome.hasFeature` over the biome's full feature lists.
     placed_in_biome: &'a [Vec<bool>],
     /// `None` for the grower views (`grower_region`), which have no overworld biomes.
@@ -221,7 +224,7 @@ pub struct Region<'a> {
 impl<'a> Region<'a> {
     pub fn live(tags: &'a Tags, min_y: i32, height: i32, live: &'a mut dyn LiveRegion) -> Self {
         Self {
-            tags, live: Some(live), level_random: None, effects: DecorationEffects::default(), min_y, height, cx: 0, cz: 0,
+            tags, live: Some(live), level_random: None, effects: DecorationEffects::default(), block_entities: Default::default(), min_y, height, cx: 0, cz: 0,
             placed_in_biome: &[], biomes: None, blocks: Vec::new(), wg: Vec::new(),
             fin: Vec::new(), log: None,
         }
@@ -290,6 +293,25 @@ impl<'a> Region<'a> {
         }
     }
 
+    pub(crate) fn has_scheduled(&self, pos: Pos, state: u16) -> bool {
+        let block = self.tags.block_of(state);
+        self.effects.block_ticks.iter().any(|&(p, s)| p == pos && self.tags.is_block(s, block))
+    }
+
+    pub(crate) fn schedule_once(&mut self, pos: Pos, state: u16) {
+        if !self.has_scheduled(pos, state) {
+            self.schedule(pos, state);
+        }
+    }
+
+    pub(crate) fn record_block_entity(&mut self, pos: Pos, type_id: &str, data: super::block_entity::BlockEntityData) {
+        if let Some((chunk, _)) = self.slot(pos.0, pos.1, pos.2) {
+            self.block_entities[chunk].insert(pos, super::block_entity::BlockEntity {
+                pos, type_id: type_id.into(), data,
+            });
+        }
+    }
+
     /// A region for single-feature placement on the live world (saplings): `blocks` are the nine chunks in
     /// raster order, the caller fills the cells it needs and leaves the rest as air (palette id 0 in the live
     /// palette). Heightmaps are not primed: tree placement reads no heights.
@@ -302,6 +324,7 @@ impl<'a> Region<'a> {
             live: None,
             level_random: None,
             effects: DecorationEffects::default(),
+            block_entities: Default::default(),
             placed_in_biome: &[],
             biomes: None,
             min_y,
@@ -359,12 +382,17 @@ impl<'a> Region<'a> {
         }
         let quarts = std::array::from_fn(|i| chunks[i].biomes.as_slice());
         let biomes = Some(DecorationBiomes { overworld, quarts });
-        Region { tags, live: None, level_random: None, effects: DecorationEffects::default(),
+        Region { tags, live: None, level_random: None, effects: DecorationEffects::default(), block_entities: Default::default(),
             placed_in_biome, biomes, min_y, height, cx, cz, blocks, wg: wg_flat, fin, log: None }
     }
 
     pub(crate) fn take_final_heights(&mut self) -> Vec<i32> {
         std::mem::take(&mut self.fin)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fill_wg_heights(&mut self, height: i32) {
+        self.wg.fill(height);
     }
 
     /// Consumes the region and returns the nine (mutated) block arrays in raster order.
@@ -444,6 +472,7 @@ impl<'a> Region<'a> {
                 let old = self.blocks[c][i];
                 self.blocks[c][i] = blk;
                 if old != blk {
+                    self.remove_replaced_entity(c, (x, y, z), old, blk);
                     self.update_heights(c, x, y, z, blk);
                 }
                 if let Some(log) = self.log.as_mut() {
@@ -452,6 +481,14 @@ impl<'a> Region<'a> {
                 true
             }
             _ => false,
+        }
+    }
+
+    #[inline]
+    fn remove_replaced_entity(&mut self, chunk: usize, pos: Pos, old: u16, new: u16) {
+        let entities = &mut self.block_entities[chunk];
+        if !entities.is_empty() && self.tags.block_of(old) != self.tags.block_of(new) {
+            entities.remove(&pos);
         }
     }
 
@@ -483,6 +520,7 @@ impl<'a> Region<'a> {
     #[inline]
     pub fn set_block_in_section(&mut self, x: i32, y: i32, z: i32, blk: u16) {
         let (c, i) = self.slot(x, y, z).expect("write outside the 3x3 region or build height");
+        self.remove_replaced_entity(c, (x, y, z), self.blocks[c][i], blk);
         self.blocks[c][i] = blk;
         if let Some(log) = self.log.as_mut() {
             log.push((x, y, z, blk, None));
