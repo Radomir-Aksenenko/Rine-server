@@ -723,7 +723,7 @@ mod tests {
             "minecraft:ore_iron_upper", "minecraft:ore_diamond", "minecraft:ore_coal_upper", "minecraft:flower_plains"] {
             assert!(!skipped.contains(&name), "{name} skipped: {:?}", p.skipped());
         }
-        println!("skipped {}: {skipped:?}", skipped.len());
+        assert!(skipped.is_empty(), "every vanilla placed feature compiles; skipped: {:?}", p.skipped());
     }
 
     /// Store in memory, shared between pipelines to model a restart.
