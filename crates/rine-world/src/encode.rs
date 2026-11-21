@@ -39,10 +39,7 @@ pub fn encode_chunk_packet(chunk: &Chunk, out: &mut BytesMut) {
         out.w_u8(((be.x & 15) << 4) | (be.z & 15));
         out.w_i16(be.y);
         out.w_varint(be.type_id as i32);
-        match &be.nbt {
-            None => out.w_u8(0),
-            Some(tag) => tag.write_network(out),
-        }
+        write_update_tag(be, out);
     }
 
     write_light(chunk, out);
@@ -374,5 +371,53 @@ mod tests {
         assert_eq!(sky_mask, vec![0xFE, 0xFF, 0xFF, 0x03]);
         let block_len = r.varint().unwrap() as usize;
         assert_eq!(block_len, 0);
+    }
+}
+
+/// Saved keys that vanilla `getUpdateTag` leaves out of the chunk packet, by block entity type (the default update
+/// tag is empty; a spawner sends its saved data without `SpawnPotentials`). Generated block entities carry them.
+fn hidden_keys(type_id: u32) -> &'static [&'static str] {
+    static TABLE: std::sync::OnceLock<Vec<&'static [&'static str]>> = std::sync::OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let Some(reg) = rine_data::get().registries.find("minecraft:block_entity_type") else { return Vec::new() };
+        let mut v: Vec<&'static [&'static str]> = vec![&[]; reg.entries.len()];
+        let rules: [(&str, &'static [&'static str]); 9] = [
+            ("minecraft:mob_spawner", &["SpawnPotentials"]),
+            ("minecraft:chest", &["LootTable", "LootTableSeed"]),
+            ("minecraft:trapped_chest", &["LootTable", "LootTableSeed"]),
+            ("minecraft:brushable_block", &["LootTable", "LootTableSeed"]),
+            ("minecraft:beehive", &["bees"]),
+            ("minecraft:sculk_catalyst", &["cursors"]),
+            ("minecraft:sculk_sensor", &["last_vibration_frequency", "listener"]),
+            ("minecraft:sculk_shrieker", &["warning_level", "listener"]),
+            ("minecraft:potent_sulfur", &["countdown"]),
+        ];
+        for (name, keys) in rules {
+            if let Some(id) = reg.id(name) {
+                v[id as usize] = keys;
+            }
+        }
+        v
+    });
+    table.get(type_id as usize).copied().unwrap_or(&[])
+}
+
+fn write_update_tag<W: Writer + ?Sized>(be: &crate::chunk::BlockEntity, out: &mut W) {
+    use rine_protocol::nbt::Tag;
+    let Some(tag) = &be.nbt else {
+        out.w_u8(0);
+        return;
+    };
+    let hidden = hidden_keys(be.type_id);
+    match tag {
+        Tag::Compound(fields) if fields.iter().any(|(k, _)| hidden.contains(&k.as_str())) => {
+            let kept: Vec<(String, Tag)> = fields.iter().filter(|(k, _)| !hidden.contains(&k.as_str())).cloned().collect();
+            if kept.is_empty() {
+                out.w_u8(0);
+            } else {
+                Tag::Compound(kept).write_network(out);
+            }
+        }
+        _ => tag.write_network(out),
     }
 }

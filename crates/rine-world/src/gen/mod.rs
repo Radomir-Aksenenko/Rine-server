@@ -279,14 +279,14 @@ impl Generator {
     fn generate_fresh(&self, pos: ChunkPos) -> (Chunk, Vec<(rine_protocol::BlockPos, u16)>) {
         let generated;
         let raw;
-        let (cb, ticks) = match self.vegetation.as_ref() {
+        let (cb, ticks, entities) = match self.vegetation.as_ref() {
             Some(pipeline) => {
                 generated = pipeline.full_chunk(pos.x, pos.z);
-                (&generated.blocks, generated.block_ticks.as_slice())
+                (&generated.blocks, generated.block_ticks.as_slice(), generated.block_entities.as_slice())
             }
             None => {
                 raw = self.vanilla.generate(pos.x, pos.z);
-                (&raw, &[][..])
+                (&raw, &[][..], &[][..])
             }
         };
         let (pal, bmap) = self.map_palettes(cb);
@@ -347,6 +347,17 @@ impl Generator {
             }
         }
         chunk.finish_bulk();
+        for be in entities {
+            if let Some(type_id) = block_entity_type(&be.type_id) {
+                chunk.block_entities.push(crate::chunk::BlockEntity {
+                    x: (be.pos.0 & 15) as u8,
+                    y: be.pos.1 as i16,
+                    z: (be.pos.2 & 15) as u8,
+                    type_id,
+                    nbt: block_entity_nbt(&be.data),
+                });
+            }
+        }
         let ticks = ticks.iter().map(|&((x, y, z), state)| {
             (rine_protocol::BlockPos { x, y, z }, b.state(pal[state as usize]).block)
         }).collect();
@@ -418,6 +429,46 @@ impl Generator {
         }
         (0, 100, 0)
     }
+}
+
+/// `minecraft:block_entity_type` registry id of a block entity type name.
+fn block_entity_type(name: &str) -> Option<u32> {
+    rine_data::get().registries.find("minecraft:block_entity_type").and_then(|r| r.id(name))
+}
+
+/// The NBT vanilla saves for a generated block entity (`saveAdditional` order; `id` and coordinates are added by
+/// the chunk writer). See docs/WORLDGEN-BLOCK-ENTITIES.md.
+fn block_entity_nbt(data: &rine_worldgen::feature::block_entity::BlockEntityData) -> Option<rine_protocol::nbt::Tag> {
+    use rine_protocol::nbt::Tag;
+    use rine_worldgen::feature::block_entity::BlockEntityData as D;
+    let listener = || Tag::compound().with("selector", Tag::compound().with("tick", Tag::Long(-1))).with("event_delay", Tag::Int(0));
+    Some(match data {
+        D::Empty => return None,
+        D::Loot { table, seed } => {
+            let t = Tag::compound().with("LootTable", Tag::String(table.clone()));
+            if *seed != 0 { t.with("LootTableSeed", Tag::Long(*seed)) } else { t }
+        }
+        D::Spawner { entity } => Tag::compound()
+            .with("Delay", Tag::Short(20))
+            .with("MinSpawnDelay", Tag::Short(200))
+            .with("MaxSpawnDelay", Tag::Short(800))
+            .with("SpawnCount", Tag::Short(4))
+            .with("MaxNearbyEntities", Tag::Short(6))
+            .with("RequiredPlayerRange", Tag::Short(16))
+            .with("SpawnRange", Tag::Short(4))
+            .with("SpawnData", Tag::compound().with("entity", Tag::compound().with("id", Tag::String(entity.clone()))))
+            .with("SpawnPotentials", Tag::List(Vec::new())),
+        D::Beehive { ticks_in_hive } => Tag::compound().with("bees", Tag::List(ticks_in_hive.iter().map(|&t| {
+            Tag::compound()
+                .with("entity_data", Tag::compound().with("id", Tag::String("minecraft:bee".into())))
+                .with("ticks_in_hive", Tag::Int(t))
+                .with("min_ticks_in_hive", Tag::Int(600))
+        }).collect())),
+        D::SculkCatalyst => Tag::compound().with("cursors", Tag::List(Vec::new())),
+        D::SculkSensor => Tag::compound().with("last_vibration_frequency", Tag::Int(0)).with("listener", listener()),
+        D::SculkShrieker => Tag::compound().with("warning_level", Tag::Int(0)).with("listener", listener()),
+        D::PotentSulfur => Tag::compound().with("countdown", Tag::Int(-1)),
+    })
 }
 
 #[cfg(test)]
@@ -517,6 +568,31 @@ mod tests {
     fn vanilla_pipeline_compiles() {
         rine_data::init();
         assert!(Generator::with_options(7, true).vegetation.is_some(), "vanilla decoration fell back to the legacy generator");
+    }
+
+    #[test]
+    fn generated_block_entities_sit_on_their_blocks() {
+        let data = rine_data::init();
+        let reg = data.registries.find("minecraft:block_entity_type").unwrap();
+        let g = Generator::with_options(2024, true);
+        let mut kinds = std::collections::BTreeMap::new();
+        for i in 0..100 {
+            let c = g.generate(ChunkPos::new(i % 10 - 5, i / 10 - 5));
+            for be in &c.block_entities {
+                let name = reg.entries[be.type_id as usize].clone();
+                let block = &data.blocks.block_of(c.get(be.x as i32, be.y as i32, be.z as i32)).name;
+                let expect = match name.as_str() {
+                    "minecraft:mob_spawner" => "spawner",
+                    "minecraft:brushable_block" => "suspicious_",
+                    "minecraft:beehive" => "bee",
+                    other => other.trim_start_matches("minecraft:"),
+                };
+                assert!(block.contains(expect), "{name} at {},{},{} sits on {block}", be.x, be.y, be.z);
+                *kinds.entry(name).or_insert(0) += 1;
+            }
+        }
+        println!("block entities: {kinds:?}");
+        assert!(kinds.contains_key("minecraft:chest") && kinds.contains_key("minecraft:mob_spawner"), "{kinds:?}");
     }
 
     #[test]
