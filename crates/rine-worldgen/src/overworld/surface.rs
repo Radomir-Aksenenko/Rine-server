@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 use crate::overworld::blocks::{Blk, AIR};
 use crate::overworld::rules::{Cond, OreVein, Rule};
 use crate::overworld::{BiomeMap, Overworld, Samplers};

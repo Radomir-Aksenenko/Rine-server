@@ -1,7 +1,7 @@
 use serde_json::Value;
 
 use super::heightmap::Kind;
-use super::ore::{mth_cos, mth_sin};
+use crate::mth::{cos as mth_cos, sin as mth_sin};
 use super::placement::parse_int_provider;
 use super::predicate::BlockPredicate;
 use super::region::{Pos, Region};

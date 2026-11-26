@@ -1,5 +1,7 @@
-//! Ports of the `net.minecraft.util.Mth` helpers that the random and noise code needs.
+//! Ports of the `net.minecraft.util.Mth` helpers shared by the worldgen code.
 //! Float helpers keep Java's operand order so f32 results are bit-identical.
+
+use std::sync::OnceLock;
 
 /// `Mth.floor(double)`: `(int)Math.floor(v)`. Rust `as` saturates and maps NaN to 0, as Java does.
 #[inline]
@@ -142,4 +144,61 @@ pub fn binary_search(mut from: i32, to: i32, condition: impl Fn(i32) -> bool) ->
         }
     }
     from
+}
+
+/// `Mth.floor(double)` written as Java's `(int)v`, minus one when `v < (int)v` (the tree placers' form).
+/// Kept apart from [`floor`]: the two differ below `i32::MIN`, and each caller keeps the form it was checked with.
+#[inline]
+pub fn java_floor_f64(v: f64) -> i32 {
+    let i = v as i32;
+    if v < i as f64 {
+        i - 1
+    } else {
+        i
+    }
+}
+
+/// `Mth.floor(float)` in the same form.
+#[inline]
+pub fn java_floor_f32(v: f32) -> i32 {
+    let i = v as i32;
+    if v < i as f32 {
+        i - 1
+    } else {
+        i
+    }
+}
+
+// `Mth.sin` / `Mth.cos`: a 65536-entry float table of `Math.sin`, indexed by the argument scaled by
+// 10430.378350470453 (vanilla `SIN_SCALE`). One table for all of worldgen.
+
+const SIN_SCALE: f64 = 10430.378350470453;
+const COS_OFFSET: f64 = 16384.0;
+
+fn table() -> &'static [f32; 65536] {
+    static TABLE: OnceLock<Box<[f32; 65536]>> = OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut t = Box::new([0f32; 65536]);
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = (i as f64 / SIN_SCALE).sin() as f32;
+        }
+        t
+    })
+}
+
+/// `Mth.sin(double)`: the argument is a float widened to double by the callers.
+#[inline]
+pub fn sin(v: f64) -> f32 {
+    table()[((v * SIN_SCALE) as i64 & 65535) as usize]
+}
+
+/// `Mth.cos(double)`.
+#[inline]
+pub fn cos(v: f64) -> f32 {
+    table()[((v * SIN_SCALE + COS_OFFSET) as i64 & 65535) as usize]
+}
+
+/// The raw table, for the golden check against the JVM table.
+pub fn sin_table() -> &'static [f32; 65536] {
+    table()
 }

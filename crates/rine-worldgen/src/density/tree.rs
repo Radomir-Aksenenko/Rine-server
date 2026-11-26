@@ -6,7 +6,7 @@
 //! `ShiftB`/`NoiseFunction` amplitude placement. Each node keeps the branch of its Java class.
 
 use crate::density::spline::{self, Sp};
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 use crate::mth::{clamp_f32, java_max, java_min, java_signum, lerp, lerp3};
 use crate::noise::NoiseStack;
 

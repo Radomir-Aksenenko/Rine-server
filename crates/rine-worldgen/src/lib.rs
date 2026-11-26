@@ -12,6 +12,7 @@ pub mod noise;
 pub mod overworld;
 pub mod pipeline;
 pub mod random;
+pub mod volume;
 
 pub use noise::{BlendedNoise, NoiseStack, NormalNoise, PerlinNoise, SimplexNoise, SmearedPerlinNoise};
 pub use random::{AnyRng, Legacy, Positional, Rng, Xoroshiro};

@@ -24,7 +24,7 @@ use serde_json::Value;
 use crate::carver::CarvingMask;
 use crate::density::build::{bundled, Builder};
 use crate::density::tree::{Ctx, Tree};
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 use crate::random::{AnyRng, Positional, Rng, Xoroshiro};
 
 use aquifer::{AquiferRoots, FluidStatus, GlobalFluid};

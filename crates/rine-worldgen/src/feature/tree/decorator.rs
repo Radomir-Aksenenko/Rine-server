@@ -389,7 +389,7 @@ fn place_on_ground(tries: i32, radius: i32, height: i32, provider: &Provider, d:
 
 /// `BlockStateBase.isSolidRender` at a position.
 fn solid_render(ctx: &Ctx, p: Pos) -> bool {
-    super::fallen::is_solid_render(ctx, p)
+    super::behaviour::is_solid_render(ctx, p)
 }
 
 /// `AlterGroundDecorator`.

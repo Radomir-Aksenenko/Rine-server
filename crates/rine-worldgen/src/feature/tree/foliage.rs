@@ -7,7 +7,9 @@ use serde_json::Value;
 use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::order::Pos;
-use super::trunk::{java_floor_f32, Axis};
+use crate::mth::java_floor_f32;
+
+use super::Axis;
 use super::{dist_manhattan, offset, relative, TreeCompile, Ctx, Dir, TreeFeature, HORIZONTAL};
 
 /// `FoliagePlacer.FoliageAttachment`.

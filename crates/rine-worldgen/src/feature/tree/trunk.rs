@@ -1,79 +1,15 @@
 //! Trunk placers (`levelgen/feature/trunkplacers/*`): straight, forking, giant, mega_jungle, dark_oak,
 //! fancy, upwards_branching, cherry and bending. `poplar` is not ported yet and is rejected at compile time.
 
-use std::sync::OnceLock;
-
 use serde_json::Value;
 
 use crate::feature::placement::{parse_int_provider, sample_int, IntProvider};
 
 use super::foliage::Attachment;
 use super::order::Pos;
-use super::{offset, relative, Ctx, TreeCompile, Dir, TreeFeature, HORIZONTAL};
+use crate::mth::{cos as mth_cos, java_floor_f32, java_floor_f64, sin as mth_sin};
 
-/// `Mth.floor(float)` / `Mth.floor(double)` (`(int)v`, minus one when `v < (int)v`).
-#[inline]
-pub fn java_floor_f64(v: f64) -> i32 {
-    let i = v as i32;
-    if v < i as f64 {
-        i - 1
-    } else {
-        i
-    }
-}
-
-#[inline]
-pub fn java_floor_f32(v: f32) -> i32 {
-    let i = v as i32;
-    if v < i as f32 {
-        i - 1
-    } else {
-        i
-    }
-}
-
-fn sin_table() -> &'static [f32] {
-    static TABLE: OnceLock<Vec<f32>> = OnceLock::new();
-    TABLE.get_or_init(|| (0..65536).map(|i| (i as f64 / 10430.378350470453).sin() as f32).collect())
-}
-
-/// `Mth.sin(double)`.
-#[inline]
-pub fn mth_sin(i: f64) -> f32 {
-    sin_table()[((i * 10430.378350470453) as i64 & 65535) as usize]
-}
-
-/// `Mth.cos(double)`.
-#[inline]
-pub fn mth_cos(i: f64) -> f32 {
-    sin_table()[((i * 10430.378350470453 + 16384.0) as i64 & 65535) as usize]
-}
-
-/// Axis value for `RotatedPillarBlock.AXIS` (`x`, `y`, `z`).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Axis {
-    X,
-    Y,
-    Z,
-}
-
-impl Axis {
-    pub fn name(self) -> &'static str {
-        match self {
-            Axis::X => "x",
-            Axis::Y => "y",
-            Axis::Z => "z",
-        }
-    }
-
-    fn of_dir(d: Dir) -> Axis {
-        match d {
-            Dir::North | Dir::South => Axis::Z,
-            Dir::East | Dir::West => Axis::X,
-            Dir::Up | Dir::Down => Axis::Y,
-        }
-    }
-}
+use super::{offset, relative, Axis, Ctx, TreeCompile, Dir, TreeFeature, HORIZONTAL};
 
 #[derive(Debug, Clone)]
 pub enum TrunkKind {

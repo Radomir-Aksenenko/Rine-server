@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use rine_worldgen::carver::trig;
+use rine_worldgen::mth as trig;
 use rine_worldgen::Overworld;
 
 const SEED: i64 = 1592598566;

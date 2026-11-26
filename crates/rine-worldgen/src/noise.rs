@@ -706,7 +706,7 @@ impl BlendedNoise {
 // order (`dotXz` plus `g.y * relY`). Keep these bodies literal.
 // ---------------------------------------------------------------------------------------------
 
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 
 /// Gradient terms for the 8 cell corners of one (floorX, floorY, floorZ) column. Index order:
 /// 000, 100, 010, 110, 001, 101, 011, 111 (the Java variable suffixes).

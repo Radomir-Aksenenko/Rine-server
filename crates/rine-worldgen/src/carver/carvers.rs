@@ -8,7 +8,7 @@
 //! are bound to `let`s in source order.
 
 use crate::carver::mask::CarvingMask;
-use crate::carver::trig::{cos, sin};
+use crate::mth::{cos, sin};
 use crate::random::{Legacy, Rng};
 
 /// `Mth.PI` = `(float) Math.PI`.

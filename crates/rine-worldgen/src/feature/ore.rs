@@ -3,8 +3,6 @@
 //! Ore writes go straight to the section (`LevelChunkSection.setBlockState(..., false)`), so they do not
 //! update heightmaps.
 
-use std::sync::OnceLock;
-
 use super::region::{Region, Tags};
 use super::rng::WorldgenRng;
 
@@ -48,25 +46,6 @@ pub struct OreFeature {
     pub targets: Vec<Target>,
     pub size: i32,
     pub discard_chance_on_air_exposure: f32,
-}
-
-/// `Mth.sin(float)`: a 65536-entry table indexed by `(int)(x * 10430.378...)`.
-pub fn mth_sin(x: f64) -> f32 {
-    trig_sample(x * 10430.378350470453)
-}
-
-pub(super) fn mth_cos(x: f64) -> f32 {
-    trig_sample(x * 10430.378350470453 + 16384.0)
-}
-
-fn trig_sample(index: f64) -> f32 {
-    static TABLE: OnceLock<Vec<f32>> = OnceLock::new();
-    let table = TABLE.get_or_init(|| {
-        (0..65536)
-            .map(|i| (i as f64 / 10430.378350470453).sin() as f32)
-            .collect()
-    });
-    table[(index as i64 & 65535) as usize]
 }
 
 /// `Mth.ceil(float)`.
@@ -132,7 +111,7 @@ impl OreFeature {
             let yy = y0 + step as f64 * (y1 - y0);
             let zz = z0 + step as f64 * (z1 - z0);
             let ss = rng.next_double() * self.size as f64 / 16.0;
-            let sin_term = mth_sin((std::f32::consts::PI * step) as f64);
+            let sin_term = crate::mth::sin((std::f32::consts::PI * step) as f64);
             let r = ((sin_term + 1.0f32) as f64 * ss + 1.0) / 2.0;
             *d = [xx, yy, zz, r];
         }

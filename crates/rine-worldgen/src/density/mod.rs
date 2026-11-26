@@ -8,12 +8,11 @@ pub mod assets;
 pub mod build;
 pub mod spline;
 pub mod tree;
-pub mod volume;
 
 use std::collections::HashMap;
 
 pub use tree::{Ctx, Tree};
-use volume::Vol;
+use crate::volume::Vol;
 
 /// Router outputs that `router_point` can evaluate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 use crate::overworld::blocks::{Blk, AIR};
 use crate::overworld::Samplers;
 use crate::random::{Positional, Rng};

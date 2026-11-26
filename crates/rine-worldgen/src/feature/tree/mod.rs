@@ -9,6 +9,7 @@
 //! position is added to the feature's set before the write, and writes outside the writable 3x3 chunks are
 //! dropped (still counted in the sets, as vanilla does).
 
+pub mod behaviour;
 pub mod decorator;
 pub mod fallen;
 pub mod foliage;
@@ -109,6 +110,32 @@ impl Dir {
             Dir::South => "south",
             Dir::West => "west",
             Dir::East => "east",
+        }
+    }
+}
+
+/// Axis value for `RotatedPillarBlock.AXIS` (`x`, `y`, `z`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Axis {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis {
+    pub fn name(self) -> &'static str {
+        match self {
+            Axis::X => "x",
+            Axis::Y => "y",
+            Axis::Z => "z",
+        }
+    }
+
+    pub(super) fn of_dir(d: Dir) -> Axis {
+        match d {
+            Dir::North | Dir::South => Axis::Z,
+            Dir::East | Dir::West => Axis::X,
+            Dir::Up | Dir::Down => Axis::Y,
         }
     }
 }

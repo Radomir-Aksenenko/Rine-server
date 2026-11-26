@@ -14,12 +14,11 @@
 
 pub mod carvers;
 pub mod mask;
-pub mod trig;
 
 use std::sync::OnceLock;
 
 use crate::density::tree::Ctx;
-use crate::density::volume::Vol;
+use crate::volume::Vol;
 use crate::overworld::aquifer::Aquifer;
 use crate::overworld::blocks::{Blk, AIR};
 use crate::overworld::{top_material, BiomeMap, Overworld, Samplers};
