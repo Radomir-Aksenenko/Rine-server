@@ -6,7 +6,8 @@
 use super::biome::Biome;
 use super::grid::Grid;
 use super::noise::{hash, Rng, SALT_TREE};
-use super::terrain::{Corners, SEA_LEVEL};
+use super::terrain::Corners;
+use super::SEA_LEVEL;
 use super::Ids;
 
 const CANDIDATES: u32 = 8;

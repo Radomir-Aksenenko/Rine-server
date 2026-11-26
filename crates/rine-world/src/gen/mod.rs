@@ -17,7 +17,10 @@ use crate::chunk::{Chunk, ChunkPos, MIN_Y, SECTIONS};
 use std::sync::Arc;
 use biome::{Biome, BIOME_COUNT};
 use grid::Grid;
-use terrain::{Column, Corners, Noises, SEA_LEVEL};
+use terrain::{Column, Noises};
+
+/// Sea level of the survival generator.
+pub(crate) const SEA_LEVEL: i32 = 63;
 
 /// Resolved block state ids and biome-independent lookup tables.
 pub struct Ids {

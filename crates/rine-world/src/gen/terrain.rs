@@ -8,10 +8,9 @@
 use super::biome::{classify, Biome};
 use super::grid::Grid;
 use super::noise::{hash, lerp, mix, smoothstep, unit, Fbm2, Fbm3, SALT_BED, SALT_DEEP, SALT_SURF};
-use super::Ids;
+use super::{Ids, SEA_LEVEL};
 use crate::chunk::{MAX_Y, MIN_Y};
 
-pub const SEA_LEVEL: i32 = 63;
 const CAVE_MIN_Y: i32 = -59;
 const LAVA_MAX_Y: i32 = -55;
 const CHEESE_T: f32 = 0.45;

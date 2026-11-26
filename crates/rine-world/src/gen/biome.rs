@@ -2,7 +2,7 @@
 //! the output is one of the 23 biomes listed in the generator spec.
 
 use super::noise::{hash, unit, SALT_BIOME};
-use crate::gen::terrain::SEA_LEVEL;
+use crate::gen::SEA_LEVEL;
 
 pub const BIOME_COUNT: usize = 23;
 

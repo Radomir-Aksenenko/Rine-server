@@ -4,7 +4,8 @@
 use super::biome::Biome;
 use super::grid::Grid;
 use super::noise::{hash, unit, SALT_DECOR};
-use super::terrain::{Column, Corners, SEA_LEVEL};
+use super::terrain::{Column, Corners};
+use super::SEA_LEVEL;
 use super::Ids;
 
 pub fn place(grid: &mut Grid, ids: &Ids, seed: u64, cx: i32, cz: i32, cols: &[Column], corners: &Corners) {
