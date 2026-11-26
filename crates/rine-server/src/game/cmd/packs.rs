@@ -119,13 +119,40 @@ pub fn persist(g: &Game, sel: &[Pack]) {
     save(g, &State { enabled, disabled });
 }
 
-/// Folders `<world>/datapacks/<name>/` with a `pack.mcmeta` that the operator did not disable,
-/// sorted by path: the packs the function library loads.
+/// Folders of the selected file packs, in load order: later packs override earlier ones
+/// (`MultiPackResourceManager` stacks packs in selection order, `FallbackResourceManager` keeps the
+/// top one). A folder whose `pack.mcmeta` has no `pack.description` is not a pack
+/// (`Pack.readPackMetadata` logs "Missing metadata" and skips it), so it loads nothing.
 pub fn enabled_dirs(g: &Game) -> Vec<PathBuf> {
-    let Ok(rd) = std::fs::read_dir(datapacks_dir(g)) else { return Vec::new() };
-    let mut v: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.join("pack.mcmeta").is_file()).collect();
-    v.sort();
-    let disabled = load(g).disabled;
-    v.retain(|p| p.file_name().and_then(|n| n.to_str()).is_none_or(|n| !disabled.iter().any(|d| d == &format!("file/{n}"))));
-    v
+    let root = datapacks_dir(g);
+    selected(g).into_iter().filter(|p| !p.built_in).filter_map(|p| p.id.strip_prefix("file/").map(|n| root.join(n))).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pack(root: &Path, name: &str, mcmeta: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(dir.join("pack.mcmeta"), mcmeta).unwrap();
+    }
+
+    #[test]
+    fn enabled_dirs_follow_the_selection_order() {
+        let g = crate::game::redstone::game_tests::setup("packs-order");
+        let root = datapacks_dir(&g);
+        let _ = std::fs::remove_dir_all(&root);
+        let valid = r#"{"pack":{"description":"x","pack_format":121}}"#;
+        pack(&root, "a", valid);
+        pack(&root, "b", valid);
+        pack(&root, "d", valid);
+        pack(&root, "c", r#"{"pack":{"pack_format":121}}"#);
+        let state = serde_json::json!({ "enabled": ["vanilla", "file/b", "file/a"], "disabled": [] });
+        std::fs::write(state_path(&g), state.to_string()).unwrap();
+        // b and a in the persisted order, then the new pack d; c has no description.
+        assert_eq!(enabled_dirs(&g), vec![root.join("b"), root.join("a"), root.join("d")]);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(state_path(&g));
+    }
 }
