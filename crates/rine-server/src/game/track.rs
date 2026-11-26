@@ -13,7 +13,8 @@
 //! between rebuilds each candidate is checked at its current position.
 
 use super::entity;
-use super::player::{Player, Stack};
+use super::player::Player;
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use ahash::AHashMap;

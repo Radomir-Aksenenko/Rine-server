@@ -584,7 +584,7 @@ impl Game {
             let starter = [("minecraft:stone_pickaxe", 1), ("minecraft:torch", 32), ("minecraft:bread", 8)];
             for (n, c) in starter {
                 if let Some(id) = items::id(n) {
-                    p.inv.add(player::Stack::new(id, c));
+                    p.inv.add(crate::stack::Stack::new(id, c));
                 }
             }
         }

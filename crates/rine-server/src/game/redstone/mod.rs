@@ -683,7 +683,7 @@ impl Lvl for GameLvl<'_> {
             self.g,
             [p.x as f64 + 0.5 + ox * 0.5, p.y as f64 + 0.5 + oy * 0.5 - 0.125, p.z as f64 + 0.5 + oz * 0.5],
             [(r(k ^ 3) - 0.5) * 0.2, 0.2, (r(k ^ 4) - 0.5) * 0.2],
-            crate::game::player::Stack::new(item, count),
+            crate::stack::Stack::new(item, count),
             10,
         );
     }

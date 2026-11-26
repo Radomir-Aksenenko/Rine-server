@@ -4,7 +4,7 @@
 //! thread in one batch per tick. Synchronous (cancellable) calls happen only
 //! for event kinds some plugin actually subscribed to.
 
-use super::player::Stack;
+use crate::stack::Stack;
 use super::Game;
 use rine_plugin::{Action, Event, PluginHost, SyncKind};
 use rine_protocol::text::Text;
@@ -77,7 +77,7 @@ pub fn tick(g: &mut Game) {
             Action::Give { player, item, count } => {
                 if let (Some(s), Some(id)) = (g.find_player(&player), super::items::id(&item)) {
                     let p = g.player(s).unwrap();
-                    let left = p.inv.add(super::player::Stack::new(id, count.max(1)));
+                    let left = p.inv.add(crate::stack::Stack::new(id, count.max(1)));
                     let inv = p.inventory_packet();
                     p.send(inv);
                     if left > 0 {

@@ -17,7 +17,8 @@
 
 use super::entity::{self, rand_f64};
 use super::loot;
-use super::player::{max_stack, Stack};
+use super::player::max_stack;
+use crate::stack::Stack;
 use super::world::{ChunkSlot, World};
 use super::Game;
 use crate::out;

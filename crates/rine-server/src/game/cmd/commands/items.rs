@@ -1,13 +1,14 @@
 //! /give, /clear, /enchant (`GiveCommand`, `ClearInventoryCommands`,
 //! `EnchantCommand`).
 //!
-//! Item stacks only carry id, count and wear (`player::Stack`). Data
+//! Item stacks only carry id, count and wear (`crate::stack::Stack`). Data
 //! components and enchantments are not stored, so `/enchant` cannot
 //! succeed yet and item predicates cannot test components.
 
 use crate::game::cmd::{feedback, lit, select, Commands, Ctx};
 use crate::game::entity;
-use crate::game::player::{max_stack, Player, Stack};
+use crate::game::player::{max_stack, Player};
+use crate::stack::Stack;
 use crate::game::track;
 use crate::game::Game;
 use rine_command::args::item::{ItemMatch, ItemPredicate, ItemTest};

@@ -15,7 +15,7 @@
 use super::interact::{ItemOp, Res, UseCtx, UseOut};
 use super::props::{geti, getb, getv, seti, setb, vid, Pr};
 use super::{block_of, Beh, Rng};
-use crate::game::player::Stack;
+use crate::stack::Stack;
 use crate::game::redstone::data::{self, DOWN, NORTH, SOUTH, UP};
 use crate::game::redstone::engine::{self, fl, prio, Lvl, CAT_BLOCKS, UPDATE_LIMIT};
 use crate::game::redstone::Rs;

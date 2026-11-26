@@ -11,7 +11,7 @@
 
 use super::items;
 use super::loot;
-use super::player::Stack;
+use crate::stack::Stack;
 use super::{entity, track, Game};
 use crate::out;
 use ahash::AHashMap;

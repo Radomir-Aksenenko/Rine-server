@@ -11,7 +11,8 @@
 use super::blockent;
 use super::containers::{self, lock_state, read_src, write_src, Fk, Furnace, Lay, Src, State};
 use super::entity::{self, Kind};
-use super::player::{max_stack, Stack};
+use super::player::max_stack;
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use ahash::AHashMap;

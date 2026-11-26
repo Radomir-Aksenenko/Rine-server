@@ -9,7 +9,7 @@
 //! reused slot never inherits the previous player's state.
 
 use super::interact;
-use super::player::Stack;
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use ahash::AHashMap;

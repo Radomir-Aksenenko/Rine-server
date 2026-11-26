@@ -5,7 +5,7 @@
 //! always absent: `table_bonus` uses its level 0 chance, silk-touch checks
 //! fail, and `apply_bonus` leaves counts unchanged.
 
-use super::player::Stack;
+use crate::stack::Stack;
 use ahash::AHashMap;
 use rine_data::blocks::flag;
 use rine_data::Data;

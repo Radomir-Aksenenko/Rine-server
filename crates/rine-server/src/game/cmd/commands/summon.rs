@@ -8,7 +8,7 @@ use crate::game::cmd::select::text_from_tag;
 use crate::game::cmd::source::Source;
 use crate::game::cmd::{Commands, Ctx, EntMeta};
 use crate::game::entity::{Ent, Kind};
-use crate::game::player::Stack;
+use crate::stack::Stack;
 use crate::game::Game;
 use rine_command::{CmdError, CmdResult};
 use rine_protocol::nbt::Tag;

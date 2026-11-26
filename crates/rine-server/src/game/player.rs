@@ -1,4 +1,5 @@
 use crate::net::{ClientInfo, NewPlayer, Out};
+use crate::stack::Stack;
 use ahash::AHashSet;
 use bytes::{Bytes, BytesMut};
 use rine_protocol::BlockPos;
@@ -19,41 +20,6 @@ pub struct Dig {
     pub dir: u8,
     /// Breaking stage last sent to viewers (-1 = none sent yet).
     pub stage: i32,
-}
-
-/// Item stack. Only the damage component is modelled (`minecraft:damage`);
-/// everything else on an item is the prototype default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Stack {
-    pub item: u32,
-    pub count: i32,
-    /// `minecraft:damage`: wear taken so far (0 = undamaged).
-    pub damage: u16,
-}
-
-impl Stack {
-    pub const EMPTY: Stack = Stack { item: 0, count: 0, damage: 0 };
-    pub fn new(item: u32, count: i32) -> Self {
-        Self::damaged(item, count, 0)
-    }
-    pub fn damaged(item: u32, count: i32, damage: u16) -> Self {
-        if item == 0 || count <= 0 {
-            Self::EMPTY
-        } else {
-            Self { item, count, damage }
-        }
-    }
-    /// Same item and damage, another count. Keeps the wear of this stack.
-    pub fn with_count(&self, count: i32) -> Self {
-        Self::damaged(self.item, count, self.damage)
-    }
-    pub fn is_empty(&self) -> bool {
-        self.item == 0 || self.count <= 0
-    }
-    /// Whether two stacks may merge (same item, same wear).
-    pub fn same_kind(&self, other: &Stack) -> bool {
-        self.item == other.item && self.damage == other.damage
-    }
 }
 
 /// Player inventory in window-0 slot numbering:

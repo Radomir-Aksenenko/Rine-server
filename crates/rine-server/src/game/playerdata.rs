@@ -13,7 +13,8 @@
 
 use super::items;
 use crate::game::cmd::commands::world::Respawn;
-use super::player::{max_stack, Player, Stack};
+use super::player::{max_stack, Player};
+use crate::stack::Stack;
 use super::Game;
 use ahash::AHashMap;
 use serde::{Deserialize, Serialize};

@@ -1,7 +1,8 @@
 //! Digging, placing, item use, inventory clicks, damage and respawn.
 
 use super::entity;
-use super::player::{Dig, Player, Stack};
+use super::player::{Dig, Player};
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use rine_protocol::text::Text;

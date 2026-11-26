@@ -12,7 +12,8 @@ use crate::game::containers::craft_result;
 use crate::game::entity::{self, Kind};
 use crate::game::items;
 use crate::game::loot;
-use crate::game::player::{max_stack, Player, Stack};
+use crate::game::player::{max_stack, Player};
+use crate::stack::Stack;
 use crate::game::track;
 use crate::game::Game;
 use crate::out;
@@ -377,7 +378,7 @@ fn with_item(x: &Ctx) -> CmdResult<Stack> {
 }
 
 // ---------------------------------------------------------------------------
-// Item modifiers (`LootItemFunction` subset on `player::Stack`)
+// Item modifiers (`LootItemFunction` subset on `crate::stack::Stack`)
 // ---------------------------------------------------------------------------
 
 enum Num {

@@ -8,7 +8,7 @@
 use crate::game::cmd::source::Source;
 use crate::game::cmd::{feedback, lit, select, Commands, Ctx};
 use crate::game::entity::Kind;
-use crate::game::player::Stack;
+use crate::stack::Stack;
 use crate::game::Game;
 use rine_command::args::misc::IdOrInline;
 use rine_command::args::nbt_path::{self, NbtPath};

@@ -7,7 +7,7 @@ use rine_protocol::ids::play::*;
 use rine_protocol::nbt::Tag;
 use rine_protocol::text::Text;
 use rine_protocol::{BlockPos, Writer};
-use crate::game::player::Stack;
+use crate::stack::Stack;
 use std::sync::atomic::{AtomicI32, Ordering};
 use uuid::Uuid;
 

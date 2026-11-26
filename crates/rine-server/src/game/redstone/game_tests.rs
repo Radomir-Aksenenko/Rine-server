@@ -114,7 +114,7 @@ fn game_wire_lamp_piston_plate() {
     put(&mut g, plate, "oak_pressure_plate");
     put(&mut g, o.offset(2, 0, 6), "redstone_wire");
     ticks(&mut g, 1);
-    let stick = crate::game::player::Stack { item: crate::game::items::id("stick").unwrap(), count: 1, ..crate::game::player::Stack::EMPTY };
+    let stick = crate::stack::Stack { item: crate::game::items::id("stick").unwrap(), count: 1, ..crate::stack::Stack::EMPTY };
     entity::spawn_item(&mut g, [plate.x as f64 + 0.5, plate.y as f64 + 0.05, plate.z as f64 + 0.5], [0.0, 0.0, 0.0], stick, 0);
     ticks(&mut g, 10);
     assert!(on(get_at(&g, plate), P::Powered), "plate pressed by the item");

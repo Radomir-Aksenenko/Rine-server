@@ -6,7 +6,7 @@
 //! often (containers) keep a typed copy while the chunk is loaded and write
 //! it back before the chunk is saved.
 
-use super::player::Stack;
+use crate::stack::Stack;
 use rine_protocol::nbt::Tag;
 use rine_protocol::BlockPos;
 use rine_world::chunk::BlockEntity;

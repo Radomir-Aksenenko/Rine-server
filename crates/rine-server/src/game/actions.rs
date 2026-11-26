@@ -3,7 +3,8 @@
 //! switcher (`handleChangeGameMode`).
 
 use super::entity::{Ent, Kind};
-use super::player::{Inventory, Stack};
+use super::player::Inventory;
+use crate::stack::Stack;
 use super::{track, Game};
 use crate::out;
 use rine_protocol::BlockPos;

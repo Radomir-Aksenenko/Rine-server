@@ -12,7 +12,7 @@
 //! shears used on entities.
 
 use super::items;
-use super::player::Stack;
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use rine_protocol::{ProtoError, Reader};

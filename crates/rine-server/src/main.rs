@@ -4,6 +4,7 @@ mod config;
 mod game;
 mod net;
 mod out;
+mod stack;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;

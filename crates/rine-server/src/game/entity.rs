@@ -5,7 +5,8 @@
 //! applied afterwards on the game thread. Network updates are encoded once
 //! per entity per tick and fanned out by the tracker.
 
-use super::player::{max_stack, Stack};
+use super::player::max_stack;
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use ahash::{AHashMap, AHashSet};

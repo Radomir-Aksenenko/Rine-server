@@ -7,7 +7,7 @@
 
 use super::entity;
 use super::items;
-use super::player::Stack;
+use crate::stack::Stack;
 use super::Game;
 use rine_data::blocks::{flag, Blocks};
 use rine_protocol::BlockPos;

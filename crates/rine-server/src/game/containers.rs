@@ -15,7 +15,8 @@
 
 use super::entity;
 use super::items;
-use super::player::{max_stack, Inventory, Stack};
+use super::player::{max_stack, Inventory};
+use crate::stack::Stack;
 use super::Game;
 use crate::out;
 use ahash::AHashMap;

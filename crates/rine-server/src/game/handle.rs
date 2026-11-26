@@ -143,7 +143,7 @@ fn handle(g: &mut Game, slot: usize, data: &[u8]) -> Result<(), ProtoError> {
                 // component patch (delimited): only the damage component is kept
                 super::durability::read_creative_stack(&mut r, item, count)?
             } else {
-                super::player::Stack::EMPTY
+                crate::stack::Stack::EMPTY
             };
             if (0..46).contains(&s) {
                 p.inv.slots[s as usize] = stack;
