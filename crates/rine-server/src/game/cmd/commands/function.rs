@@ -400,21 +400,9 @@ impl TimerQueue {
     }
 }
 
-/// Enabled data pack folders (`<world>/datapacks/<name>/` with a
-/// `pack.mcmeta`), in load order.
-pub fn pack_dirs(g: &Game) -> Vec<std::path::PathBuf> {
-    let root = std::path::Path::new(&g.shared.config.world_dir).join("datapacks");
-    let Ok(rd) = std::fs::read_dir(&root) else { return Vec::new() };
-    let mut v: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.join("pack.mcmeta").is_file()).collect();
-    v.sort();
-    let disabled = super::datapack::disabled(g);
-    v.retain(|p| p.file_name().and_then(|n| n.to_str()).is_none_or(|n| !disabled.iter().any(|d| d == &format!("file/{n}"))));
-    v
-}
-
 /// `ServerFunctionLibrary.reload` + `ServerFunctionManager.replaceLibrary`.
 pub fn reload(g: &mut Game) {
-    let packs = pack_dirs(g);
+    let packs = crate::game::cmd::packs::enabled_dirs(g);
     let mut sources: BTreeMap<String, String> = BTreeMap::new();
     let mut tag_files: Vec<(String, serde_json::Value)> = Vec::new();
     for pack in &packs {

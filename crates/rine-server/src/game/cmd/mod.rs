@@ -10,6 +10,7 @@ pub mod cmdblock;
 pub mod commands;
 pub mod exec;
 pub mod feedback;
+pub mod packs;
 pub mod rules;
 pub mod select;
 pub mod source;
